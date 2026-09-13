@@ -194,8 +194,30 @@
     "formal_share_material": {
       "json_size_description": "约 37 KB",
       "sha256_check": "verified",
-      "native_draft": "pending",
-      "published": false
+      "native_draft": "version_3_verified",
+      "version_2_card": {
+        "level": "verified",
+        "name": "Asterun",
+        "skills": 3,
+        "memory": 1,
+        "routines": 0,
+        "plugins": 0,
+        "memory_readback": "原稿 2167 字符，原生详情只显示约 500 字符，末尾为 Shel。"
+      },
+      "version_3_preparation": {
+        "payload_sha256": "88ed147a86b76ad95f9abef54315f62957bdb8ec6224708568ca5e34a9b90428",
+        "memory_entries": 11,
+        "maximum_entry_characters": 453,
+        "change_scope": "按双换行无损拆分原 memory，其他 payload 内容保持不变。",
+        "native_card_verification": "verified",
+        "verified_scope": "原生 UI 显示 11 条完整 memory，末条包含完整 ZIP SHA-256；3 个技能均可滚动至完整英文末尾。"
+      },
+      "published": true
+    },
+    "private_skill_registration": {
+      "level": "verified",
+      "scope": "原生市场的你的插件、私有技能中可见 asterun-bot-setup、asterun-bot-tasks、asterun-bot-recovery。",
+      "body_readback": "setup、tasks、recovery 三个技能的正文均可滚动至完整英文末尾。"
     },
     "getting_started_skill_requirement": {
       "level": "verified",
@@ -208,15 +230,30 @@
         "按授权写入技能，核对正文及发布 Bot 自己的技能列表。",
         "将对应技能正文装入正式 JSON 的 skills 条目，再用 gettingStarted.skill 引用已有技能，重试完整 JSON。"
       ],
-      "skill_write_and_retry": "pending"
+      "skill_write_and_retry": "registration_and_version_3_draft_verified"
+    },
+    "native_publication": {
+      "level": "verified",
+      "url": "https://x.ai/bot/4r3ysO1eA-6ZLI6cRoTNU",
+      "payload_sha256": "88ed147a86b76ad95f9abef54315f62957bdb8ec6224708568ca5e34a9b90428",
+      "native_card": "第 3 版正式卡发布后明确显示 Asterun 已发布。",
+      "public_page": {
+        "level": "verified",
+        "title": "Asterun by Quazi",
+        "description": "已核对与模板用途一致。",
+        "add_to_grok_bot_link": "visible"
+      },
+      "same_account_import": "pending",
+      "import_terms_url": "https://x.ai/legal/bot-sharing-terms",
+      "import_confirmation": "页面说明点击 Add to Grok Bot 即接受分享条款；导入动作等待用户当时确认，当前未点击。"
     },
     "create_bot": "通过 GrokBot 原生创建入口建立新的 Bot，并设置 Profile；工具参数以宿主实际提供的定义为准。",
     "install_skill": "调用已报告的 skill:write 前核对全局技能库中的同名条目与使用范围；写入后检查当前 Bot 可调用。",
-    "share_bot": "先确认 gettingStarted.skill 指向发布 Bot 已有技能，且 JSON 的对应 skills 条目包含该技能正文，再生成完整草稿。在原生 UI 检查分享名称及 profile、memory、skills、routines 和 plugins 后完成发布。",
+    "share_bot": "先确认 gettingStarted.skill 指向发布 Bot 已有技能，且 JSON 的对应 skills 条目包含该技能正文，再生成完整草稿。将长 memory 按段拆成短条目，核对拼接后与原文一致；在原生详情逐条核对正文和末尾，并检查名称、profile、skills、routines 和 plugins 后完成发布。",
     "custom_code_distribution": "Asterun 和 bridge.py 由接收者按首次引导安装；实际导出清单单独核对。",
-    "profile_memory_skill_write_verification": "pending",
-    "share_draft_and_alias_verification": "pending",
-    "verification": "pending",
+    "profile_memory_skill_write_verification": "skill_registration_and_body_verified_profile_and_memory_pending",
+    "share_draft_and_alias_verification": "version_3_card_verified",
+    "verification": "native_publication_verified_import_pending",
     "new_user": "pending",
     "recipient_scope": "当前账户中的副本与共享云电脑沿用该账户环境，独立新用户验收保留待办。"
   },
@@ -226,7 +263,7 @@
       "source_commit": "58c618b08db3327fb56b0fb91ffcec0831cabd19",
       "zip_sha256": "17e3aed380721b169a73d3b40b90aa54cc42b486234bc2e2349c977114cb2ac4",
       "anonymous_download_and_manifest": "verified",
-      "record_scope": "包内记录固定于发布时；当前文档另行记录发布后的本机 UI 及 routine 暂停确认。"
+      "record_scope": "包内记录固定于发布时；当前文档另行记录发布后的本机 UI、routine 暂停及原生模板发布确认。"
     },
     "verified_on": "2026-09-13",
     "fetch_runtime": "公开 wheel 下载、SHA-256 核对与重复调用复用已通过。",

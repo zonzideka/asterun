@@ -53,6 +53,6 @@ The [user manual](docs/en/user-manual.md) covers submission, observation, approv
 
 Callers such as GrokBot can deploy Asterun on a cloud computer or invoke a local process over an existing authorized channel. Workspaces, accounts, and native sessions stay on the execution host. Callers track ordinary tasks through task and event records; the [review result consumer](docs/en/review-consumer.md) connects the review inbox to the host's messaging and scheduling facilities.
 
-The optional [Asterun Bot template](https://github.com/zonzideka/asterun/blob/grokbot-template-v0.1.0-rc1/integrations/grokbot/README.en.md) provides GrokBot setup, task tracking, and chat delivery, with its own release package.
+The optional [Asterun Bot template](https://x.ai/bot/4r3ysO1eA-6ZLI6cRoTNU) provides GrokBot setup, task tracking, and chat delivery. Its [setup guide and companion code](https://github.com/zonzideka/asterun/blob/grokbot-template-v0.1.0-rc1/integrations/grokbot/README.en.md) are available in a pinned release.
 
 For integrations, see [runner-control/v1](docs/en/protocol/IMPLEMENTATION.md) and the [capability profile](docs/en/capability-profile.md).

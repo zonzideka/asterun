@@ -8,6 +8,8 @@
 
 ## 取得模板
 
+打开 [Asterun 原生模板](https://x.ai/bot/4r3ysO1eA-6ZLI6cRoTNU)。分享页说明点击 Add to Grok Bot 即接受[分享条款](https://x.ai/legal/bot-sharing-terms)，由用户在导入时确认；随后按首次引导准备下面的配套代码包。
+
 模板包固定发布入口为[版本发布页](https://github.com/zonzideka/asterun/releases/tag/grokbot-template-v0.1.0-rc1)。从该页取得 `asterun-grokbot-0.1.0-rc1.zip` 和 `SHA256SUMS`，按 `SHA256SUMS` 核对完整 ZIP 后再解压。包内 `manifest.json` 记录源码 commit、各发布文件的 SHA-256 和字节数。下载后记录包的版本和校验结果。
 
 保存解压根目录的绝对路径，后续安装、任务命令和 routine 均从该目录调用 `scripts/`。将技能导入宿主全局技能库时，保留正文中的固定标签公开文档链接，并继续使用安装记录中的解压根目录。README 和配置文案保留包内相对链接，便于随包阅读。
@@ -81,6 +83,6 @@ Bot 按用户目标组织流程。需要 PR 审查时使用[审查配方](https:
 
 2026-09-13 已在当前账户的云电脑完成材料复制与哈希校验、固定 a13 wheel 下载、Python 3.13.5 独立 venv 安装及版本读取。fake 任务重复使用同一请求键得到相同任务与运行引用；离开聊天页面后，cron 唤醒 Bot，原聊天显示任务结果，ack 记录 `host_reported_delivered`。再次 poll 返回 `needs_followup=false`，随后暂停 routine。这轮验证覆盖云端核心、适配器和前端交付。
 
-本机 Grok Build 已在真实项目目录完成短文任务，摘要核对通过；宿主回执为 `host_reported_delivered`，末次 poll 无需跟进。发布后已在原生 UI 核对原聊天结果、回执和摘要，并确认三个临时 routine 全部暂停。云端真实模型、应用重启恢复、正在生成的原生分享和独立接收方继续按[验收记录](acceptance.md)验证。同一账户中的 Bot 副本与云电脑沿用该账户环境，独立新用户仍需另行验证。后端能力见[发行说明](https://github.com/zonzideka/asterun/blob/v0.1.0a13/docs/release-v0.1.md)。
+本机 Grok Build 已在真实项目目录完成短文任务，摘要核对通过；宿主回执为 `host_reported_delivered`，末次 poll 无需跟进。发布后已在原生 UI 核对原聊天结果、回执和摘要，并确认三个临时 routine 全部暂停。原生模板第 3 版的 11 条完整 memory、3 个完整技能、正式发布卡及公开页面已核对。同账户导入、云端真实模型、应用重启恢复和独立接收方继续按[验收记录](acceptance.md)验证。同一账户中的 Bot 副本与云电脑沿用该账户环境，独立新用户仍需另行验证。后端能力见[发行说明](https://github.com/zonzideka/asterun/blob/v0.1.0a13/docs/release-v0.1.md)。
 
-固定版本 ZIP 已公开，匿名下载、摘要和完整 manifest 核对通过。包内文档保留发布时记录；当前验收文档另行补记发布后的本机 UI 与 routine 暂停确认。
+固定版本 ZIP 已公开，匿名下载、摘要和完整 manifest 核对通过。包内文档保留发布时记录；当前验收文档另行补记发布后的本机 UI、routine 暂停及原生模板发布确认。
