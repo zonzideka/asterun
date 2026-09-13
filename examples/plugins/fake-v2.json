@@ -1,0 +1,23 @@
+{
+  "schema_version": 2,
+  "revision": 1,
+  "workspaces": {"demo": {"root": ".", "allow_non_git": true}},
+  "backends": {"fake": {"connection_ref": "fake_local"}},
+  "default_backend": "fake",
+  "plugins": {"asterun.fake": {"enabled": true}},
+  "provider_accounts": {"fake_account": {"provider": "fake", "credential_ref": null, "credential_revision": 1, "revoked": false}},
+  "billing_pools": {"fake_pool": {
+    "billing_mode": "local", "remaining": null, "paid_overage_allowed": false,
+    "meter": "requests", "local_limit": 100, "max_concurrency": 1,
+    "window_id": "local", "estimate_per_action": 1,
+    "overage_verified": false, "allow_unknown_subscription": false, "risk_acceptance": null
+  }},
+  "connections": {
+    "fake_local": {
+      "plugin_id": "asterun.fake", "enabled": true,
+      "provider_account_ref": "fake_account", "runtime_ref": "runtime:local",
+      "auth_mode": "none", "billing_pool_refs": ["fake_pool"], "options": {}
+    }
+  },
+  "routing": {"automatic_paid_fallback": false, "automatic_account_switch": false, "default_order": [], "rules": []}
+}

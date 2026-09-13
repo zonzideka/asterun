@@ -1,0 +1,61 @@
+recursive-include src/asterun *.py
+recursive-include src/asterun/schemas *.json
+include README.md
+include README.en.md
+include LICENSE
+include pyproject.toml
+include requirements-lock.txt
+# 发行手册按清单打包。
+prune docs
+include docs/user-manual.md
+include docs/install.md
+include docs/antigravity.md
+include docs/approval-policy.md
+include docs/pr-review.md
+include docs/fixed-read-scope.md
+include docs/codex-projects.md
+include docs/plugins.md
+include docs/capability-profile.md
+include docs/review-consumer.md
+include docs/release-v0.1.md
+include docs/en/user-manual.md
+include docs/en/install.md
+include docs/en/antigravity.md
+include docs/en/approval-policy.md
+include docs/en/pr-review.md
+include docs/en/fixed-read-scope.md
+include docs/en/codex-projects.md
+include docs/en/plugins.md
+include docs/en/capability-profile.md
+include docs/en/review-consumer.md
+include docs/en/release-v0.1.md
+include docs/en/protocol/IMPLEMENTATION.md
+recursive-include docs/adr *.md
+recursive-include docs/protocol *.md *.json
+include packages/asterun-plugin-antigravity/README.md
+include packages/asterun-plugin-antigravity/README.en.md
+include packages/asterun-plugin-antigravity/LICENSE
+include packages/asterun-plugin-cursor/README.md
+include packages/asterun-plugin-cursor/README.en.md
+include packages/asterun-plugin-cursor/LICENSE
+include packages/asterun-plugin-jules/README.md
+include packages/asterun-plugin-jules/README.en.md
+include packages/asterun-plugin-jules/LICENSE
+recursive-include examples *
+include scripts/backup-state.sh
+include scripts/restore-state.sh
+include scripts/check-release-package.py
+include scripts/verify-installed-control.py
+exclude scripts/verify-offline.sh
+prune references
+prune tests
+prune credentials
+exclude STATUS.md
+exclude STATUS.en.md
+exclude AGENTS.md
+global-exclude credentials.json credentials.toml credentials.yaml credentials.yml
+global-exclude *.sqlite
+global-exclude *.key
+global-exclude *.pem
+global-exclude .env
+global-exclude .env.*

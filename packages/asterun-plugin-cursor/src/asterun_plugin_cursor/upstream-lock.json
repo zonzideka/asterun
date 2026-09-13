@@ -1,0 +1,34 @@
+{
+  "version": "1.0.31",
+  "documentation": "https://cursor.com/docs/sdk/python",
+  "metadata": "https://pypi.org/pypi/cursor-sdk/1.0.31/json",
+  "verified_on": "2026-09-11",
+  "files": [
+    {
+      "filename": "cursor_sdk-1.0.31-py3-none-macosx_11_0_arm64.whl",
+      "sha256": "0b7b1e8fb677fe400c9d63518ff08465a7527cd23f20a3d857bf9454ab99c411"
+    },
+    {
+      "filename": "cursor_sdk-1.0.31-py3-none-macosx_11_0_x86_64.whl",
+      "sha256": "22cb11230491cd989eb7015cb3778f09ba1e6a974661ddace5bee1e68f85ee8b"
+    },
+    {
+      "filename": "cursor_sdk-1.0.31-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl",
+      "sha256": "ae97e49570887953922eb6b3b84cb02c2d13e795fe4b3968f25e23ab569cf21f"
+    },
+    {
+      "filename": "cursor_sdk-1.0.31-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+      "sha256": "e9b87cd80fe428b1a2ee88b4a08aac6297179a33f809d650f0383901fb60a766"
+    },
+    {
+      "filename": "cursor_sdk-1.0.31-py3-none-win_amd64.whl",
+      "sha256": "12d87c639ac1bdb50958028e81f295f856e8e9a4d784977ea0e07d196716410e"
+    },
+    {
+      "filename": "cursor_sdk-1.0.31.tar.gz",
+      "sha256": "fcdd279852d0b3eea4e4c4562dcd1c7d18360f507d2830bd2de79b6d855276a5"
+    }
+  ],
+  "verified_platform": "macos-arm64 wheel source and isolated fixture only",
+  "real_bridge_executed": false
+}

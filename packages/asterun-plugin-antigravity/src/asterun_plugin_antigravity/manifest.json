@@ -1,0 +1,138 @@
+{
+  "schema_version": "asterun-plugin/v1",
+  "plugin_id": "google.antigravity-cli",
+  "plugin_version": "1.0.0",
+  "plugin_api_major": 1,
+  "distribution": "asterun-plugin-antigravity",
+  "entry_point": "asterun_plugin_antigravity.worker:main",
+  "roles": [
+    "agent"
+  ],
+  "capabilities": [
+    {
+      "name": "agent.execute",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 65536
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "support": "offline_verified",
+      "effect_class": "non_idempotent_write",
+      "permission_requirements": [
+        "workspace.read"
+      ]
+    },
+    {
+      "name": "agent.resume",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 65536
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "support": "unsupported",
+      "effect_class": "non_idempotent_write",
+      "permission_requirements": [
+        "workspace.read"
+      ]
+    }
+  ],
+  "auth_modes": [
+    "native_account"
+  ],
+  "billing_modes": [
+    "subscription"
+  ],
+  "permissions": {
+    "filesystem": [
+      "approved_workspace_read",
+      "explicit_native_home"
+    ],
+    "network": [
+      "native_cli_account_service"
+    ],
+    "process": [
+      "explicit_pinned_antigravity_cli"
+    ],
+    "credential_classes": [
+      "native_cli_account_session"
+    ]
+  },
+  "platforms": [
+    {
+      "os": "macos",
+      "architectures": [
+        "arm64",
+        "x86_64"
+      ],
+      "verification": "not_tested"
+    },
+    {
+      "os": "linux",
+      "architectures": [
+        "x86_64",
+        "aarch64"
+      ],
+      "verification": "not_tested"
+    }
+  ],
+  "docs": {
+    "readme": "README.md"
+  },
+  "extensions": {
+    "asterun.antigravity": {
+      "upstream_version": "1.2.0",
+      "permission_profile": "workspace-read-v1",
+      "native_resume": "unsupported",
+      "approval": "unsupported",
+      "quota": "unsupported",
+      "cancel": "unsupported",
+      "reconcile": "unsupported",
+      "native_client_visibility": "not_verified",
+      "authentication": "not_verified",
+      "billing": "not_verified",
+      "isolation": "trusted_code_process_isolation_only"
+    }
+  }
+}

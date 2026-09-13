@@ -1,0 +1,141 @@
+{
+  "schema_version": "asterun-plugin/v1",
+  "plugin_id": "cursor.agent",
+  "plugin_version": "1.0.0",
+  "plugin_api_major": 1,
+  "distribution": "asterun-plugin-cursor",
+  "entry_point": "asterun_plugin_cursor.worker:main",
+  "roles": [
+    "agent"
+  ],
+  "capabilities": [
+    {
+      "name": "agent.execute",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 65536
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "support": "offline_verified",
+      "effect_class": "non_idempotent_write",
+      "permission_requirements": [
+        "workspace.execute"
+      ]
+    },
+    {
+      "name": "agent.resume",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 65536
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "support": "offline_verified",
+      "effect_class": "non_idempotent_write",
+      "permission_requirements": [
+        "workspace.execute"
+      ]
+    }
+  ],
+  "auth_modes": [
+    "user_api_key"
+  ],
+  "billing_modes": [
+    "subscription"
+  ],
+  "permissions": {
+    "filesystem": [
+      "approved_workspace",
+      "explicit_sdk_state_root"
+    ],
+    "network": [
+      "cursor_account_service"
+    ],
+    "process": [
+      "explicit_pinned_cursor_bridge"
+    ],
+    "credential_classes": [
+      "user_api_key"
+    ]
+  },
+  "platforms": [
+    {
+      "os": "macos",
+      "architectures": [
+        "arm64",
+        "x86_64"
+      ],
+      "verification": "not_tested"
+    },
+    {
+      "os": "linux",
+      "architectures": [
+        "x86_64",
+        "aarch64"
+      ],
+      "verification": "not_tested"
+    }
+  ],
+  "docs": {
+    "readme": "README.md"
+  },
+  "extensions": {
+    "asterun.credentials": {
+      "credential_class": "user_api_key",
+      "env_var": "CURSOR_API_KEY"
+    },
+    "asterun.cursor": {
+      "sdk_version": "1.0.31",
+      "runtime": "local",
+      "cloud": "unsupported",
+      "artifact_download": "unsupported",
+      "inline_mcp": "unsupported",
+      "approval": "unsupported",
+      "quota": "unsupported",
+      "authentication": "not_verified",
+      "billing": "not_verified",
+      "isolation": "trusted_code_process_isolation_only"
+    }
+  }
+}

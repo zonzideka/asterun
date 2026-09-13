@@ -1,0 +1,10 @@
+{
+  "api_version": "v1alpha",
+  "verified_date": "2026-09-11",
+  "sources": [
+    "https://jules.google/docs/api/reference/sessions/",
+    "https://jules.google/docs/api/reference/activities/",
+    "https://jules.google/docs/api/reference/types/"
+  ],
+  "verification": "official_documentation_and_offline_http_fixture_only"
+}

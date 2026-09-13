@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "revision": 1,
+  "workspaces": {
+    "inbox": {
+      "root": "./inbox",
+      "allow_non_git": true
+    }
+  },
+  "backends": {
+    "fake": {
+      "kind": "fake",
+      "enabled": true
+    }
+  },
+  "default_backend": "fake",
+  "entries": {
+    "cli": {"enabled": true},
+    "mcp": {"enabled": true}
+  },
+  "workflow": {
+    "preset": "none",
+    "max_repairs": 2
+  },
+  "scheduler": {
+    "max_queue": 32,
+    "per_backend_concurrency": 1,
+    "max_runs_per_task": 4
+  }
+}

@@ -1,0 +1,27 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    env:
+      HOME: /tmp/asterun-ci-home
+      ASTERUN_HOME: /tmp/asterun-ci-home/asterun
+      ASTERUN_VERIFY_TMP: /tmp/asterun-ci-verify
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: 离线安装与测试
+        run: |
+          mkdir -p "$HOME" "$ASTERUN_HOME"
+          chmod +x scripts/verify-offline.sh
+          scripts/verify-offline.sh

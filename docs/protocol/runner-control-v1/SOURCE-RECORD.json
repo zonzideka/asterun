@@ -1,0 +1,15 @@
+{
+  "source": "runner-control-v1-draft supplied by user",
+  "draft_revision": "2026-09-10.draft1",
+  "scope": "Retained specification subset; original validation is source material, not current runtime evidence.",
+  "files": {
+    "CONFORMANCE.md": "56dd0a88ea4aa743a48b03ea13c782b7bfdfaa72efe4d5d4c655e77dadbb404b",
+    "SOURCES.md": "4649fdd915f4488f321649289bb6c2856f36c3699de3e23d66aabfdb183be971",
+    "SPEC.zh-CN.md": "48f798089c0dae40b844828d838693aa1905b076d9300e84847e9e11bc2d6da9",
+    "VALIDATION.md": "9516a2bc2920d8d06098a54b121c6f88fa66b4f4c01797a0cd2d6b4ae899cbac",
+    "event-catalog.json": "82273633690b25e76ce8531535d2fc2e86f0c07a3fe6050922c8bf88ccbc1aac",
+    "state-machines.json": "99ceb7f0b8a30160d06085d0c2b645e618506a393941a7ebf78ff5c3bfa5ebb6"
+  },
+  "runtime_schema_sha256": "462f0956ca7f7997cc472ffb73e619111c66f25318cb383b677213880f23fe76",
+  "current_implementation": "../IMPLEMENTATION.md"
+}

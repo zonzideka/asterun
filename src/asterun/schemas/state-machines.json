@@ -1,0 +1,183 @@
+{
+  "schema_version": "runner-control/v1",
+  "note": "Edges alone are insufficient: apply guards in SPEC.zh-CN.md. No self-loop is a transition; heartbeat/metadata updates have their own revision changes.",
+  "transitions": {
+    "Task": {
+      "DRAFT": [
+        "READY",
+        "CANCELED"
+      ],
+      "READY": [
+        "ACTIVE",
+        "CANCELED"
+      ],
+      "ACTIVE": [
+        "SUCCEEDED",
+        "FAILED",
+        "CANCELED"
+      ],
+      "FAILED": [
+        "ACTIVE"
+      ],
+      "SUCCEEDED": [],
+      "CANCELED": []
+    },
+    "Run": {
+      "QUEUED": [
+        "PREPARING",
+        "PAUSING",
+        "CANCELING",
+        "WAITING"
+      ],
+      "PREPARING": [
+        "RUNNING",
+        "WAITING",
+        "PAUSING",
+        "RECONCILING",
+        "CANCELING",
+        "FAILED"
+      ],
+      "RUNNING": [
+        "WAITING",
+        "PAUSING",
+        "RECONCILING",
+        "CANCELING",
+        "SUCCEEDED",
+        "FAILED"
+      ],
+      "WAITING": [
+        "PREPARING",
+        "RUNNING",
+        "PAUSING",
+        "RECONCILING",
+        "CANCELING",
+        "FAILED"
+      ],
+      "PAUSING": [
+        "PAUSED",
+        "RECONCILING",
+        "CANCELING"
+      ],
+      "PAUSED": [
+        "RECONCILING",
+        "CANCELING"
+      ],
+      "RECONCILING": [
+        "PREPARING",
+        "RUNNING",
+        "WAITING",
+        "PAUSING",
+        "PAUSED",
+        "CANCELING",
+        "SUCCEEDED",
+        "FAILED"
+      ],
+      "CANCELING": [
+        "CANCELED",
+        "RECONCILING"
+      ],
+      "SUCCEEDED": [],
+      "FAILED": [],
+      "CANCELED": []
+    },
+    "Assignment": {
+      "PENDING": [
+        "READY",
+        "CANCELED"
+      ],
+      "READY": [
+        "RUNNING",
+        "WAITING",
+        "CANCELED"
+      ],
+      "RUNNING": [
+        "WAITING",
+        "VERIFYING",
+        "FAILED",
+        "CANCELED"
+      ],
+      "WAITING": [
+        "RUNNING",
+        "VERIFYING",
+        "FAILED",
+        "CANCELED"
+      ],
+      "VERIFYING": [
+        "SUCCEEDED",
+        "FAILED",
+        "WAITING"
+      ],
+      "SUCCEEDED": [],
+      "FAILED": [],
+      "CANCELED": []
+    },
+    "Session": {
+      "CREATING": [
+        "IDLE",
+        "BUSY",
+        "DISCONNECTED",
+        "LOST"
+      ],
+      "IDLE": [
+        "BUSY",
+        "DISCONNECTED",
+        "CLOSED"
+      ],
+      "BUSY": [
+        "IDLE",
+        "INTERRUPTING",
+        "DISCONNECTED"
+      ],
+      "INTERRUPTING": [
+        "IDLE",
+        "DISCONNECTED"
+      ],
+      "DISCONNECTED": [
+        "IDLE",
+        "BUSY",
+        "LOST"
+      ],
+      "LOST": [],
+      "CLOSED": []
+    },
+    "Action": {
+      "PLANNED": [
+        "WAITING_APPROVAL",
+        "ADMITTED",
+        "DENIED",
+        "CANCELED"
+      ],
+      "WAITING_APPROVAL": [
+        "ADMITTED",
+        "DENIED",
+        "CANCELED"
+      ],
+      "ADMITTED": [
+        "EXECUTING",
+        "DENIED",
+        "CANCELED",
+        "UNKNOWN_REMOTE"
+      ],
+      "EXECUTING": [
+        "VERIFYING",
+        "FAILED",
+        "UNKNOWN_REMOTE"
+      ],
+      "VERIFYING": [
+        "SUCCEEDED",
+        "FAILED",
+        "UNKNOWN_REMOTE"
+      ],
+      "UNKNOWN_REMOTE": [
+        "EXECUTING",
+        "VERIFYING",
+        "FAILED",
+        "CANCELED"
+      ],
+      "SUCCEEDED": [],
+      "FAILED": [],
+      "DENIED": [],
+      "CANCELED": []
+    }
+  }
+}

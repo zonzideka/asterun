@@ -1,0 +1,416 @@
+{
+  "schema_version": "asterun-public-source/v1",
+  "runtime_source_revision": "37bc7051590f97a42c623b73184383777c10878c",
+  "runtime_files": [
+    {
+      "path": "packages/asterun-plugin-antigravity/src/asterun_plugin_antigravity/__init__.py",
+      "sha256": "d3b2390cf1a942209a069fb40e8e3f3651950a37a48f5fb82879e5b414993eb3"
+    },
+    {
+      "path": "packages/asterun-plugin-antigravity/src/asterun_plugin_antigravity/_vendor/__init__.py",
+      "sha256": "184ca299c286ee1237dd0b765d20c8d61b67f553b7a0d3c162066b34a8f70f61"
+    },
+    {
+      "path": "packages/asterun-plugin-antigravity/src/asterun_plugin_antigravity/_vendor/command.py",
+      "sha256": "a0d06c12fff6c9412cdb990df3f19aa86acfaab9f08627c757ddec9fb3173d76"
+    },
+    {
+      "path": "packages/asterun-plugin-antigravity/src/asterun_plugin_antigravity/_vendor/compat.py",
+      "sha256": "fe6bfe2a4fb1895f64f37007afe25a1b84efd2b0241720bd9a3f8196991c7f20"
+    },
+    {
+      "path": "packages/asterun-plugin-antigravity/src/asterun_plugin_antigravity/_vendor/profile.py",
+      "sha256": "0ea19934ae9720f799605a12bea6fc189c793b8da79d48cac3917591d741e031"
+    },
+    {
+      "path": "packages/asterun-plugin-antigravity/src/asterun_plugin_antigravity/_vendor/runtime.py",
+      "sha256": "7659dc393967438a4b4a07eaee2c43d2dd50d359dfd1c896e82831049c65155c"
+    },
+    {
+      "path": "packages/asterun-plugin-antigravity/src/asterun_plugin_antigravity/manifest.json",
+      "sha256": "32c8c1edd0383085bc9279c4b82cd1aede546bd9031cfefd75855db9c6fa9e1b"
+    },
+    {
+      "path": "packages/asterun-plugin-antigravity/src/asterun_plugin_antigravity/vendor-source.json",
+      "sha256": "01e258ce8451cbe78b1a1a39367f4e32a666055e9477980ce367ed71b08eae06"
+    },
+    {
+      "path": "packages/asterun-plugin-antigravity/src/asterun_plugin_antigravity/worker.py",
+      "sha256": "a150ada6596a6115fb51b6242ed0f5b4b3972d57bbc12007efefd8030c84f8d4"
+    },
+    {
+      "path": "packages/asterun-plugin-cursor/src/asterun_plugin_cursor/__init__.py",
+      "sha256": "53b81f0c56835f4f962e1ca0d9902da97054cf7bea7d1a45fa37f65e2663257e"
+    },
+    {
+      "path": "packages/asterun-plugin-cursor/src/asterun_plugin_cursor/manifest.json",
+      "sha256": "c1e4e71eaa09b7114e0eefd8bd10ca8abdb54daa5118f4eefd62535c40ac76dd"
+    },
+    {
+      "path": "packages/asterun-plugin-cursor/src/asterun_plugin_cursor/runtime.py",
+      "sha256": "d3ffcffced796a55394e6964efcfe0b5149ccfd915d1cfccdcdc74b5747a6648"
+    },
+    {
+      "path": "packages/asterun-plugin-cursor/src/asterun_plugin_cursor/upstream-lock.json",
+      "sha256": "dfca880cfcf2a1ea6a3345141703c4c910fa7cafc1d321d651575d6ebbf33f81"
+    },
+    {
+      "path": "packages/asterun-plugin-cursor/src/asterun_plugin_cursor/worker.py",
+      "sha256": "893a7482b3b1bedc681570a67f02896652a9f4e2a8ea6117a39301c803ca7ff7"
+    },
+    {
+      "path": "packages/asterun-plugin-jules/src/asterun_plugin_jules/__init__.py",
+      "sha256": "1261653936f3bdea84a0eae22f804604b003c08a038bc61cc6b13403d19bdd50"
+    },
+    {
+      "path": "packages/asterun-plugin-jules/src/asterun_plugin_jules/manifest.json",
+      "sha256": "bdfb3a940861f343e687f0e84840ef388e62bb67838c33c32ea30ee3078c88f7"
+    },
+    {
+      "path": "packages/asterun-plugin-jules/src/asterun_plugin_jules/runtime.py",
+      "sha256": "705d7a44823a80521224fad8b3f9cbd0e50aa2634ee1ad1da4be2d677b03cf36"
+    },
+    {
+      "path": "packages/asterun-plugin-jules/src/asterun_plugin_jules/upstream-lock.json",
+      "sha256": "06b352c25eefd7bb30211a382e860d1589d909d674c0c3f17964f4d7fc7882d7"
+    },
+    {
+      "path": "packages/asterun-plugin-jules/src/asterun_plugin_jules/worker.py",
+      "sha256": "431858e4c7766787ec3ab819359297191565ac14ad180405506ef99e96fe0e66"
+    },
+    {
+      "path": "src/asterun/__init__.py",
+      "sha256": "4d0dd7acfb77ac5cbc9b56a6320ec72663ca79085e2775f4328371dc95b4c357"
+    },
+    {
+      "path": "src/asterun/__main__.py",
+      "sha256": "8c17e9ef294876d0e36de41d8b33599ca5a45ec8c35ff83441b5b8a02c072ddf"
+    },
+    {
+      "path": "src/asterun/antigravity_profile.py",
+      "sha256": "870267f2d11342b147d53264f895391a093c5b2a1ce189d208304257905610c9"
+    },
+    {
+      "path": "src/asterun/application.py",
+      "sha256": "eebb2ff424a95af856910924b5638e987c6e7aa8c8252430bc7850842e378c93"
+    },
+    {
+      "path": "src/asterun/approval_digest.py",
+      "sha256": "8fc70965dc688be71feaa868c901ea40611e0ee42919fe0be45c725a8ccdc0c7"
+    },
+    {
+      "path": "src/asterun/approval_policy.py",
+      "sha256": "3bd30e0848f95ff3c56f5f4be55b3297d246355ce663badae4083153ffc9cfa1"
+    },
+    {
+      "path": "src/asterun/backends/__init__.py",
+      "sha256": "e00477ee7d8ecac2db7d19adb874320897d243b94e5355f0017c87a8598ce40d"
+    },
+    {
+      "path": "src/asterun/backends/antigravity.py",
+      "sha256": "c06ecc074052620466dc7cfe1c8ea794d9d9506e577016ea4419891bfc6b4ca4"
+    },
+    {
+      "path": "src/asterun/backends/antigravity_runtime.py",
+      "sha256": "b8f496643b6b336feffcbda8d7610e9a530674067b4a05ae2c3c07908514988d"
+    },
+    {
+      "path": "src/asterun/backends/base.py",
+      "sha256": "5435783c644fb40a69cf8eced6d09c4a97b70124dacdbe38546a83af320cba68"
+    },
+    {
+      "path": "src/asterun/backends/claude.py",
+      "sha256": "27ef9f92cda4607b21d7f9b107d281d4aaf5b0ab1871ba3254e1e347a4919393"
+    },
+    {
+      "path": "src/asterun/backends/codex.py",
+      "sha256": "84aeaa8d5e761e86fd0fede68cec5aa35bed54dc4176997b2753a3a9771a2f18"
+    },
+    {
+      "path": "src/asterun/backends/codex_desktop.py",
+      "sha256": "121f9327460c0ba68e41256a8121c66d2e35e85aec4cd1a87745aa09dba02e4d"
+    },
+    {
+      "path": "src/asterun/backends/codex_output.py",
+      "sha256": "ba27b3e65a2cdb753c8af7d30ec6467814449ee6dd5c054e62f8aab0640b0020"
+    },
+    {
+      "path": "src/asterun/backends/codex_projects.py",
+      "sha256": "53e62b28424ef3d338fb6909d410cecd156887801f854116bd73535c52c99e9c"
+    },
+    {
+      "path": "src/asterun/backends/codex_protocol.py",
+      "sha256": "fb54c73bca0c2b39048358f999c0944bdfc856aa41ad516013209981888e5878"
+    },
+    {
+      "path": "src/asterun/backends/codex_runtime.py",
+      "sha256": "72052cb03ed031e010d3462bc4b815ed446d1ffffbc2327f425978d7bcfadeb0"
+    },
+    {
+      "path": "src/asterun/backends/fake.py",
+      "sha256": "f7e85794fec0cdb52f131ec6ca804e910cdef189be0a9e9d2c06a64ac350d854"
+    },
+    {
+      "path": "src/asterun/backends/grok.py",
+      "sha256": "dbbb2988d3f1aa3bed2a8ee607a0cb430a0ad8c4aa3022e99192c5e485c51393"
+    },
+    {
+      "path": "src/asterun/backends/grok_code.py",
+      "sha256": "882d614ea8c5d13e46e7cd28b57b1c355bee4b695598c2a30cde543ae3e0bbce"
+    },
+    {
+      "path": "src/asterun/backup.py",
+      "sha256": "7594997ecbac888749b65a1471629baf550c1627f1586d431bb3de3dd455d5fa"
+    },
+    {
+      "path": "src/asterun/binding.py",
+      "sha256": "1879597e67a263cebbd3ba42c8af1a71ac0f141a0469f840a8ea1acb2b1c3d89"
+    },
+    {
+      "path": "src/asterun/capabilities/__init__.py",
+      "sha256": "6ce35fa025a9ec65c56862e18c1d3f5d242f3432f75797c70b0e47bc36f7adcc"
+    },
+    {
+      "path": "src/asterun/capabilities/service.py",
+      "sha256": "39f0fd9cc19b6378ec6940caf110eebb2f860e97b9448d72c07fc0c800e6f039"
+    },
+    {
+      "path": "src/asterun/cli.py",
+      "sha256": "cad67f0ea5fb6154f665f79a39373046d7e1698291084a478621dbd5cf304e41"
+    },
+    {
+      "path": "src/asterun/cli_input.py",
+      "sha256": "29cdd7b68dec902436405a247481408adeec1c99d562708ebaf63e3d1e64e378"
+    },
+    {
+      "path": "src/asterun/codex_discovery.py",
+      "sha256": "5e9f9d208bab2bfec0ecf8007c9569855884cbd9bf4025b9f3701b89d95ebf1d"
+    },
+    {
+      "path": "src/asterun/config.py",
+      "sha256": "cd3849068ac363b0d3ff6642ceaddad63fc68de17c4b7381792e48519a75cd7b"
+    },
+    {
+      "path": "src/asterun/config_migration.py",
+      "sha256": "ea12a9347fd3f2894983e3e61909e058c0dbd411e50c70bcfb1a2cb913e2f536"
+    },
+    {
+      "path": "src/asterun/config_v2.py",
+      "sha256": "f499ab065a44d23b745dfb59c6be529b931dbf4f491031577f61bb33596b6be6"
+    },
+    {
+      "path": "src/asterun/connections/__init__.py",
+      "sha256": "e83b2a5c7a93e627755c76d184b7411cabf845d4b79d223c9df38d1792ff5fb1"
+    },
+    {
+      "path": "src/asterun/connections/admission.py",
+      "sha256": "78a1248edfd0701dbffa0952534effbd409a602e0e37487046d4793837f46d27"
+    },
+    {
+      "path": "src/asterun/connections/credentials.py",
+      "sha256": "981b8b0ddba095406ee8dbd8e8baa255bf8e81a34f949e6f59d0d42aa5a6c243"
+    },
+    {
+      "path": "src/asterun/connections/models.py",
+      "sha256": "a9123bc10e3cf88acd9d26ef71a40458236576bdedad127d4e2f82c89dee5b03"
+    },
+    {
+      "path": "src/asterun/contracts.py",
+      "sha256": "cf2795e2e01eb6f507254118a1a7a98c694514d0b2f4eb897bbf1386672bb95f"
+    },
+    {
+      "path": "src/asterun/control.py",
+      "sha256": "4424e6db8c6f25f9f752a5e0f469c562630f42dbad6b3f69bc4360ae1c799b5d"
+    },
+    {
+      "path": "src/asterun/control_protocol.py",
+      "sha256": "480f0a8e55a7b8f3ba13ea87d6d9e48125fdeec92351f2c3f0cbf857dce45150"
+    },
+    {
+      "path": "src/asterun/control_store.py",
+      "sha256": "c1ec298edb8afb7f2978b9c1fb553dab57b474651e4a417a458ad8bd78e4202e"
+    },
+    {
+      "path": "src/asterun/diagnose.py",
+      "sha256": "3b77fed07ca0e01a631519ed0148b8e275da0fceed465d7ed14e2cac4350ebb2"
+    },
+    {
+      "path": "src/asterun/errors.py",
+      "sha256": "8e551d72c819d31a0e8b2f25894310f3f635ee596a7426b56c527bdaae38d7e3"
+    },
+    {
+      "path": "src/asterun/executor.py",
+      "sha256": "6fbf11704c985395adcdc15e986845d29b308166aa85980bcfadd6c0918e86b1"
+    },
+    {
+      "path": "src/asterun/grok_profile.py",
+      "sha256": "d63675865780984611fbc204514593bf9a3b46b0f49bd8bd8d1aa74b34b0055b"
+    },
+    {
+      "path": "src/asterun/home.py",
+      "sha256": "4621ab202a809d0727dfae1820d777caaad8d6f9fc8827a94446af7265315ecf"
+    },
+    {
+      "path": "src/asterun/ids.py",
+      "sha256": "61dc332b88a5da008888269bd506c165e50c5f626d8da144bbf393778665817e"
+    },
+    {
+      "path": "src/asterun/instance.py",
+      "sha256": "11f6ccb2dd9b9d776c9178d017a0f104d9b2e8fd4117c939f22fbfe2d0a3c893"
+    },
+    {
+      "path": "src/asterun/mcp_server.py",
+      "sha256": "348ac3298562b8494720b8de8b234239ae0a88c518b428e9a3fa12341ecac4bd"
+    },
+    {
+      "path": "src/asterun/observe.py",
+      "sha256": "884fd9ee7242f3f26bd566ebc6ee36de3d5a2b3070fcc8b6fb8ac495b26f8607"
+    },
+    {
+      "path": "src/asterun/operations_cli.py",
+      "sha256": "e4dc01fa6be51696def617c7effebe49f23ec35ee8014eeb882c55172fd56c07"
+    },
+    {
+      "path": "src/asterun/paths.py",
+      "sha256": "694ba8f560b12e48dfd7923ad4d38d212a3c1e163849ff10c77815d0aeb80588"
+    },
+    {
+      "path": "src/asterun/plugin_api/__init__.py",
+      "sha256": "57bc68acf40af03d195a3844875efff0a9bf2b8a2d724251333fb7d81b4b3ed4"
+    },
+    {
+      "path": "src/asterun/plugin_api/manifest.py",
+      "sha256": "0d9aa3a38a6cb440106834013ffbc9f52617d250fa67a187c62ad4108db91921"
+    },
+    {
+      "path": "src/asterun/plugin_api/protocol.py",
+      "sha256": "4cd7c8611350f79c8aabfd26ec1145ed25cba14bde82b2070cf90417545bf7c1"
+    },
+    {
+      "path": "src/asterun/plugin_store.py",
+      "sha256": "82d34471d92dc426054b71df010ea112584635285bf3467cdf24bd1edafa8841"
+    },
+    {
+      "path": "src/asterun/plugins/__init__.py",
+      "sha256": "e2a03ec4c5a147deea3022614ad63fa053f9e601183f56ef255a83215ebb4b24"
+    },
+    {
+      "path": "src/asterun/plugins/builtin_capabilities.py",
+      "sha256": "726a531d6ff21e3a8aff510a9bb97c7240b248186fed6155a0c45e5d7396c3e8"
+    },
+    {
+      "path": "src/asterun/plugins/builtins.py",
+      "sha256": "c01b7ff0c0a77d65b394ce4cb1db5c9c28cd5b7f85524724fdb0697929250071"
+    },
+    {
+      "path": "src/asterun/plugins/core_integration.py",
+      "sha256": "2c9662d189033f9ca4ed127b794c5f57e0482f13bc512ed99ef0df7d6391646e"
+    },
+    {
+      "path": "src/asterun/plugins/management.py",
+      "sha256": "7a9e1bb87c19604dfbd54fc0e32d57e479bb9311993d1fe782d60e34ca790291"
+    },
+    {
+      "path": "src/asterun/plugins/registry.py",
+      "sha256": "707161da0dcccc9f45f5566a7cedbaa2a31a6563467d203ce6d735d00c442e7c"
+    },
+    {
+      "path": "src/asterun/plugins/worker.py",
+      "sha256": "c2498d1d9e4b4d01c38f2d0c8ac24b95d212bc1f4d980e0a68c31a73176c2f89"
+    },
+    {
+      "path": "src/asterun/plugins/worker_backend.py",
+      "sha256": "e7748b4c8e5b95ee7c2a952165b561988ffef93f048153aa8d7b348ffee1d8b1"
+    },
+    {
+      "path": "src/asterun/policy.py",
+      "sha256": "87d61977235a6c982e40e2c9e42d27a1b0b98f802c623faf87d8a8b59938d318"
+    },
+    {
+      "path": "src/asterun/quality.py",
+      "sha256": "66ae394b005d1142e2e614778c8416492cf5cd81fdbf103564374a6cacb7dcdb"
+    },
+    {
+      "path": "src/asterun/quality_runtime.py",
+      "sha256": "f113ceef5e5df21325effa54579d7e850f963d33e896216c107aeb2e1b15d4cf"
+    },
+    {
+      "path": "src/asterun/read_scope.py",
+      "sha256": "f244d630a9a2ef84c283c0fc0da42327fe88caa5294eb8115311dd87e94f5047"
+    },
+    {
+      "path": "src/asterun/redact.py",
+      "sha256": "bc1e6793fb4527c183dd265e8f6a7674a9fbb78e3a4369ae6d28589910401399"
+    },
+    {
+      "path": "src/asterun/requests.py",
+      "sha256": "d7b0de8308ed9d9c853b2044855e8f235ae4b9841f3f7543bd527c40e3020732"
+    },
+    {
+      "path": "src/asterun/review_consumer.py",
+      "sha256": "1398b30c61d45d0fd1b69ec131815bcf158d2b816a03ac1081439e79e28aec82"
+    },
+    {
+      "path": "src/asterun/review_follow.py",
+      "sha256": "41c35cf6b487652f0b5d6a510d9a5032e26d47c14b2b57cdd3ea4d0c11116b1b"
+    },
+    {
+      "path": "src/asterun/review_recipe.py",
+      "sha256": "fe268803220acbb97557d50a3fe13b72913146ffa456f2bc44df1662a7d5c567"
+    },
+    {
+      "path": "src/asterun/review_workspace.py",
+      "sha256": "49eba17f075af24f7a0332123ea3845732af7a65515dc9bcbce8d896e1103101"
+    },
+    {
+      "path": "src/asterun/scheduler.py",
+      "sha256": "e0c2e9bc1e8e5f85d7d471aef29aee9ee6d1a22716a0dc52a2eaf381802ca1b5"
+    },
+    {
+      "path": "src/asterun/schemas/asterun-capability-v1.schema.json",
+      "sha256": "c7c28e7df34d92c58800e3729775384d78e80e26b4500f4a886b346a2a897069"
+    },
+    {
+      "path": "src/asterun/schemas/runner-control-v1.schema.json",
+      "sha256": "462f0956ca7f7997cc472ffb73e619111c66f25318cb383b677213880f23fe76"
+    },
+    {
+      "path": "src/asterun/schemas/state-machines.json",
+      "sha256": "99ceb7f0b8a30160d06085d0c2b645e618506a393941a7ebf78ff5c3bfa5ebb6"
+    },
+    {
+      "path": "src/asterun/service.py",
+      "sha256": "3208a7b8ecd836906ae953740f7c1dd0f4b51d55e7b02f86ff4932d2fe79bcc5"
+    },
+    {
+      "path": "src/asterun/service_management.py",
+      "sha256": "ac28a22813361e70a466a8258a0f8dc5dd69c0068b45c0d2da0ff3376bc18b28"
+    },
+    {
+      "path": "src/asterun/sqlite_store.py",
+      "sha256": "87906beb7767a11ac46a6c6156b89b2d8a6510a71f6d300a39f892c9246d0536"
+    },
+    {
+      "path": "src/asterun/store.py",
+      "sha256": "0430e6f69bdffef91f2e06eb02efddc4f819c5114832d31872f24c686232ce65"
+    },
+    {
+      "path": "src/asterun/transport.py",
+      "sha256": "073abf55ff68a04fe7ad6fcc44bb99ed43447bc0b6ad2f6a170746c55f092d58"
+    },
+    {
+      "path": "src/asterun/usage/__init__.py",
+      "sha256": "55c5cae9774f518f00a5ea8529d45ba43ccb4c3fe20ce9bd0c422582c3a53f28"
+    },
+    {
+      "path": "src/asterun/usage/models.py",
+      "sha256": "736e8aa20636c4274f81a2ab5eb2779540daa6d2a8b38ed1fb5ac905faff83fc"
+    },
+    {
+      "path": "src/asterun/workflows.py",
+      "sha256": "dd9517fb295d8794b0561cc886a23cf0207328b7a8aabb795ca09450c8e34b71"
+    }
+  ],
+  "verification_scope": "Runtime content hashes; historical Git objects are not required.",
+  "source_snapshot_revision": "c19535ef546d332e407437535c8c7723647f1b0a"
+}

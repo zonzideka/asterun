@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "asterun-plugin-jules"
+version = "1.0.0"
+description = "Asterun optional Jules remote session worker"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+dependencies = []
+
+[project.scripts]
+asterun-jules-plugin = "asterun_plugin_jules.worker:main"
+
+[tool.setuptools]
+license-files = ["LICENSE"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+asterun_plugin_jules = ["manifest.json", "upstream-lock.json"]

@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "asterun-plugin-cursor"
+version = "1.0.0"
+description = "Asterun optional Cursor SDK local Agent worker"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+dependencies = ["cursor-sdk==1.0.31", "httpx==0.28.1"]
+
+[project.scripts]
+asterun-cursor-plugin = "asterun_plugin_cursor.worker:main"
+
+[tool.setuptools]
+license-files = ["LICENSE"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+asterun_plugin_cursor = ["manifest.json", "upstream-lock.json"]

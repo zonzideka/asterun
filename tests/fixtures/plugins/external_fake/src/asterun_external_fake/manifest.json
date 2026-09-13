@@ -1,0 +1,122 @@
+{
+  "schema_version": "asterun-plugin/v1",
+  "plugin_id": "example.external-fake",
+  "plugin_version": "1.0.0",
+  "plugin_api_major": 1,
+  "distribution": "asterun-external-fake",
+  "entry_point": "asterun_external_fake.worker:main",
+  "roles": [
+    "agent",
+    "capability"
+  ],
+  "capabilities": [
+    {
+      "name": "agent.execute",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "secret": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "support": "offline_verified",
+      "effect_class": "non_idempotent_write",
+      "permission_requirements": [
+        "workspace.read"
+      ]
+    },
+    {
+      "name": "local.echo",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "secret": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "support": "offline_verified",
+      "effect_class": "non_idempotent_write",
+      "permission_requirements": [
+        "workspace.read"
+      ]
+    }
+  ],
+  "auth_modes": [
+    "none"
+  ],
+  "billing_modes": [
+    "local"
+  ],
+  "permissions": {
+    "filesystem": [
+      "approved_workspace"
+    ],
+    "network": [],
+    "process": [],
+    "credential_classes": []
+  },
+  "platforms": [
+    {
+      "os": "linux",
+      "architectures": [
+        "x86_64",
+        "aarch64"
+      ],
+      "verification": "not_tested"
+    },
+    {
+      "os": "macos",
+      "architectures": [
+        "arm64",
+        "x86_64"
+      ],
+      "verification": "not_tested"
+    }
+  ],
+  "docs": {},
+  "extensions": {
+    "example.fixture": {
+      "offline_only": true
+    }
+  }
+}

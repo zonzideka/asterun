@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "asterun-external-fake"
+version = "1.0.0"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.entry-points."asterun.providers.v1"]
+external-fake = "asterun_external_fake.worker:main"
+
+[tool.setuptools.package-data]
+asterun_external_fake = ["manifest.json"]

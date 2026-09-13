@@ -1,0 +1,11 @@
+# Asterun status
+
+[中文](STATUS.md) | [English](STATUS.en.md)
+
+The current version is `0.1.0a13`, licensed under Apache-2.0. The first release's feature scope is frozen. Maintenance focuses on defects, compatibility, live acceptance, and release materials. Start with the [README](README.en.md), [user manual](docs/en/user-manual.md), and [release notes](docs/en/release-v0.1.md).
+
+The core provides CLI/MCP access, resident execution, task and native session references, permissions and approvals, idempotency, cancellation and reconciliation, scheduling, backup and restore, and optional code-quality workflows. Configuration v1/v2, SQLite schema 6, runner-control/v1, and the capability profile retain compatibility. Each Agent exposes its configured capabilities; callers organize their own task flows.
+
+The initial public source snapshot is based on `c19535e`. Its 102 runtime files match `37bc705`, and all 102 test files are retained. The full offline suite on Python 3.11.16 completed with 2002 passed and 4 skipped, using temporary state and offline backend fixtures. The core and three plugins produced 4 packages and 8 wheel/sdist archives, with 34 packaging checks passed. All 4 sdists were rebuilt and all 4 wheels installed offline. The release notes describe existing live validation; see [source provenance](docs/en/source-provenance.md) for content digests and verification.
+
+Before development, check the current commit, worktree, and related tasks. The default offline entry point is `scripts/verify-offline.sh`. See [design](docs/en/design.md), the [development plan](docs/en/development-plan.md), and the [protocol implementation](docs/en/protocol/IMPLEMENTATION.md).

@@ -1,0 +1,195 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:asterun:capability:v1",
+  "title": "asterun-capability/v1",
+  "$defs": {
+    "prepare": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": "string",
+          "const": "asterun-capability/v1"
+        },
+        "namespace_id": {
+          "type": "string",
+          "enum": [
+            "ns_local"
+          ]
+        },
+        "workspace": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "backend": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "capability": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "input": {
+          "type": "object"
+        },
+        "workflow_id": {
+          "type": "string",
+          "enum": [
+            "wf_capability_call",
+            "wf_code_change"
+          ]
+        },
+        "quality": {
+          "type": "object",
+          "properties": {
+            "target_paths": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "minItems": 1,
+              "maxItems": 50,
+              "uniqueItems": true
+            },
+            "checks": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "file_exists",
+                      "file_contains",
+                      "contains",
+                      "run_succeeded"
+                    ]
+                  },
+                  "path": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  "text": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind"
+                ],
+                "additionalProperties": false
+              },
+              "minItems": 1,
+              "maxItems": 50
+            },
+            "max_repairs": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10
+            }
+          },
+          "required": [
+            "target_paths",
+            "checks",
+            "max_repairs"
+          ],
+          "additionalProperties": false
+        },
+        "idempotency_key": {
+          "type": "string",
+          "minLength": 16,
+          "maxLength": 128
+        }
+      },
+      "required": [
+        "schema_version",
+        "namespace_id",
+        "workspace",
+        "backend",
+        "capability",
+        "input",
+        "workflow_id",
+        "idempotency_key"
+      ],
+      "additionalProperties": false
+    },
+    "submit": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": "string",
+          "const": "asterun-capability/v1"
+        },
+        "namespace_id": {
+          "type": "string",
+          "enum": [
+            "ns_local"
+          ]
+        },
+        "plan_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "plan_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "idempotency_key": {
+          "type": "string",
+          "minLength": 16,
+          "maxLength": 128
+        }
+      },
+      "required": [
+        "schema_version",
+        "namespace_id",
+        "plan_id",
+        "plan_sha256",
+        "idempotency_key"
+      ],
+      "additionalProperties": false
+    },
+    "get": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": "string",
+          "const": "asterun-capability/v1"
+        },
+        "namespace_id": {
+          "type": "string",
+          "enum": [
+            "ns_local"
+          ]
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      },
+      "required": [
+        "schema_version",
+        "namespace_id",
+        "run_id"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/prepare"
+    },
+    {
+      "$ref": "#/$defs/submit"
+    },
+    {
+      "$ref": "#/$defs/get"
+    }
+  ]
+}

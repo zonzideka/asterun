@@ -1,0 +1,297 @@
+{
+  "schema_version": "asterun-plugin/v1",
+  "plugin_id": "google.jules",
+  "plugin_version": "1.0.0",
+  "plugin_api_major": 1,
+  "distribution": "asterun-plugin-jules",
+  "entry_point": "asterun_plugin_jules.worker:main",
+  "roles": [
+    "agent"
+  ],
+  "capabilities": [
+    {
+      "name": "agent.execute",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 65536
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "plan": {
+            "type": "object"
+          },
+          "plan_sha256": {
+            "type": "string"
+          },
+          "source_evidence": {
+            "type": "object"
+          },
+          "retry_after_seconds": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "support": "offline_verified",
+      "effect_class": "non_idempotent_write",
+      "permission_requirements": [
+        "task.submit"
+      ]
+    },
+    {
+      "name": "remote.plan.inspect",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string",
+            "pattern": "^sessions/[A-Za-z0-9_-]{1,180}$"
+          }
+        },
+        "required": [
+          "session"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "plan": {
+            "type": "object"
+          },
+          "plan_sha256": {
+            "type": "string"
+          },
+          "source_evidence": {
+            "type": "object"
+          },
+          "retry_after_seconds": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "support": "offline_verified",
+      "effect_class": "read_only",
+      "permission_requirements": [
+        "task.submit"
+      ]
+    },
+    {
+      "name": "remote.plan.approve",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string",
+            "pattern": "^sessions/[A-Za-z0-9_-]{1,180}$"
+          },
+          "plan_sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        },
+        "required": [
+          "session",
+          "plan_sha256"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "plan": {
+            "type": "object"
+          },
+          "plan_sha256": {
+            "type": "string"
+          },
+          "source_evidence": {
+            "type": "object"
+          },
+          "retry_after_seconds": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "support": "offline_verified",
+      "effect_class": "non_idempotent_write",
+      "permission_requirements": [
+        "task.submit"
+      ]
+    },
+    {
+      "name": "remote.message.send",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string",
+            "pattern": "^sessions/[A-Za-z0-9_-]{1,180}$"
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32000
+          }
+        },
+        "required": [
+          "session",
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "plan": {
+            "type": "object"
+          },
+          "plan_sha256": {
+            "type": "string"
+          },
+          "source_evidence": {
+            "type": "object"
+          },
+          "retry_after_seconds": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "support": "offline_verified",
+      "effect_class": "non_idempotent_write",
+      "permission_requirements": [
+        "task.submit"
+      ]
+    }
+  ],
+  "auth_modes": [
+    "user_api_key"
+  ],
+  "billing_modes": [
+    "subscription"
+  ],
+  "permissions": {
+    "filesystem": [
+      "explicit_private_plugin_state"
+    ],
+    "network": [
+      "jules.googleapis.com"
+    ],
+    "process": [],
+    "credential_classes": [
+      "user_api_key"
+    ]
+  },
+  "platforms": [
+    {
+      "os": "macos",
+      "architectures": [
+        "arm64",
+        "x86_64"
+      ],
+      "verification": "not_tested"
+    },
+    {
+      "os": "linux",
+      "architectures": [
+        "x86_64",
+        "aarch64"
+      ],
+      "verification": "not_tested"
+    }
+  ],
+  "docs": {
+    "readme": "README.md"
+  },
+  "extensions": {
+    "asterun.credentials": {
+      "credential_class": "user_api_key",
+      "env_var": "JULES_API_KEY"
+    },
+    "asterun.jules": {
+      "api_version": "v1alpha",
+      "cancel": "unsupported",
+      "delete": "unsupported",
+      "quota": "unsupported",
+      "authentication": "not_verified",
+      "billing": "not_verified",
+      "conditional_plan_approval": "unsupported",
+      "input_revision": "mutable_branch",
+      "isolation": "provider_managed_not_local_workspace"
+    }
+  }
+}

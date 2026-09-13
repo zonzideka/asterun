@@ -1,0 +1,60 @@
+{
+  "source_commit": "f66fae9557ec7bdfe2b3e653b014a8908a0b1e26",
+  "files": [
+    {
+      "source": "src/asterun/antigravity_profile.py",
+      "target": "_vendor/profile.py",
+      "source_sha256": "870267f2d11342b147d53264f895391a093c5b2a1ce189d208304257905610c9",
+      "vendored_sha256": "0ea19934ae9720f799605a12bea6fc189c793b8da79d48cac3917591d741e031",
+      "replacements": [
+        [
+          "from .errors import AsterunError, INVALID_CONFIG",
+          "from .compat import AsterunError, INVALID_CONFIG"
+        ],
+        [
+          "asterun-antigravity",
+          "asterun-antigravity-plugin"
+        ]
+      ],
+      "extract": null
+    },
+    {
+      "source": "src/asterun/backends/antigravity_runtime.py",
+      "target": "_vendor/runtime.py",
+      "source_sha256": "b8f496643b6b336feffcbda8d7610e9a530674067b4a05ae2c3c07908514988d",
+      "vendored_sha256": "7659dc393967438a4b4a07eaee2c43d2dd50d359dfd1c896e82831049c65155c",
+      "replacements": [
+        [
+          "from asterun.errors import BACKEND_UNAVAILABLE, REMOTE_STATE_UNKNOWN\nfrom asterun.ids import RunId",
+          "from .compat import BACKEND_UNAVAILABLE, REMOTE_STATE_UNKNOWN, RunId"
+        ],
+        [
+          "os.killpg(proc.pid, sig)",
+          "proc.send_signal(sig)"
+        ],
+        [
+          "start_new_session=True",
+          "start_new_session=False"
+        ],
+        [
+          "# Always address the group: a child may still own stdout after agy exits.",
+          "# The host owns the worker group; final host cleanup covers remaining descendants."
+        ]
+      ],
+      "extract": null
+    },
+    {
+      "source": "src/asterun/backends/antigravity.py",
+      "target": "_vendor/command.py",
+      "source_sha256": "c06ecc074052620466dc7cfe1c8ea794d9d9506e577016ea4419891bfc6b4ca4",
+      "vendored_sha256": "a0d06c12fff6c9412cdb990df3f19aa86acfaab9f08627c757ddec9fb3173d76",
+      "replacements": [],
+      "extract": "build_command",
+      "prefix": "from pathlib import Path\nfrom .compat import AsterunError, INVALID_CONFIG\n\n"
+    }
+  ],
+  "notes": [
+    "仅机械修改导入、独立 profile 命令名与 worker 所有的进程组；原始 a8 文件不修改。",
+    "CLI 留在 worker 进程组；本地 child 信号只用 PID，host 最终负责组内剩余子孙。远端是否终止仍未知。"
+  ]
+}

@@ -1,0 +1,4830 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agent-runner:runner-control:v1:draft1",
+  "title": "runner-control/v1 — draft 2026-09-10.1",
+  "description": "Proposed wire contract, not a deployed API. Entity snapshots are read representations, not general update requests. Runtime invariants are specified in SPEC.zh-CN.md.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/Task"
+    },
+    {
+      "$ref": "#/$defs/Run"
+    },
+    {
+      "$ref": "#/$defs/Assignment"
+    },
+    {
+      "$ref": "#/$defs/Session"
+    },
+    {
+      "$ref": "#/$defs/ExecutionContext"
+    },
+    {
+      "$ref": "#/$defs/Capability"
+    },
+    {
+      "$ref": "#/$defs/Artifact"
+    },
+    {
+      "$ref": "#/$defs/State"
+    },
+    {
+      "$ref": "#/$defs/Event"
+    },
+    {
+      "$ref": "#/$defs/Action"
+    },
+    {
+      "$ref": "#/$defs/Grant"
+    },
+    {
+      "$ref": "#/$defs/Approval"
+    },
+    {
+      "$ref": "#/$defs/Budget"
+    },
+    {
+      "$ref": "#/$defs/Reservation"
+    },
+    {
+      "$ref": "#/$defs/Capsule"
+    },
+    {
+      "$ref": "#/$defs/Evidence"
+    },
+    {
+      "$ref": "#/$defs/BackendDescriptor"
+    },
+    {
+      "$ref": "#/$defs/Operation"
+    },
+    {
+      "$ref": "#/$defs/BotInstance"
+    },
+    {
+      "$ref": "#/$defs/Command"
+    },
+    {
+      "$ref": "#/$defs/CommandResponse"
+    },
+    {
+      "$ref": "#/$defs/DiscoveryResponse"
+    },
+    {
+      "$ref": "#/$defs/ApiError"
+    }
+  ],
+  "$defs": {
+    "Id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]{1,15}_[A-Za-z0-9][A-Za-z0-9_-]{2,95}$"
+    },
+    "Sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "Timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "Z$"
+    },
+    "Revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "JsonValue": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "minItems": 0,
+          "maxItems": 10000
+        },
+        {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          }
+        }
+      ]
+    },
+    "Extensions": {
+      "type": "object",
+      "patternProperties": {
+        "^[a-z][a-z0-9_-]*\\.[a-z0-9_.-]+$": {
+          "$ref": "#/$defs/JsonValue"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ResourceScope": {
+      "type": "object",
+      "properties": {
+        "resource_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "operations": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "minItems": 1,
+          "maxItems": 10000,
+          "uniqueItems": true
+        },
+        "selector": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 1024
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "resource_id",
+        "operations",
+        "selector"
+      ],
+      "additionalProperties": false
+    },
+    "BlockedReason": {
+      "type": "string",
+      "enum": [
+        "APPROVAL_REQUIRED",
+        "INPUT_REQUIRED",
+        "AUTH_REQUIRED",
+        "BUDGET_UNKNOWN",
+        "BUDGET_EXHAUSTED",
+        "BACKEND_UNAVAILABLE",
+        "CAPABILITY_UNSUPPORTED",
+        "EXTERNAL_EXECUTION_UNCONFIRMED",
+        "REVIEWER_UNAVAILABLE",
+        "RESOURCE_CHANGED",
+        "SETUP_REQUIRED",
+        "POLICY_CHANGED",
+        "RECONCILIATION_REQUIRED",
+        "HUMAN_CONTROL"
+      ]
+    },
+    "TaskStatus": {
+      "type": "string",
+      "enum": [
+        "DRAFT",
+        "READY",
+        "ACTIVE",
+        "SUCCEEDED",
+        "FAILED",
+        "CANCELED"
+      ]
+    },
+    "RunStatus": {
+      "type": "string",
+      "enum": [
+        "QUEUED",
+        "PREPARING",
+        "RUNNING",
+        "WAITING",
+        "PAUSING",
+        "PAUSED",
+        "RECONCILING",
+        "CANCELING",
+        "SUCCEEDED",
+        "FAILED",
+        "CANCELED"
+      ]
+    },
+    "AssignmentStatus": {
+      "type": "string",
+      "enum": [
+        "PENDING",
+        "READY",
+        "RUNNING",
+        "WAITING",
+        "VERIFYING",
+        "SUCCEEDED",
+        "FAILED",
+        "CANCELED"
+      ]
+    },
+    "SessionStatus": {
+      "type": "string",
+      "enum": [
+        "CREATING",
+        "IDLE",
+        "BUSY",
+        "INTERRUPTING",
+        "DISCONNECTED",
+        "LOST",
+        "CLOSED"
+      ]
+    },
+    "ActionStatus": {
+      "type": "string",
+      "enum": [
+        "PLANNED",
+        "WAITING_APPROVAL",
+        "ADMITTED",
+        "EXECUTING",
+        "VERIFYING",
+        "UNKNOWN_REMOTE",
+        "SUCCEEDED",
+        "FAILED",
+        "DENIED",
+        "CANCELED"
+      ]
+    },
+    "ControlOwner": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "runner",
+            "external",
+            "human"
+          ]
+        },
+        "principal_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "epoch": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "kind",
+        "principal_id",
+        "epoch"
+      ],
+      "additionalProperties": false
+    },
+    "Lease": {
+      "type": "object",
+      "properties": {
+        "holder_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "expires_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "fencing_token": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "holder_id",
+        "expires_at",
+        "fencing_token"
+      ],
+      "additionalProperties": false
+    },
+    "AcceptanceCriterion": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "validator_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "input_artifact_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "minItems": 0,
+          "maxItems": 10000
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "subject_revision_sha256": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "validator_id",
+        "input_artifact_ids",
+        "required",
+        "subject_revision_sha256"
+      ],
+      "additionalProperties": false
+    },
+    "NativeBinding": {
+      "type": "object",
+      "properties": {
+        "backend_instance_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "provider_session_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "provider_turn_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "native_project_ref": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 2048
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "native_uri": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uri",
+              "maxLength": 2048
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "account_ref": {
+          "$ref": "#/$defs/Id"
+        },
+        "environment_ref": {
+          "$ref": "#/$defs/Id"
+        },
+        "provider_state_ref": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 2048
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "desktop_visibility": {
+          "type": "string",
+          "enum": [
+            "verified",
+            "unverified",
+            "unsupported"
+          ]
+        },
+        "verified_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "backend_instance_id",
+        "provider_session_id",
+        "provider_turn_id",
+        "native_project_ref",
+        "native_uri",
+        "account_ref",
+        "environment_ref",
+        "provider_state_ref",
+        "desktop_visibility",
+        "verified_at"
+      ],
+      "additionalProperties": false
+    },
+    "MeterLimit": {
+      "type": "object",
+      "properties": {
+        "meter": {
+          "type": "string",
+          "enum": [
+            "tokens",
+            "turns",
+            "tool_actions",
+            "wall_ms",
+            "usd_micros"
+          ]
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "enforcement": {
+          "type": "string",
+          "enum": [
+            "hard",
+            "admission_only",
+            "soft_observed"
+          ]
+        },
+        "billing_pool_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "meter",
+        "limit",
+        "enforcement",
+        "billing_pool_ref"
+      ],
+      "additionalProperties": false
+    },
+    "MeterAmount": {
+      "type": "object",
+      "properties": {
+        "meter": {
+          "type": "string",
+          "enum": [
+            "tokens",
+            "turns",
+            "tool_actions",
+            "wall_ms",
+            "usd_micros"
+          ]
+        },
+        "amount": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "billing_pool_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "meter",
+        "amount",
+        "billing_pool_ref"
+      ],
+      "additionalProperties": false
+    },
+    "UsageObservation": {
+      "type": "object",
+      "properties": {
+        "meter": {
+          "type": "string",
+          "enum": [
+            "tokens",
+            "turns",
+            "tool_actions",
+            "wall_ms",
+            "usd_micros",
+            "provider_quota"
+          ]
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "unit_label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "provider",
+            "runner_measured",
+            "user_declared",
+            "estimated",
+            "unknown"
+          ]
+        },
+        "observed_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "valid_until": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "billing_pool_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "minItems": 0,
+          "maxItems": 10000
+        }
+      },
+      "required": [
+        "meter",
+        "value",
+        "unit_label",
+        "source",
+        "observed_at",
+        "valid_until",
+        "billing_pool_ref",
+        "evidence_ids"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "source": {
+                "const": "unknown"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "value": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "Feature": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "verified",
+            "documented",
+            "unsupported",
+            "unknown"
+          ]
+        },
+        "version_ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "verified_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "minItems": 0,
+          "maxItems": 10000
+        }
+      },
+      "required": [
+        "name",
+        "status",
+        "version_ref",
+        "verified_at",
+        "evidence_ids"
+      ],
+      "additionalProperties": false
+    },
+    "BackendFeatures": {
+      "type": "object",
+      "properties": {
+        "resume": {
+          "type": "string",
+          "enum": [
+            "native",
+            "capsule_only",
+            "none",
+            "unknown"
+          ]
+        },
+        "interrupt": {
+          "type": "string",
+          "enum": [
+            "confirmed",
+            "best_effort",
+            "turn_boundary",
+            "none",
+            "unknown"
+          ]
+        },
+        "approval_bridge": {
+          "type": "string",
+          "enum": [
+            "native",
+            "none",
+            "unknown"
+          ]
+        },
+        "effect_control": {
+          "type": "string",
+          "enum": [
+            "runner_mediated",
+            "provider_gated",
+            "audit_only",
+            "opaque",
+            "unknown"
+          ]
+        },
+        "event_replay": {
+          "type": "string",
+          "enum": [
+            "durable",
+            "history_reconcile",
+            "live_only",
+            "none",
+            "unknown"
+          ]
+        },
+        "usage": {
+          "type": "string",
+          "enum": [
+            "provider_reported",
+            "estimated",
+            "none",
+            "unknown"
+          ]
+        },
+        "requires_desktop": {
+          "type": "boolean"
+        },
+        "external_activity_detection": {
+          "type": "string",
+          "enum": [
+            "verified",
+            "none",
+            "unknown"
+          ]
+        }
+      },
+      "required": [
+        "resume",
+        "interrupt",
+        "approval_bridge",
+        "effect_control",
+        "event_replay",
+        "usage",
+        "requires_desktop",
+        "external_activity_detection"
+      ],
+      "additionalProperties": false
+    },
+    "EvidenceVerdict": {
+      "type": "string",
+      "enum": [
+        "PASS",
+        "FAIL",
+        "UNKNOWN"
+      ]
+    },
+    "EventData": {
+      "type": "object",
+      "properties": {
+        "subject_kind": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "subject_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "from_state": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 128
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "to_state": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 128
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason_code": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 128
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "minItems": 0,
+          "maxItems": 10000
+        },
+        "artifact_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "minItems": 0,
+          "maxItems": 10000
+        },
+        "details": {
+          "$ref": "#/$defs/Extensions"
+        }
+      },
+      "required": [
+        "subject_kind",
+        "subject_id",
+        "from_state",
+        "to_state",
+        "reason_code",
+        "evidence_ids",
+        "artifact_ids",
+        "details"
+      ],
+      "additionalProperties": false
+    },
+    "EventType": {
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "task.created",
+            "task.contract_updated",
+            "task.state_changed",
+            "run.created",
+            "run.state_changed",
+            "run.lease_acquired",
+            "run.lease_expired",
+            "assignment.created",
+            "assignment.state_changed",
+            "assignment.accepted",
+            "session.bound",
+            "session.state_changed",
+            "session.resume_failed",
+            "turn.submitted",
+            "turn.started",
+            "turn.completed",
+            "action.planned",
+            "action.admitted",
+            "action.started",
+            "action.result_recorded",
+            "action.reconciled",
+            "approval.requested",
+            "approval.resolved",
+            "grant.issued",
+            "grant.revoked",
+            "state.updated",
+            "artifact.registered",
+            "artifact.verified",
+            "budget.reserved",
+            "budget.settled",
+            "budget.threshold_reached",
+            "capsule.created",
+            "setup.changed",
+            "message.received",
+            "message.delivered",
+            "ownership.changed",
+            "observation.gap"
+          ]
+        },
+        {
+          "type": "string",
+          "pattern": "^x\\.[a-z][a-z0-9_.-]+$"
+        }
+      ]
+    },
+    "Task": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "runner-control/v1"
+        },
+        "kind": {
+          "const": "Task"
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^tsk_[A-Za-z0-9][A-Za-z0-9_-]{2,95}$"
+        },
+        "namespace_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "created_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "updated_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "extensions": {
+          "$ref": "#/$defs/Extensions"
+        },
+        "owner_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "bot_instance_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "objective": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16000
+        },
+        "status": {
+          "$ref": "#/$defs/TaskStatus"
+        },
+        "contract_revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "resource_scopes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ResourceScope"
+          },
+          "minItems": 0,
+          "maxItems": 10000
+        },
+        "constraints": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 2000
+          },
+          "minItems": 0,
+          "maxItems": 10000
+        },
+        "acceptance": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AcceptanceCriterion"
+          },
+          "minItems": 1,
+          "maxItems": 10000
+        },
+        "budget_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "active_run_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "result_artifact_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "minItems": 0,
+          "maxItems": 10000
+        }
+      },
+      "required": [
+        "schema_version",
+        "kind",
+        "id",
+        "namespace_id",
+        "revision",
+        "created_at",
+        "updated_at",
+        "extensions",
+        "owner_id",
+        "bot_instance_id",
+        "title",
+        "objective",
+        "status",
+        "contract_revision",
+        "resource_scopes",
+        "constraints",
+        "acceptance",
+        "budget_id",
+        "active_run_id",
+        "result_artifact_ids"
+      ],
+      "additionalProperties": false
+    },
+    "Run": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "runner-control/v1"
+        },
+        "kind": {
+          "const": "Run"
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^run_[A-Za-z0-9][A-Za-z0-9_-]{2,95}$"
+        },
+        "namespace_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "created_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "updated_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "extensions": {
+          "$ref": "#/$defs/Extensions"
+        },
+        "task_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "attempt": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "retry_of_run_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/RunStatus"
+        },
+        "desired_state": {
+          "type": "string",
+          "enum": [
+            "RUNNING",
+            "PAUSED",
+            "CANCELED"
+          ]
+        },
+        "blocked_reason": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BlockedReason"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "control_owner": {
+          "$ref": "#/$defs/ControlOwner"
+        },
+        "lease": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Lease"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "workflow_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "workflow_revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "contract_revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "configuration_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "budget_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "checkpoint_capsule_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "assignment_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "minItems": 0,
+          "maxItems": 10000
+        },
+        "completion_evidence_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "minItems": 0,
+          "maxItems": 10000
+        }
+      },
+      "required": [
+        "schema_version",
+        "kind",
+        "id",
+        "namespace_id",
+        "revision",
+        "created_at",
+        "updated_at",
+        "extensions",
+        "task_id",
+        "attempt",
+        "retry_of_run_id",
+        "status",
+        "desired_state",
+        "blocked_reason",
+        "control_owner",
+        "lease",
+        "workflow_id",
+        "workflow_revision",
+        "contract_revision",
+        "configuration_sha256",
+        "budget_id",
+        "checkpoint_capsule_id",
+        "assignment_ids",
+        "completion_evidence_ids"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "WAITING"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "blocked_reason": {
+                "$ref": "#/$defs/BlockedReason"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "Assignment": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "runner-control/v1"
+        },
+        "kind": {
+          "const": "Assignment"
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^asg_[A-Za-z0-9][A-Za-z0-9_-]{2,95}$"
+        },
+        "namespace_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "created_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "updated_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "extensions": {
+          "$ref": "#/$defs/Extensions"
+        },
+        "task_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "run_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "role": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "attempt": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "retry_of_assignment_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/AssignmentStatus"
+        },
+        "executor_mode": {
+          "type": "string",
+          "enum": [
+            "deterministic",
+            "agent",
+            "external"
+          ]
+        },
+        "backend_instance_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "handler_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "execution_context_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "session_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "minItems": 0,
+          "maxItems": 10000
+        },
+        "depends_on": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "minItems": 0,
+          "maxItems": 10000,
+          "uniqueItems": true
+        },
+        "input_artifact_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "minItems": 0,
+          "maxItems": 10000
+        },
+        "acceptance": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AcceptanceCriterion"
+          },
+          "minItems": 1,
+          "maxItems": 10000
+        },
+        "result_artifact_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "minItems": 0,
+          "maxItems": 10000
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "minItems": 0,
+          "maxItems": 10000
+        }
+      },
+      "required": [
+        "schema_version",
+        "kind",
+        "id",
+        "namespace_id",
+        "revision",
+        "created_at",
+        "updated_at",
+        "extensions",
+        "task_id",
+        "run_id",
+        "role",
+        "attempt",
+        "retry_of_assignment_id",
+        "status",
+        "executor_mode",
+        "backend_instance_id",
+        "handler_id",
+        "execution_context_id",
+        "session_ids",
+        "depends_on",
+        "input_artifact_ids",
+        "acceptance",
+        "result_artifact_ids",
+        "evidence_ids"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "executor_mode": {
+                "const": "deterministic"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "handler_id": {
+                "$ref": "#/$defs/Id"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "executor_mode": {
+                "const": "agent"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "backend_instance_id": {
+                "$ref": "#/$defs/Id"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "Session": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "runner-control/v1"
+        },
+        "kind": {
+          "const": "Session"
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^ses_[A-Za-z0-9][A-Za-z0-9_-]{2,95}$"
+        },
+        "namespace_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "created_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "updated_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "extensions": {
+          "$ref": "#/$defs/Extensions"
+        },
+        "task_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "assignment_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "status": {
+          "$ref": "#/$defs/SessionStatus"
+        },
+        "backend_instance_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "execution_context_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "model_provider": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "model_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "billing_pool_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "native_binding": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NativeBinding"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "restored_from_capsule_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "last_observed_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "capability_snapshot_sha256": {
+          "$ref": "#/$defs/Sha256"
+        }
+      },
+      "required": [
+        "schema_version",
+        "kind",
+        "id",
+        "namespace_id",
+        "revision",
+        "created_at",
+        "updated_at",
+        "extensions",
+        "task_id",
+        "assignment_id",
+        "status",
+        "backend_instance_id",
+        "execution_context_id",
+        "model_provider",
+        "model_id",
+        "billing_pool_ref",
+        "native_binding",
+        "restored_from_capsule_id",
+        "last_observed_at",
+        "capability_snapshot_sha256"
+      ],
+      "additionalProperties": false
+    },
+    "ExecutionContext": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "runner-control/v1"
+        },
+        "kind": {
+          "const": "ExecutionContext"
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^ctx_[A-Za-z0-9][A-Za-z0-9_-]{2,95}$"
+        },
+        "namespace_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "created_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "updated_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "extensions": {
+          "$ref": "#/$defs/Extensions"
+        },
+        "environment_ref": {
+          "$ref": "#/$defs/Id"
+        },
+        "resource_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "context_type": {
+          "type": "string",
+          "enum": [
+            "directory",
+            "git_worktree",
+            "container",
+            "remote_workspace",
+            "external"
+          ]
+        },
+        "location_ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "isolation_profile_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "enforcement": {
+          "type": "string",
+          "enum": [
+            "os_enforced",
+            "provider_enforced",
+            "advisory",
+            "external",
+            "unknown"
+          ]
+        },
+        "baseline_sha256": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lease": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Lease"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cleanup_policy": {
+          "type": "string",
+          "enum": [
+            "retain",
+            "manual",
+            "after_verified_completion"
+          ]
+        }
+      },
+      "required": [
+        "schema_version",
+        "kind",
+        "id",
+        "namespace_id",
+        "revision",
+        "created_at",
+        "updated_at",
+        "extensions",
+        "environment_ref",
+        "resource_id",
+        "context_type",
+        "location_ref",
+        "isolation_profile_ref",
+        "enforcement",
+        "baseline_sha256",
+        "lease",
+        "cleanup_policy"
+      ],
+      "additionalProperties": false
+    },
+    "Capability": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "runner-control/v1"
+        },
+        "kind": {
+          "const": "Capability"
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^cap_[A-Za-z0-9][A-Za-z0-9_-]{2,95}$"
+        },
+        "namespace_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "created_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "updated_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "extensions": {
+          "$ref": "#/$defs/Extensions"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "adapter_ref": {
+          "$ref": "#/$defs/Id"
+        },
+        "operation": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "input_schema_ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "output_schema_ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "effect_class": {
+          "type": "string",
+          "enum": [
+            "read_only",
+            "idempotent_write",
+            "non_idempotent_write"
+          ]
+        },
+        "risk_class": {
+          "type": "string",
+          "enum": [
+            "R0",
+            "R1",
+            "R2",
+            "R3"
+          ]
+        },
+        "enforcement": {
+          "type": "string",
+          "enum": [
+            "runner_mediated",
+            "provider_gated",
+            "audit_only",
+            "opaque",
+            "unknown"
+          ]
+        },
+        "resource_types": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "minItems": 1,
+          "maxItems": 10000
+        },
+        "feature": {
+          "$ref": "#/$defs/Feature"
+        }
+      },
+      "required": [
+        "schema_version",
+        "kind",
+        "id",
+        "namespace_id",
+        "revision",
+        "created_at",
+        "updated_at",
+        "extensions",
+        "name",
+        "adapter_ref",
+        "operation",
+        "input_schema_ref",
+        "output_schema_ref",
+        "effect_class",
+        "risk_class",
+        "enforcement",
+        "resource_types",
+        "feature"
+      ],
+      "additionalProperties": false
+    },
+    "Artifact": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "runner-control/v1"
+        },
+        "kind": {
+          "const": "Artifact"
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^art_[A-Za-z0-9][A-Za-z0-9_-]{2,95}$"
+        },
+        "namespace_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "created_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "updated_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "extensions": {
+          "$ref": "#/$defs/Extensions"
+        },
+        "task_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "run_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "assignment_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "artifact_type": {
+          "type": "string",
+          "enum": [
+            "document",
+            "patch",
+            "test_report",
+            "review_report",
+            "context_capsule",
+            "input",
+            "native_log",
+            "manifest",
+            "other"
+          ]
+        },
+        "media_type": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "storage_ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "producer_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "verification": {
+          "type": "string",
+          "enum": [
+            "unverified",
+            "verified",
+            "rejected"
+          ]
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "minItems": 0,
+          "maxItems": 10000
+        },
+        "sensitivity": {
+          "type": "string",
+          "enum": [
+            "public",
+            "internal",
+            "confidential",
+            "restricted"
+          ]
+        },
+        "allowed_recipient_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "minItems": 0,
+          "maxItems": 10000
+        }
+      },
+      "required": [
+        "schema_version",
+        "kind",
+        "id",
+        "namespace_id",
+        "revision",
+        "created_at",
+        "updated_at",
+        "extensions",
+        "task_id",
+        "run_id",
+        "assignment_id",
+        "artifact_type",
+        "media_type",
+        "storage_ref",
+        "sha256",
+        "size_bytes",
+        "producer_id",
+        "verification",
+        "evidence_ids",
+        "sensitivity",
+        "allowed_recipient_refs"
+      ],
+      "additionalProperties": false
+    },
+    "State": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "runner-control/v1"
+        },
+        "kind": {
+          "const": "State"
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^stt_[A-Za-z0-9][A-Za-z0-9_-]{2,95}$"
+        },
+        "namespace_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "created_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "updated_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "extensions": {
+          "$ref": "#/$defs/Extensions"
+        },
+        "task_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "key": {
+          "type": "string",
+          "pattern": "^(domain|system)\\.[a-z0-9_.-]+$"
+        },
+        "owner_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "value": {
+          "$ref": "#/$defs/JsonValue"
+        },
+        "value_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "assertion_class": {
+          "type": "string",
+          "enum": [
+            "decision",
+            "observation",
+            "verified_fact"
+          ]
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "minItems": 0,
+          "maxItems": 10000
+        },
+        "valid_until": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "schema_version",
+        "kind",
+        "id",
+        "namespace_id",
+        "revision",
+        "created_at",
+        "updated_at",
+        "extensions",
+        "task_id",
+        "key",
+        "owner_id",
+        "value",
+        "value_sha256",
+        "assertion_class",
+        "evidence_ids",
+        "valid_until"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "assertion_class": {
+                "const": "verified_fact"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "evidence_ids": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/Id"
+                },
+                "minItems": 1,
+                "maxItems": 10000
+              }
+            }
+          }
+        }
+      ]
+    },
+    "Event": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "runner-control/v1"
+        },
+        "kind": {
+          "const": "Event"
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^evt_[A-Za-z0-9][A-Za-z0-9_-]{2,95}$"
+        },
+        "namespace_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "created_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "updated_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "extensions": {
+          "$ref": "#/$defs/Extensions"
+        },
+        "task_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "run_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "event_type": {
+          "$ref": "#/$defs/EventType"
+        },
+        "actor_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "operation_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "causation_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "correlation_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "observed_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "committed_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "source_event_ref": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 1024
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "data": {
+          "$ref": "#/$defs/EventData"
+        }
+      },
+      "required": [
+        "schema_version",
+        "kind",
+        "id",
+        "namespace_id",
+        "revision",
+        "created_at",
+        "updated_at",
+        "extensions",
+        "task_id",
+        "run_id",
+        "sequence",
+        "event_type",
+        "actor_id",
+        "operation_id",
+        "causation_id",
+        "correlation_id",
+        "observed_at",
+        "committed_at",
+        "source_event_ref",
+        "data"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "properties": {
+            "revision": {
+              "const": 1
+            }
+          }
+        }
+      ]
+    },
+    "Action": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "runner-control/v1"
+        },
+        "kind": {
+          "const": "Action"
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^act_[A-Za-z0-9][A-Za-z0-9_-]{2,95}$"
+        },
+        "namespace_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "created_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "updated_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "extensions": {
+          "$ref": "#/$defs/Extensions"
+        },
+        "task_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "run_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "assignment_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "operation_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "capability_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "target": {
+          "$ref": "#/$defs/ResourceScope"
+        },
+        "parameters_artifact_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "parameters_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "action_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "idempotency_key": {
+          "type": "string",
+          "minLength": 16,
+          "maxLength": 128
+        },
+        "effect_class": {
+          "type": "string",
+          "enum": [
+            "read_only",
+            "idempotent_write",
+            "non_idempotent_write"
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/ActionStatus"
+        },
+        "attempt": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "grant_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "minItems": 0,
+          "maxItems": 10000
+        },
+        "policy_revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "authorization_digest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fencing_token": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "dispatched_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "receipt_evidence_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "minItems": 0,
+          "maxItems": 10000
+        },
+        "effect_control": {
+          "type": "string",
+          "enum": [
+            "runner_mediated",
+            "provider_gated",
+            "audit_only",
+            "opaque",
+            "unknown"
+          ]
+        }
+      },
+      "required": [
+        "schema_version",
+        "kind",
+        "id",
+        "namespace_id",
+        "revision",
+        "created_at",
+        "updated_at",
+        "extensions",
+        "task_id",
+        "run_id",
+        "assignment_id",
+        "operation_id",
+        "capability_id",
+        "target",
+        "parameters_artifact_id",
+        "parameters_sha256",
+        "action_sha256",
+        "idempotency_key",
+        "effect_class",
+        "status",
+        "attempt",
+        "grant_ids",
+        "policy_revision",
+        "authorization_digest",
+        "fencing_token",
+        "dispatched_at",
+        "receipt_evidence_ids",
+        "effect_control"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "ADMITTED",
+                  "EXECUTING",
+                  "VERIFYING",
+                  "UNKNOWN_REMOTE",
+                  "SUCCEEDED"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "authorization_digest": {
+                "$ref": "#/$defs/Sha256"
+              },
+              "grant_ids": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/Id"
+                },
+                "minItems": 1,
+                "maxItems": 10000
+              },
+              "fencing_token": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "SUCCEEDED"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "receipt_evidence_ids": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/Id"
+                },
+                "minItems": 1,
+                "maxItems": 10000
+              }
+            }
+          }
+        }
+      ]
+    },
+    "Grant": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "runner-control/v1"
+        },
+        "kind": {
+          "const": "Grant"
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^grt_[A-Za-z0-9][A-Za-z0-9_-]{2,95}$"
+        },
+        "namespace_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "created_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "updated_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "extensions": {
+          "$ref": "#/$defs/Extensions"
+        },
+        "subject_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "bot_instance_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "template_manifest_sha256": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "task_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "capability_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "minItems": 1,
+          "maxItems": 10000,
+          "uniqueItems": true
+        },
+        "resource_scopes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ResourceScope"
+          },
+          "minItems": 1,
+          "maxItems": 10000
+        },
+        "recipient_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "minItems": 0,
+          "maxItems": 10000
+        },
+        "expires_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "max_uses": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "used_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "bound_action_sha256": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "issued_by": {
+          "$ref": "#/$defs/Id"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "ACTIVE",
+            "REVOKED",
+            "EXPIRED",
+            "EXHAUSTED"
+          ]
+        },
+        "confirmation_evidence_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "minItems": 1,
+          "maxItems": 10000
+        }
+      },
+      "required": [
+        "schema_version",
+        "kind",
+        "id",
+        "namespace_id",
+        "revision",
+        "created_at",
+        "updated_at",
+        "extensions",
+        "subject_id",
+        "bot_instance_id",
+        "template_manifest_sha256",
+        "task_id",
+        "capability_ids",
+        "resource_scopes",
+        "recipient_refs",
+        "expires_at",
+        "max_uses",
+        "used_count",
+        "bound_action_sha256",
+        "issued_by",
+        "status",
+        "confirmation_evidence_ids"
+      ],
+      "additionalProperties": false
+    },
+    "Approval": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "runner-control/v1"
+        },
+        "kind": {
+          "const": "Approval"
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^apr_[A-Za-z0-9][A-Za-z0-9_-]{2,95}$"
+        },
+        "namespace_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "created_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "updated_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "extensions": {
+          "$ref": "#/$defs/Extensions"
+        },
+        "task_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "action_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "action_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "request_digest": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "PENDING",
+            "APPROVED",
+            "DENIED",
+            "EXPIRED",
+            "CANCELED"
+          ]
+        },
+        "requested_by": {
+          "$ref": "#/$defs/Id"
+        },
+        "resolved_by": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "expires_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "trusted_ui_ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "decision_evidence_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "minItems": 0,
+          "maxItems": 10000
+        },
+        "grant_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "minItems": 0,
+          "maxItems": 10000
+        }
+      },
+      "required": [
+        "schema_version",
+        "kind",
+        "id",
+        "namespace_id",
+        "revision",
+        "created_at",
+        "updated_at",
+        "extensions",
+        "task_id",
+        "action_id",
+        "action_sha256",
+        "request_digest",
+        "status",
+        "requested_by",
+        "resolved_by",
+        "expires_at",
+        "trusted_ui_ref",
+        "decision_evidence_ids",
+        "grant_ids"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "APPROVED"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "resolved_by": {
+                "$ref": "#/$defs/Id"
+              },
+              "decision_evidence_ids": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/Id"
+                },
+                "minItems": 1,
+                "maxItems": 10000
+              },
+              "grant_ids": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/Id"
+                },
+                "minItems": 1,
+                "maxItems": 10000
+              }
+            }
+          }
+        }
+      ]
+    },
+    "Budget": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "runner-control/v1"
+        },
+        "kind": {
+          "const": "Budget"
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^bud_[A-Za-z0-9][A-Za-z0-9_-]{2,95}$"
+        },
+        "namespace_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "created_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "updated_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "extensions": {
+          "$ref": "#/$defs/Extensions"
+        },
+        "task_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "limits": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MeterLimit"
+          },
+          "minItems": 1,
+          "maxItems": 10000
+        },
+        "unknown_usage_policy": {
+          "type": "string",
+          "enum": [
+            "wait",
+            "admit_bounded_turns"
+          ]
+        },
+        "paid_overage_allowed": {
+          "type": "boolean"
+        },
+        "observations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/UsageObservation"
+          },
+          "minItems": 0,
+          "maxItems": 10000
+        }
+      },
+      "required": [
+        "schema_version",
+        "kind",
+        "id",
+        "namespace_id",
+        "revision",
+        "created_at",
+        "updated_at",
+        "extensions",
+        "task_id",
+        "limits",
+        "unknown_usage_policy",
+        "paid_overage_allowed",
+        "observations"
+      ],
+      "additionalProperties": false
+    },
+    "Reservation": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "runner-control/v1"
+        },
+        "kind": {
+          "const": "Reservation"
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^res_[A-Za-z0-9][A-Za-z0-9_-]{2,95}$"
+        },
+        "namespace_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "created_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "updated_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "extensions": {
+          "$ref": "#/$defs/Extensions"
+        },
+        "task_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "budget_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "action_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "HELD",
+            "SETTLED",
+            "RELEASED",
+            "UNCERTAIN"
+          ]
+        },
+        "reserved": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MeterAmount"
+          },
+          "minItems": 1,
+          "maxItems": 10000
+        },
+        "actual": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/MeterAmount"
+              },
+              "minItems": 0,
+              "maxItems": 10000
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "receipt_evidence_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "minItems": 0,
+          "maxItems": 10000
+        }
+      },
+      "required": [
+        "schema_version",
+        "kind",
+        "id",
+        "namespace_id",
+        "revision",
+        "created_at",
+        "updated_at",
+        "extensions",
+        "task_id",
+        "budget_id",
+        "action_id",
+        "status",
+        "reserved",
+        "actual",
+        "receipt_evidence_ids"
+      ],
+      "additionalProperties": false
+    },
+    "Capsule": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "runner-control/v1"
+        },
+        "kind": {
+          "const": "Capsule"
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^csp_[A-Za-z0-9][A-Za-z0-9_-]{2,95}$"
+        },
+        "namespace_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "created_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "updated_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "extensions": {
+          "$ref": "#/$defs/Extensions"
+        },
+        "task_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "run_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "artifact_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "contract_revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "last_event_sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "state_revisions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "state_id": {
+                "$ref": "#/$defs/Id"
+              },
+              "revision": {
+                "$ref": "#/$defs/Revision"
+              },
+              "value_sha256": {
+                "$ref": "#/$defs/Sha256"
+              }
+            },
+            "required": [
+              "state_id",
+              "revision",
+              "value_sha256"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 0,
+          "maxItems": 10000
+        },
+        "resource_snapshots": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "resource_id": {
+                "$ref": "#/$defs/Id"
+              },
+              "sha256": {
+                "$ref": "#/$defs/Sha256"
+              }
+            },
+            "required": [
+              "resource_id",
+              "sha256"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 0,
+          "maxItems": 10000
+        },
+        "completed_assignment_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "minItems": 0,
+          "maxItems": 10000
+        },
+        "open_action_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "minItems": 0,
+          "maxItems": 10000
+        },
+        "pending_approval_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "minItems": 0,
+          "maxItems": 10000
+        },
+        "validity": {
+          "type": "string",
+          "enum": [
+            "UNVERIFIED",
+            "VALID",
+            "STALE",
+            "REJECTED"
+          ]
+        }
+      },
+      "required": [
+        "schema_version",
+        "kind",
+        "id",
+        "namespace_id",
+        "revision",
+        "created_at",
+        "updated_at",
+        "extensions",
+        "task_id",
+        "run_id",
+        "artifact_id",
+        "contract_revision",
+        "last_event_sequence",
+        "state_revisions",
+        "resource_snapshots",
+        "completed_assignment_ids",
+        "open_action_ids",
+        "pending_approval_ids",
+        "validity"
+      ],
+      "additionalProperties": false
+    },
+    "Evidence": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "runner-control/v1"
+        },
+        "kind": {
+          "const": "Evidence"
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^evd_[A-Za-z0-9][A-Za-z0-9_-]{2,95}$"
+        },
+        "namespace_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "created_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "updated_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "extensions": {
+          "$ref": "#/$defs/Extensions"
+        },
+        "task_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "run_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "action_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "validator_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "validator_revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "subject_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "verdict": {
+          "$ref": "#/$defs/EvidenceVerdict"
+        },
+        "observed_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "valid_until": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source_class": {
+          "type": "string",
+          "enum": [
+            "runner",
+            "provider",
+            "independent_check",
+            "trusted_human",
+            "external_assertion"
+          ]
+        },
+        "artifact_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "minItems": 0,
+          "maxItems": 10000
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 4000
+        }
+      },
+      "required": [
+        "schema_version",
+        "kind",
+        "id",
+        "namespace_id",
+        "revision",
+        "created_at",
+        "updated_at",
+        "extensions",
+        "task_id",
+        "run_id",
+        "action_id",
+        "validator_id",
+        "validator_revision",
+        "subject_sha256",
+        "verdict",
+        "observed_at",
+        "valid_until",
+        "source_class",
+        "artifact_ids",
+        "summary"
+      ],
+      "additionalProperties": false
+    },
+    "BackendDescriptor": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "runner-control/v1"
+        },
+        "kind": {
+          "const": "BackendDescriptor"
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^bkd_[A-Za-z0-9][A-Za-z0-9_-]{2,95}$"
+        },
+        "namespace_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "created_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "updated_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "extensions": {
+          "$ref": "#/$defs/Extensions"
+        },
+        "backend_type": {
+          "type": "string",
+          "enum": [
+            "codex_sdk",
+            "codex_app_server",
+            "grok_build_acp",
+            "grok_build_headless",
+            "super_sc",
+            "external_agent",
+            "deterministic",
+            "other"
+          ]
+        },
+        "adapter_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "native_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "wire_protocol": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "account_ref": {
+          "$ref": "#/$defs/Id"
+        },
+        "environment_ref": {
+          "$ref": "#/$defs/Id"
+        },
+        "features": {
+          "$ref": "#/$defs/BackendFeatures"
+        },
+        "verification": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Feature"
+          },
+          "minItems": 0,
+          "maxItems": 10000
+        },
+        "allowed_model_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "minItems": 0,
+          "maxItems": 10000
+        },
+        "health": {
+          "type": "string",
+          "enum": [
+            "UNKNOWN",
+            "HEALTHY",
+            "DEGRADED",
+            "UNAVAILABLE"
+          ]
+        },
+        "observed_at": {
+          "$ref": "#/$defs/Timestamp"
+        }
+      },
+      "required": [
+        "schema_version",
+        "kind",
+        "id",
+        "namespace_id",
+        "revision",
+        "created_at",
+        "updated_at",
+        "extensions",
+        "backend_type",
+        "adapter_version",
+        "native_version",
+        "wire_protocol",
+        "account_ref",
+        "environment_ref",
+        "features",
+        "verification",
+        "allowed_model_ids",
+        "health",
+        "observed_at"
+      ],
+      "additionalProperties": false
+    },
+    "Operation": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "runner-control/v1"
+        },
+        "kind": {
+          "const": "Operation"
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^opr_[A-Za-z0-9][A-Za-z0-9_-]{2,95}$"
+        },
+        "namespace_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "created_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "updated_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "extensions": {
+          "$ref": "#/$defs/Extensions"
+        },
+        "task_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "request_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "method": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "principal_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "idempotency_key": {
+          "type": "string",
+          "minLength": 16,
+          "maxLength": 128
+        },
+        "payload_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "ACCEPTED",
+            "RUNNING",
+            "SUCCEEDED",
+            "FAILED",
+            "UNKNOWN_REMOTE"
+          ]
+        },
+        "result_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "error_code": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 128
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "schema_version",
+        "kind",
+        "id",
+        "namespace_id",
+        "revision",
+        "created_at",
+        "updated_at",
+        "extensions",
+        "task_id",
+        "request_id",
+        "method",
+        "principal_id",
+        "idempotency_key",
+        "payload_sha256",
+        "status",
+        "result_ref",
+        "error_code"
+      ],
+      "additionalProperties": false
+    },
+    "BotInstance": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "runner-control/v1"
+        },
+        "kind": {
+          "const": "BotInstance"
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^bot_[A-Za-z0-9][A-Za-z0-9_-]{2,95}$"
+        },
+        "namespace_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "created_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "updated_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "extensions": {
+          "$ref": "#/$defs/Extensions"
+        },
+        "owner_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "template_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "template_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "manifest_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "setup_revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "config_revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "setup_status": {
+          "type": "string",
+          "enum": [
+            "NOT_STARTED",
+            "RUNNING",
+            "WAITING_INPUT",
+            "WAITING_AUTH",
+            "WAITING_APPROVAL",
+            "BLOCKED",
+            "COMPLETE"
+          ]
+        },
+        "phase": {
+          "type": "string",
+          "enum": [
+            "INTRODUCE",
+            "CONNECT",
+            "CHOOSE_PROFILE",
+            "BIND_WORKSPACE",
+            "SELECT_BACKENDS",
+            "GRANT_ACCESS",
+            "VERIFY",
+            "SMOKE_TEST",
+            "FINISH"
+          ]
+        },
+        "profile_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "workspace_resource_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "backend_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "minItems": 0,
+          "maxItems": 10000
+        },
+        "grant_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "minItems": 0,
+          "maxItems": 10000
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "minItems": 0,
+          "maxItems": 10000
+        }
+      },
+      "required": [
+        "schema_version",
+        "kind",
+        "id",
+        "namespace_id",
+        "revision",
+        "created_at",
+        "updated_at",
+        "extensions",
+        "owner_id",
+        "template_id",
+        "template_version",
+        "manifest_sha256",
+        "setup_revision",
+        "config_revision",
+        "setup_status",
+        "phase",
+        "profile_id",
+        "workspace_resource_id",
+        "backend_ids",
+        "grant_ids",
+        "evidence_ids"
+      ],
+      "additionalProperties": false
+    },
+    "ApiError": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "enum": [
+            "INVALID_ARGUMENT",
+            "VERSION_UNSUPPORTED",
+            "CAPABILITY_UNSUPPORTED",
+            "BACKEND_UNAVAILABLE",
+            "SETUP_REQUIRED",
+            "AUTH_REQUIRED",
+            "FORBIDDEN",
+            "APPROVAL_REQUIRED",
+            "REVISION_CONFLICT",
+            "IDEMPOTENCY_CONFLICT",
+            "LEASE_LOST",
+            "BUDGET_EXHAUSTED",
+            "BUDGET_UNKNOWN",
+            "UNKNOWN_REMOTE",
+            "CURSOR_EXPIRED",
+            "EVENT_GAP",
+            "EVIDENCE_STALE",
+            "INTERNAL_ERROR"
+          ]
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000
+        },
+        "request_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "retry_class": {
+          "type": "string",
+          "enum": [
+            "never",
+            "after_refresh",
+            "after_backoff",
+            "after_auth",
+            "after_reconcile"
+          ]
+        },
+        "retry_after_ms": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "operation_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "request_id",
+        "retry_class",
+        "retry_after_ms",
+        "operation_id"
+      ],
+      "additionalProperties": false
+    },
+    "Command": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "schema_version": {
+              "const": "runner-control/v1"
+            },
+            "request_id": {
+              "$ref": "#/$defs/Id"
+            },
+            "idempotency_key": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128
+            },
+            "expected_revision": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "expires_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "method": {
+              "const": "task.create"
+            },
+            "params": {
+              "type": "object",
+              "properties": {
+                "title": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "objective": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 16000
+                },
+                "bot_instance_id": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/Id"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "resource_scopes": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/ResourceScope"
+                  },
+                  "minItems": 0,
+                  "maxItems": 10000
+                },
+                "constraints": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "maxLength": 2000
+                  },
+                  "minItems": 0,
+                  "maxItems": 10000
+                },
+                "acceptance": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/AcceptanceCriterion"
+                  },
+                  "minItems": 1,
+                  "maxItems": 10000
+                },
+                "budget_limits": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/MeterLimit"
+                  },
+                  "minItems": 1,
+                  "maxItems": 10000
+                }
+              },
+              "required": [
+                "title",
+                "objective",
+                "bot_instance_id",
+                "resource_scopes",
+                "constraints",
+                "acceptance",
+                "budget_limits"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "schema_version",
+            "request_id",
+            "idempotency_key",
+            "expected_revision",
+            "expires_at",
+            "method",
+            "params"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "schema_version": {
+              "const": "runner-control/v1"
+            },
+            "request_id": {
+              "$ref": "#/$defs/Id"
+            },
+            "idempotency_key": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128
+            },
+            "expected_revision": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "expires_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "method": {
+              "const": "task.amend"
+            },
+            "params": {
+              "type": "object",
+              "properties": {
+                "task_id": {
+                  "$ref": "#/$defs/Id"
+                },
+                "objective": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 16000
+                },
+                "constraints": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "maxLength": 2000
+                  },
+                  "minItems": 0,
+                  "maxItems": 10000
+                },
+                "acceptance": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/AcceptanceCriterion"
+                  },
+                  "minItems": 1,
+                  "maxItems": 10000
+                }
+              },
+              "required": [
+                "task_id",
+                "objective",
+                "constraints",
+                "acceptance"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "schema_version",
+            "request_id",
+            "idempotency_key",
+            "expected_revision",
+            "expires_at",
+            "method",
+            "params"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "schema_version": {
+              "const": "runner-control/v1"
+            },
+            "request_id": {
+              "$ref": "#/$defs/Id"
+            },
+            "idempotency_key": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128
+            },
+            "expected_revision": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "expires_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "method": {
+              "const": "run.start"
+            },
+            "params": {
+              "type": "object",
+              "properties": {
+                "task_id": {
+                  "$ref": "#/$defs/Id"
+                },
+                "workflow_id": {
+                  "$ref": "#/$defs/Id"
+                },
+                "workflow_revision": {
+                  "$ref": "#/$defs/Revision"
+                },
+                "configuration_sha256": {
+                  "$ref": "#/$defs/Sha256"
+                }
+              },
+              "required": [
+                "task_id",
+                "workflow_id",
+                "workflow_revision",
+                "configuration_sha256"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "schema_version",
+            "request_id",
+            "idempotency_key",
+            "expected_revision",
+            "expires_at",
+            "method",
+            "params"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "schema_version": {
+              "const": "runner-control/v1"
+            },
+            "request_id": {
+              "$ref": "#/$defs/Id"
+            },
+            "idempotency_key": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128
+            },
+            "expected_revision": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "expires_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "method": {
+              "const": "run.retry"
+            },
+            "params": {
+              "type": "object",
+              "properties": {
+                "task_id": {
+                  "$ref": "#/$defs/Id"
+                },
+                "previous_run_id": {
+                  "$ref": "#/$defs/Id"
+                },
+                "workflow_id": {
+                  "$ref": "#/$defs/Id"
+                },
+                "workflow_revision": {
+                  "$ref": "#/$defs/Revision"
+                },
+                "configuration_sha256": {
+                  "$ref": "#/$defs/Sha256"
+                }
+              },
+              "required": [
+                "task_id",
+                "previous_run_id",
+                "workflow_id",
+                "workflow_revision",
+                "configuration_sha256"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "schema_version",
+            "request_id",
+            "idempotency_key",
+            "expected_revision",
+            "expires_at",
+            "method",
+            "params"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "schema_version": {
+              "const": "runner-control/v1"
+            },
+            "request_id": {
+              "$ref": "#/$defs/Id"
+            },
+            "idempotency_key": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128
+            },
+            "expected_revision": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "expires_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "method": {
+              "const": "run.pause"
+            },
+            "params": {
+              "type": "object",
+              "properties": {
+                "run_id": {
+                  "$ref": "#/$defs/Id"
+                },
+                "reason": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1000
+                }
+              },
+              "required": [
+                "run_id",
+                "reason"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "schema_version",
+            "request_id",
+            "idempotency_key",
+            "expected_revision",
+            "expires_at",
+            "method",
+            "params"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "schema_version": {
+              "const": "runner-control/v1"
+            },
+            "request_id": {
+              "$ref": "#/$defs/Id"
+            },
+            "idempotency_key": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128
+            },
+            "expected_revision": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "expires_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "method": {
+              "const": "run.resume"
+            },
+            "params": {
+              "type": "object",
+              "properties": {
+                "run_id": {
+                  "$ref": "#/$defs/Id"
+                },
+                "capsule_id": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/Id"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "run_id",
+                "capsule_id"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "schema_version",
+            "request_id",
+            "idempotency_key",
+            "expected_revision",
+            "expires_at",
+            "method",
+            "params"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "schema_version": {
+              "const": "runner-control/v1"
+            },
+            "request_id": {
+              "$ref": "#/$defs/Id"
+            },
+            "idempotency_key": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128
+            },
+            "expected_revision": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "expires_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "method": {
+              "const": "run.cancel"
+            },
+            "params": {
+              "type": "object",
+              "properties": {
+                "run_id": {
+                  "$ref": "#/$defs/Id"
+                },
+                "reason": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1000
+                }
+              },
+              "required": [
+                "run_id",
+                "reason"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "schema_version",
+            "request_id",
+            "idempotency_key",
+            "expected_revision",
+            "expires_at",
+            "method",
+            "params"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "schema_version": {
+              "const": "runner-control/v1"
+            },
+            "request_id": {
+              "$ref": "#/$defs/Id"
+            },
+            "idempotency_key": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128
+            },
+            "expected_revision": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "expires_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "method": {
+              "const": "run.takeover"
+            },
+            "params": {
+              "type": "object",
+              "properties": {
+                "run_id": {
+                  "$ref": "#/$defs/Id"
+                },
+                "requested_owner": {
+                  "type": "string",
+                  "enum": [
+                    "human",
+                    "external"
+                  ]
+                }
+              },
+              "required": [
+                "run_id",
+                "requested_owner"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "schema_version",
+            "request_id",
+            "idempotency_key",
+            "expected_revision",
+            "expires_at",
+            "method",
+            "params"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "schema_version": {
+              "const": "runner-control/v1"
+            },
+            "request_id": {
+              "$ref": "#/$defs/Id"
+            },
+            "idempotency_key": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128
+            },
+            "expected_revision": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "expires_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "method": {
+              "const": "run.return_control"
+            },
+            "params": {
+              "type": "object",
+              "properties": {
+                "run_id": {
+                  "$ref": "#/$defs/Id"
+                }
+              },
+              "required": [
+                "run_id"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "schema_version",
+            "request_id",
+            "idempotency_key",
+            "expected_revision",
+            "expires_at",
+            "method",
+            "params"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "schema_version": {
+              "const": "runner-control/v1"
+            },
+            "request_id": {
+              "$ref": "#/$defs/Id"
+            },
+            "idempotency_key": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128
+            },
+            "expected_revision": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "expires_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "method": {
+              "const": "state.put"
+            },
+            "params": {
+              "type": "object",
+              "properties": {
+                "task_id": {
+                  "$ref": "#/$defs/Id"
+                },
+                "key": {
+                  "type": "string",
+                  "pattern": "^domain\\.[a-z0-9_.-]+$"
+                },
+                "value": {
+                  "$ref": "#/$defs/JsonValue"
+                },
+                "assertion_class": {
+                  "type": "string",
+                  "enum": [
+                    "decision",
+                    "observation"
+                  ]
+                },
+                "evidence_ids": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/Id"
+                  },
+                  "minItems": 0,
+                  "maxItems": 10000
+                }
+              },
+              "required": [
+                "task_id",
+                "key",
+                "value",
+                "assertion_class",
+                "evidence_ids"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "schema_version",
+            "request_id",
+            "idempotency_key",
+            "expected_revision",
+            "expires_at",
+            "method",
+            "params"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "schema_version": {
+              "const": "runner-control/v1"
+            },
+            "request_id": {
+              "$ref": "#/$defs/Id"
+            },
+            "idempotency_key": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128
+            },
+            "expected_revision": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "expires_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "method": {
+              "const": "message.send"
+            },
+            "params": {
+              "type": "object",
+              "properties": {
+                "task_id": {
+                  "$ref": "#/$defs/Id"
+                },
+                "run_id": {
+                  "$ref": "#/$defs/Id"
+                },
+                "to_assignment_id": {
+                  "$ref": "#/$defs/Id"
+                },
+                "content_artifact_id": {
+                  "$ref": "#/$defs/Id"
+                }
+              },
+              "required": [
+                "task_id",
+                "run_id",
+                "to_assignment_id",
+                "content_artifact_id"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "schema_version",
+            "request_id",
+            "idempotency_key",
+            "expected_revision",
+            "expires_at",
+            "method",
+            "params"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "schema_version": {
+              "const": "runner-control/v1"
+            },
+            "request_id": {
+              "$ref": "#/$defs/Id"
+            },
+            "idempotency_key": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128
+            },
+            "expected_revision": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "expires_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "method": {
+              "const": "artifact.register"
+            },
+            "params": {
+              "type": "object",
+              "properties": {
+                "task_id": {
+                  "$ref": "#/$defs/Id"
+                },
+                "run_id": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/Id"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "assignment_id": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/Id"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "upload_ref": {
+                  "$ref": "#/$defs/Id"
+                },
+                "artifact_type": {
+                  "type": "string",
+                  "enum": [
+                    "document",
+                    "patch",
+                    "test_report",
+                    "review_report",
+                    "context_capsule",
+                    "input",
+                    "native_log",
+                    "manifest",
+                    "other"
+                  ]
+                },
+                "media_type": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "sha256": {
+                  "$ref": "#/$defs/Sha256"
+                },
+                "size_bytes": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "sensitivity": {
+                  "type": "string",
+                  "enum": [
+                    "public",
+                    "internal",
+                    "confidential",
+                    "restricted"
+                  ]
+                }
+              },
+              "required": [
+                "task_id",
+                "run_id",
+                "assignment_id",
+                "upload_ref",
+                "artifact_type",
+                "media_type",
+                "sha256",
+                "size_bytes",
+                "sensitivity"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "schema_version",
+            "request_id",
+            "idempotency_key",
+            "expected_revision",
+            "expires_at",
+            "method",
+            "params"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "schema_version": {
+              "const": "runner-control/v1"
+            },
+            "request_id": {
+              "$ref": "#/$defs/Id"
+            },
+            "idempotency_key": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128
+            },
+            "expected_revision": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "expires_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "method": {
+              "const": "action.propose"
+            },
+            "params": {
+              "type": "object",
+              "properties": {
+                "task_id": {
+                  "$ref": "#/$defs/Id"
+                },
+                "run_id": {
+                  "$ref": "#/$defs/Id"
+                },
+                "assignment_id": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/Id"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "capability_id": {
+                  "$ref": "#/$defs/Id"
+                },
+                "target": {
+                  "$ref": "#/$defs/ResourceScope"
+                },
+                "parameters_artifact_id": {
+                  "$ref": "#/$defs/Id"
+                },
+                "parameters_sha256": {
+                  "$ref": "#/$defs/Sha256"
+                }
+              },
+              "required": [
+                "task_id",
+                "run_id",
+                "assignment_id",
+                "capability_id",
+                "target",
+                "parameters_artifact_id",
+                "parameters_sha256"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "schema_version",
+            "request_id",
+            "idempotency_key",
+            "expected_revision",
+            "expires_at",
+            "method",
+            "params"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "schema_version": {
+              "const": "runner-control/v1"
+            },
+            "request_id": {
+              "$ref": "#/$defs/Id"
+            },
+            "idempotency_key": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128
+            },
+            "expected_revision": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "expires_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "method": {
+              "const": "approval.request"
+            },
+            "params": {
+              "type": "object",
+              "properties": {
+                "action_id": {
+                  "$ref": "#/$defs/Id"
+                }
+              },
+              "required": [
+                "action_id"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "schema_version",
+            "request_id",
+            "idempotency_key",
+            "expected_revision",
+            "expires_at",
+            "method",
+            "params"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "schema_version": {
+              "const": "runner-control/v1"
+            },
+            "request_id": {
+              "$ref": "#/$defs/Id"
+            },
+            "idempotency_key": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128
+            },
+            "expected_revision": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "expires_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "method": {
+              "const": "grant.revoke"
+            },
+            "params": {
+              "type": "object",
+              "properties": {
+                "grant_id": {
+                  "$ref": "#/$defs/Id"
+                },
+                "reason": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1000
+                }
+              },
+              "required": [
+                "grant_id",
+                "reason"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "schema_version",
+            "request_id",
+            "idempotency_key",
+            "expected_revision",
+            "expires_at",
+            "method",
+            "params"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "schema_version": {
+              "const": "runner-control/v1"
+            },
+            "request_id": {
+              "$ref": "#/$defs/Id"
+            },
+            "idempotency_key": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128
+            },
+            "expected_revision": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "expires_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "method": {
+              "const": "setup.answer"
+            },
+            "params": {
+              "type": "object",
+              "properties": {
+                "bot_instance_id": {
+                  "$ref": "#/$defs/Id"
+                },
+                "step_id": {
+                  "$ref": "#/$defs/Id"
+                },
+                "answer": {
+                  "$ref": "#/$defs/JsonValue"
+                }
+              },
+              "required": [
+                "bot_instance_id",
+                "step_id",
+                "answer"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "schema_version",
+            "request_id",
+            "idempotency_key",
+            "expected_revision",
+            "expires_at",
+            "method",
+            "params"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "schema_version": {
+              "const": "runner-control/v1"
+            },
+            "request_id": {
+              "$ref": "#/$defs/Id"
+            },
+            "idempotency_key": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128
+            },
+            "expected_revision": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "expires_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "method": {
+              "const": "setup.verify"
+            },
+            "params": {
+              "type": "object",
+              "properties": {
+                "bot_instance_id": {
+                  "$ref": "#/$defs/Id"
+                },
+                "validator_ids": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/Id"
+                  },
+                  "minItems": 1,
+                  "maxItems": 10000,
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "bot_instance_id",
+                "validator_ids"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "schema_version",
+            "request_id",
+            "idempotency_key",
+            "expected_revision",
+            "expires_at",
+            "method",
+            "params"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "CommandResponse": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "runner-control/v1"
+        },
+        "request_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "ACCEPTED",
+            "SUCCEEDED"
+          ]
+        },
+        "result_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "schema_version",
+        "request_id",
+        "operation_id",
+        "status",
+        "result_ref"
+      ],
+      "additionalProperties": false
+    },
+    "DiscoveryResponse": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "runner-control/v1"
+        },
+        "draft_revision": {
+          "const": "2026-09-10.draft1"
+        },
+        "supported_commands": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "task.create",
+              "task.amend",
+              "run.start",
+              "run.retry",
+              "run.pause",
+              "run.resume",
+              "run.cancel",
+              "run.takeover",
+              "run.return_control",
+              "state.put",
+              "message.send",
+              "artifact.register",
+              "action.propose",
+              "approval.request",
+              "grant.revoke",
+              "setup.answer",
+              "setup.verify"
+            ]
+          },
+          "minItems": 1,
+          "maxItems": 10000,
+          "uniqueItems": true
+        },
+        "feature_profiles": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "minItems": 1,
+          "maxItems": 10000
+        },
+        "max_command_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "event_retention_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "backend_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "minItems": 0,
+          "maxItems": 10000
+        }
+      },
+      "required": [
+        "schema_version",
+        "draft_revision",
+        "supported_commands",
+        "feature_profiles",
+        "max_command_bytes",
+        "event_retention_seconds",
+        "backend_ids"
+      ],
+      "additionalProperties": false
+    }
+  }
+}
