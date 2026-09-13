@@ -86,7 +86,7 @@ setup:
     - id: verify-runtime
       kind: capability-verify
       depends_on: [connect-backend]
-      verify: 核对客户端与常驻核心版本、工作区和后端，完成隔离样例提交与查询；后续真实样例使用用户选择的后端。
+      verify: 解析并核对 Asterun 真实入口，记录每聊天唯一的私有逻辑别名；确认 init 返回 ok=true，再完成隔离样例提交与查询。核对客户端与常驻核心版本、工作区和后端；后续真实样例使用用户选择的后端。
     - id: first-result
       kind: useful-example
       depends_on: [verify-runtime]

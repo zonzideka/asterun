@@ -24,6 +24,15 @@
     },
     "state_authority": "recipient-settings-summary-and-observed-tool-results",
     "core_task_state": "Asterun CLI/MCP 返回的持久任务和运行记录",
+    "executable_binding": "将所选入口解析为真实绝对文件路径，核对安装来源和版本后保存；ledger 使用私有真实目录。",
+    "submission_precondition": "init 返回 ok=true 后才执行 submit；失败先处理具体 error。",
+    "destination_binding": {
+      "example": "PRIVATE_CHAT_ALIAS",
+      "kind": "private_unique_logical_alias_per_receiving_chat",
+      "native_chat_id_available": false,
+      "send_routing_argument": false,
+      "verification": "由保存的别名关联记录核对当前聊天和 routine 归属，SendToUser 在原聊天发送。"
+    },
     "recipient_configuration": [
       "execution_mode",
       "selected_machine_when_local",
@@ -43,9 +52,9 @@
       "host_tool": "Shell",
       "reported_arguments": ["command", "working_directory", "block_until_ms"],
       "binding": "在宿主确认的云电脑上安装并运行 Asterun，核对真实执行位置后保存接收者设置。",
-      "verification": "isolated_runtime_install_verified",
+      "verification": "cloud_fake_task_frontend_delivery_verified",
       "verified_on": "2026-09-13",
-      "verified_scope": "云端 Shell 最小探测、模板 ZIP 传输哈希、公开 wheel 哈希，以及独立 venv 中的安装与版本命令均已核对。",
+      "verified_scope": "云端安装与版本核对后，fake 任务已验证相同请求键复用任务、离开聊天页面后的 cron 唤醒、原聊天交付、ack、末次 poll 无需跟进及暂停 routine。",
       "runtime_probe": {
         "python_version": "3.13.5",
         "asterun_version": "0.1.0a13",
@@ -54,7 +63,7 @@
         "backend_login_or_model_call": "not_performed",
         "raw_result_transfer": "verified"
       },
-      "asterun_task_verification": "pending",
+      "asterun_task_verification": "verified_with_fake_backend",
       "cloud_backend_verification": "pending"
     },
     "local_process": {
@@ -63,7 +72,8 @@
       "host_tool": "Shell",
       "reported_arguments": ["command", "working_directory", "block_until_ms", "machineId"],
       "binding": "用户从实际发现结果选择机器；每次调用沿用该机器与其 Asterun 实例，机器 ID 只存于接收者私有设置。",
-      "verification": "pending"
+      "verification": "pending",
+      "latest_attempt": "入口为符号链接导致 init 返回 PATH_INVALID；其后的 submit 返回 NOT_FOUND，尚未产生模型任务。需保存解析后的真实入口并重新验收。"
     }
   },
   "core_interfaces": {
@@ -82,9 +92,9 @@
     "entry": "python3 scripts/bridge.py",
     "working_directory": "模板目录；完整 Git 检出使用 integrations/grokbot，发行 ZIP 使用解压根目录。",
     "level": "verified",
-    "interface_verification": "resident_fake_core_roundtrip_verified",
+    "interface_verification": "resident_fake_core_and_cloud_frontend_roundtrip_verified",
     "verified_on": "2026-09-13",
-    "verified_scope": "本机真实常驻 Asterun 使用 fake 后端完成 submit、终态 poll、inbox、claim、ack，再次 poll 无待交付结果。回执为测试输入；真实宿主发送与模型任务另行验收。",
+    "verified_scope": "本机常驻核心的 fake 回归，以及云端 fake 任务经真实宿主 routine、SendToUser、ack 的流程均已验证；云端原聊天结果另有 UI 回读。真实模型任务另行验收。",
     "global_arguments": ["--ledger", "--timeout"],
     "commands": {
       "init": ["--binding", "--asterun", "--config", "--core-state", "--location", "--workspace", "--backend", "--destination"],
@@ -114,19 +124,21 @@
     "reported_actions": ["create", "update", "pause", "resume"],
     "reported_arguments": ["name", "prompt", "schedule", "enabled"],
     "verified_schedule": "*/5 * * * *",
-    "verification": "native_routine_probe_verified",
+    "verification": "cloud_fake_task_followup_verified",
     "verified_on": "2026-09-13",
-    "verified_scope": "同一 routine 改用标准 cron 后，原聊天出现唯一探针消息，并看到该 routine 已禁用事件。",
+    "verified_scope": "标准 cron 探针及云端 fake 任务均已回到原聊天；离开聊天页面后 routine 唤醒，任务 ack 后再次 poll 返回 needs_followup=false，并暂停 routine。",
     "automatic_trigger_receipt": "host_reported",
     "raw_probe_result_transfer": "verified",
     "schedule_probe_results": [
       {"schedule": "@every 5m", "result": "no_trigger_observed", "observation_minutes": 14},
       {"schedule": "*/5 * * * *", "result": "probe_message_visible_in_original_chat"}
     ],
-    "asterun_task_followup": "pending",
+    "asterun_task_followup": "verified_with_cloud_fake_backend",
+    "away_from_chat_page": "verified",
     "closed_chat_recovery": "pending",
+    "application_restart_recovery": "pending",
     "required_readback": ["routine_identity", "owning_bot_and_destination", "schedule_and_time_zone", "enabled_state", "next_run", "actual_run_result"],
-    "behavior": "存在未完成或待交付任务时安排后续观察；仅在结果或待处理事项变化时回帖。保留原任务引用，观察到期后继续读取。",
+    "behavior": "存在未完成或待交付任务时安排后续观察；仅在结果或待处理事项变化时回帖。发送后在本轮 ack，再次 poll 后读取 status，needs_followup=false 时暂停 routine。保留原任务引用，观察到期后继续读取。",
     "template_export": "不携带作者 routine；接收者选择后台跟进后建立自己的观察记录。"
   },
   "chat_delivery": {
@@ -134,17 +146,18 @@
     "host_tool": "SendToUser",
     "reported_arguments": ["type", "content", "end_turn"],
     "reported_type": "text",
-    "destination": "创建本次任务的原聊天，按接收者设置绑定。",
+    "end_turn": false,
+    "destination": "创建本次任务的原聊天；PRIVATE_CHAT_ALIAS 是每接收聊天私有唯一的逻辑别名，记录在账本中。原聊天由宿主当前对话和 routine 归属确认。",
     "verified_on": "2026-09-13",
-    "verified_scope": "原聊天 UI 中的一条探针消息可见。",
+    "verified_scope": "原聊天 UI 中的最小探针及云端 fake 任务结果均可见；任务结果在离开聊天页面后的 routine 唤醒中交付。",
     "receipt": "宿主报告 SendToUser 已返回消息 ID；原始回执文件已复制回本机并核对。消息 ID 的来源仍为宿主自报，UI 消息显示单独验证。",
     "receipt_verification": "host_reported",
     "raw_receipt_verification": "file_transfer_and_content_checked",
-    "asterun_task_delivery_verification": "pending",
+    "asterun_task_delivery_verification": "verified_with_cloud_fake_backend",
     "history_lookup": "unavailable_in_reported_toolset",
     "idempotent_send": "unverified",
     "unknown_delivery": "发送前保存交付意图。未取得可信回执时保留不明状态并交给用户核对，后续观察不自动重发。",
-    "acknowledgement": "仅在 claim 返回 already_claimed=false 且 delivery_state=sending 时发送；取得消息回执后，以消息 ID 和内容摘要调用 ack，记录 host_reported_delivered。聊天实际显示另行验收。"
+    "acknowledgement": "仅在 claim 返回 ok=true、already_claimed=false 且 delivery_state=sending 时发送；SendToUser 使用 end_turn=false。取得消息回执后在本轮调用 ack，记录 host_reported_delivered；再次 poll 并读取 status 后判断是否暂停 routine。聊天实际显示单独验收。"
   },
   "template_and_skills": {
     "level": "host_reported",
@@ -166,7 +179,8 @@
     "profile_memory_skill_write_verification": "pending",
     "share_draft_and_alias_verification": "pending",
     "verification": "pending",
-    "new_user": "pending"
+    "new_user": "pending",
+    "recipient_scope": "当前账户中的副本与共享云电脑沿用该账户环境，独立新用户验收保留待办。"
   },
   "distribution_checks": {
     "verified_on": "2026-09-13",

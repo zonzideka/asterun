@@ -23,9 +23,9 @@ Bot 或 routine 恢复后，使用原 `--ledger` 和 `--binding` 运行一次小
 
 交付记录为 `sending` 或 `claim` 返回 `already_claimed=true` 时，保留原记录并跳过发送。当前宿主没有可用的消息历史查询入口。若已取得原 `SendToUser` 的真实消息 ID，使用该 ID 和原内容摘要补记 `ack`；否则先核对实际聊天或请用户确认。
 
-只有在实际核对或用户明确确认该消息未发送后，才执行 `resolve --binding NAME --delivery-key KEY --not-sent`，随后重新领取。新的 `claim` 必须返回 `ok=true`、`data.already_claimed=false`，再用 `SendToUser` 的 `type=text` 原样发送固定 `data.content`。发送结果仍不确定时继续保留 `sending`。`ack` 仅记录 `host_reported_delivered`，状态回读保留其实际含义。
+只有在实际核对或用户明确确认该消息未发送后，才执行 `resolve --binding NAME --delivery-key KEY --not-sent`，随后重新领取。新的 `claim` 必须返回 `ok=true`、`data.already_claimed=false`、`data.delivery_state=sending`，再用 `SendToUser` 的 `type=text`、`end_turn=false` 原样发送固定 `data.content`，在本轮取得回执后 ack。发送结果仍不确定时继续保留 `sending`。`ack` 仅记录 `host_reported_delivered`，状态回读保留其实际含义。
 
-`needs_followup=true` 时保留 routine；待任务和交付均处理完、状态为 `false` 时，通过 `update_state` 的 `action=pause` 暂停。用户要求结束跟踪时保留未决记录。
+补记或完成 ack 后再次运行 `poll`，再读取 `status`。`needs_followup=true` 时保留 routine；待任务和交付均处理完、状态为 `false` 时，通过 `update_state` 的 `action=pause` 暂停，再结束本轮。用户要求结束跟踪时保留未决记录。
 
 普通任务回读任务结果。使用 PR 审查配方时，另外核对 review 状态和收件箱回执，参照[结果交付](https://github.com/zonzideka/asterun/blob/v0.1.0a13/docs/review-consumer.md)。配置、状态库、原生 HOME、插件状态和审查材料按[安装说明](https://github.com/zonzideka/asterun/blob/v0.1.0a13/docs/install.md#诊断备份与恢复)分别备份；Bot 的私有账本和宿主绑定记录另行保存。
 
@@ -47,8 +47,8 @@ After a Bot or routine restart, run a small `poll` with the original `--ledger` 
 
 If a delivery is `sending` or `claim` returns `already_claimed=true`, retain the original record and skip sending. The host currently has no available message-history query interface. If the original `SendToUser` returned a real message ID, use it with the original content digest to record `ack`. Otherwise inspect the actual chat or ask the user to confirm the outcome.
 
-Only after inspection or the user's explicit confirmation that nothing was sent, run `resolve --binding NAME --delivery-key KEY --not-sent` and claim again. The new claim must return `ok=true` and `data.already_claimed=false` before `SendToUser` sends the fixed `data.content` with `type=text`. Retain `sending` if the outcome remains uncertain. `ack` records `host_reported_delivered`; preserve that meaning when reading status.
+Only after inspection or the user's explicit confirmation that nothing was sent, run `resolve --binding NAME --delivery-key KEY --not-sent` and claim again. The new claim must return `ok=true`, `data.already_claimed=false`, and `data.delivery_state=sending` before `SendToUser` sends the fixed `data.content` with `type=text` and `end_turn=false`. Record the returned receipt with `ack` in the same turn. Retain `sending` if the outcome remains uncertain. `ack` records `host_reported_delivered`; preserve that meaning when reading status.
 
-Retain the routine while `needs_followup=true`. After tasks and deliveries are resolved and the value is `false`, pause with `update_state`, `action=pause`. Preserve unresolved records if the user ends tracking.
+After recording or completing an acknowledgement, run `poll` again, then read `status`. Retain the routine while `needs_followup=true`. After tasks and deliveries are resolved and the value is `false`, pause with `update_state`, `action=pause`, before ending the turn. Preserve unresolved records if the user ends tracking.
 
 Read task results for ordinary work. For a PR review recipe, also inspect review state and inbox receipts; see [result delivery](https://github.com/zonzideka/asterun/blob/v0.1.0a13/docs/en/review-consumer.md). Back up configuration, database state, native HOME, plugin state, and review material separately as described in the [installation guide](https://github.com/zonzideka/asterun/blob/v0.1.0a13/docs/en/install.md#diagnostics-backup-and-recovery). Preserve the Bot's private ledger and host-binding records separately.

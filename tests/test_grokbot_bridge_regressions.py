@@ -121,7 +121,8 @@ def test_submission_keys_are_scoped_and_lost_response_reuses_remote_task(ledger,
     assert len(keys) == 3
 
 
-def test_v1_intent_preserves_original_core_key_on_migration(tmp_path, monkeypatch):
+@pytest.mark.parametrize('submitted', [False, True])
+def test_v1_intent_preserves_original_core_key_on_migration(tmp_path, monkeypatch, submitted):
     directory = tmp_path.resolve() / 'legacy'
     directory.mkdir(mode=0o700)
     path = directory / 'ledger.sqlite'
@@ -132,7 +133,9 @@ def test_v1_intent_preserves_original_core_key_on_migration(tmp_path, monkeypatc
                  'PRIMARY KEY(binding, request_id))')
     digest = bridge.input_digest('demo', 'fake', 'input', '')
     conn.execute('INSERT INTO submissions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                 ('primary', 'request', digest, 'demo', 'fake', '', None, None, None, 'intended', 'now', 'now'))
+                 ('primary', 'request', digest, 'demo', 'fake', '',
+                  'task-legacy' if submitted else None, 'run-legacy' if submitted else None,
+                  None, 'submitted' if submitted else 'intended', 'now', 'now'))
     conn.commit()
     conn.close()
     path.chmod(0o600)
@@ -145,7 +148,8 @@ def test_v1_intent_preserves_original_core_key_on_migration(tmp_path, monkeypatc
             return submit_response()
         monkeypatch.setattr(bridge, 'invoke_asterun', core)
         bridge.cmd_submit(migrated, submit_args(tmp_path), 10)
-        assert keys == ['request']
+        assert keys == ([] if submitted else ['request'])
+        assert migrated.conn.execute('SELECT core_idempotency_key FROM submissions').fetchone()[0] == 'request'
         assert migrated.conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == '2'
     finally:
         migrated.close()
@@ -354,3 +358,114 @@ def test_superseded_unsent_state_can_become_current_again(ledger, monkeypatch):
     assert result['observed'][0]['delivery_key'] == key
     assert result['pending_delivery'] == 1
     assert bridge.cmd_claim(ledger, args(delivery_key=key), 10)['already_claimed'] is False
+
+
+def test_independent_ledgers_do_not_share_core_tasks(ledger, tmp_path, monkeypatch):
+    other = bridge.Ledger(tmp_path.resolve() / 'independent' / 'ledger.sqlite')
+    add_binding(other)
+    accepted = {}
+    keys = []
+    def core(executable, argv, **kwargs):
+        key = argv[argv.index('--idempotency-key') + 1]
+        keys.append(key)
+        accepted.setdefault(key, 'task-' + str(len(accepted)))
+        return submit_response(accepted[key])
+    monkeypatch.setattr(bridge, 'invoke_asterun', core)
+    try:
+        request = submit_args(tmp_path)
+        first = bridge.cmd_submit(ledger, request, 10)
+        second = bridge.cmd_submit(other, request, 10)
+        assert first['task_id'] != second['task_id']
+        assert keys[0] != keys[1]
+        assert len(accepted) == 2
+    finally:
+        other.close()
+
+
+def test_ledger_reopen_preserves_namespace_and_pending_key(tmp_path, monkeypatch):
+    path = tmp_path.resolve() / 'reopen' / 'ledger.sqlite'
+    current = bridge.Ledger(path)
+    add_binding(current)
+    original_namespace = current.namespace
+    keys = []
+    lose_response = True
+    def core(executable, argv, **kwargs):
+        nonlocal lose_response
+        keys.append(argv[argv.index('--idempotency-key') + 1])
+        if lose_response:
+            lose_response = False
+            raise bridge.BridgeError('CORE_RESPONSE_INVALID', 'accepted response lost')
+        return submit_response('task-original')
+    monkeypatch.setattr(bridge, 'invoke_asterun', core)
+    request = submit_args(tmp_path)
+    try:
+        with pytest.raises(bridge.BridgeError):
+            bridge.cmd_submit(current, request, 10)
+    finally:
+        current.close()
+    reopened = bridge.Ledger(path)
+    try:
+        assert reopened.namespace == original_namespace
+        assert bridge.cmd_submit(reopened, request, 10)['task_id'] == 'task-original'
+        assert keys[0] == keys[1]
+        assert bridge.cmd_submit(reopened, request, 10)['reused'] is True
+        assert len(keys) == 2
+    finally:
+        reopened.close()
+
+
+def test_copied_ledger_keeps_namespace_for_new_requests(ledger, tmp_path, monkeypatch):
+    directory = tmp_path.resolve() / 'copied'
+    directory.mkdir(mode=0o700)
+    path = directory / 'ledger.sqlite'
+    with sqlite3.connect(path) as target:
+        ledger.conn.backup(target)
+    path.chmod(0o600)
+    copied = bridge.Ledger(path)
+    keys = []
+    def core(executable, argv, **kwargs):
+        keys.append(argv[argv.index('--idempotency-key') + 1])
+        return submit_response('task-shared-ledger')
+    monkeypatch.setattr(bridge, 'invoke_asterun', core)
+    try:
+        assert copied.namespace == ledger.namespace
+        request = submit_args(tmp_path, request='after-copy')
+        bridge.cmd_submit(ledger, request, 10)
+        bridge.cmd_submit(copied, request, 10)
+        assert keys[0] == keys[1]
+    finally:
+        copied.close()
+
+
+@pytest.mark.parametrize('submitted', [False, True])
+def test_pre_namespace_v2_ledger_preserves_saved_keys(tmp_path, monkeypatch, submitted):
+    path = tmp_path.resolve() / 'previous-v2' / 'ledger.sqlite'
+    original = bridge.Ledger(path)
+    add_binding(original)
+    request = submit_args(tmp_path)
+    old_key = 'grokbot_' + 'e' * 64
+    original.conn.execute("DELETE FROM meta WHERE key='ledger_namespace'")
+    original.conn.execute(
+        'INSERT INTO submissions(binding, request_id, input_digest, workspace, backend, '
+        'core_idempotency_key, task_id, run_id, state, created_at, updated_at) '
+        'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        ('primary', 'request', bridge.input_digest('demo', 'fake', 'input', ''), 'demo', 'fake',
+         old_key, 'task-legacy' if submitted else None, 'run-legacy' if submitted else None,
+         'submitted' if submitted else 'intended', 'now', 'now'),
+    )
+    original.close()
+    keys = []
+    def core(executable, argv, **kwargs):
+        keys.append(argv[argv.index('--idempotency-key') + 1])
+        return submit_response('task-legacy', 'run-legacy')
+    monkeypatch.setattr(bridge, 'invoke_asterun', core)
+    migrated = bridge.Ledger(path)
+    try:
+        assert migrated.namespace
+        result = bridge.cmd_submit(migrated, request, 10)
+        assert result['task_id'] == 'task-legacy'
+        assert keys == ([] if submitted else [old_key])
+        row = migrated.conn.execute('SELECT request_id, core_idempotency_key FROM submissions').fetchone()
+        assert (row['request_id'], row['core_idempotency_key']) == ('request', old_key)
+    finally:
+        migrated.close()

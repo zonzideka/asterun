@@ -46,6 +46,16 @@ def fixture(isolated_env, monkeypatch):
                            bridge=CodexDesktop(binary, home))
 
 
+@pytest.fixture
+def registration_clock(monkeypatch):
+    # 这些测试检查超时后的回读与防重发；文件同步耗时不应抢先耗尽观察窗口。
+    clock = SimpleNamespace(now=0.0)
+    def sleep(seconds):
+        clock.now += seconds
+    monkeypatch.setattr(desktop, "time", SimpleNamespace(monotonic=lambda: clock.now, sleep=sleep))
+    return clock
+
+
 def state(fixture, *, projects=None, mapping=None, home=None):
     home = home or fixture.home
     home.mkdir(parents=True, exist_ok=True)
@@ -110,7 +120,7 @@ def test_open_timeout_is_unknown_and_late_receipt_prevents_second_open(fixture, 
     assert "secret-marker" not in json.dumps(first)
 
 
-def test_missing_receipt_times_out_without_reopening(fixture):
+def test_missing_receipt_times_out_without_reopening(fixture, registration_clock):
     result = fixture.bridge.register_project(fixture.root, 0.02)
     assert result == {"registration": "unknown", "reason": "desktop_registration_unconfirmed"}
     assert len(fixture.calls) == 1
@@ -265,7 +275,7 @@ def intent_path(fixture):
     return Path.home() / ".local/share/asterun/codex-desktop-intents" / (key + ".pending")
 
 
-def test_unknown_receipt_across_new_bridge_only_opens_once(fixture):
+def test_unknown_receipt_across_new_bridge_only_opens_once(fixture, registration_clock):
     first = fixture.bridge.register_project(fixture.root, 0.02)
     assert first["registration"] == "unknown"
     assert intent_path(fixture).is_file()
@@ -276,7 +286,7 @@ def test_unknown_receipt_across_new_bridge_only_opens_once(fixture):
     assert not fixture.home.exists()
 
 
-def test_timed_out_open_without_receipt_does_not_repeat_across_instances(fixture, monkeypatch):
+def test_timed_out_open_without_receipt_does_not_repeat_across_instances(fixture, monkeypatch, registration_clock):
     def timeout(args, **kwargs):
         fixture.calls.append((args, kwargs))
         raise subprocess.TimeoutExpired(args, kwargs["timeout"])
@@ -287,7 +297,7 @@ def test_timed_out_open_without_receipt_does_not_repeat_across_instances(fixture
     assert len(fixture.calls) == 1
 
 
-def test_late_receipt_clears_intent_and_later_user_removal_allows_registration(fixture, monkeypatch):
+def test_late_receipt_clears_intent_and_later_user_removal_allows_registration(fixture, monkeypatch, registration_clock):
     assert fixture.bridge.register_project(fixture.root, 0.02)["registration"] == "unknown"
     pending = intent_path(fixture)
     assert pending.is_file()

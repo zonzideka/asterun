@@ -4,7 +4,7 @@
 
 本模板让 GrokBot 通过 Asterun 调用用户选择的 Agent，跟踪任务，并把结果发回发起任务的聊天。用户可以只用一个 Agent 处理文本、文档或开发任务，也可以自行安排实现、检查、审查和其他步骤。Agent 与工具权限按任务选择。
 
-模板由 [Bot 配置文案](bot-profile.md)和三个操作技能组成：[安装接入](skills/setup/SKILL.md)、[任务跟踪](skills/tasks/SKILL.md)、[恢复与接管](skills/recovery/SKILL.md)。模板版本为 `0.1.0-rc1`，核心版本锁定为 `0.1.0a13`，见 [release-lock.json](release-lock.json)。本目录包含模板文案和配套 CLI。50 项模板离线测试已通过，实际宿主与任务交付按场景记录，见下文。
+模板由 [Bot 配置文案](bot-profile.md)和三个操作技能组成：[安装接入](skills/setup/SKILL.md)、[任务跟踪](skills/tasks/SKILL.md)、[恢复与接管](skills/recovery/SKILL.md)。模板版本为 `0.1.0-rc1`，核心版本锁定为 `0.1.0a13`，见 [release-lock.json](release-lock.json)。本目录包含模板文案和配套 CLI。56 项模板离线测试已通过，实际宿主与任务交付按场景记录，见下文。
 
 ## 取得模板
 
@@ -25,14 +25,19 @@
 
 ## 配套 CLI
 
-以下接口由 `scripts/bridge.py` 提供。以下命令先进入安装记录保存的模板根目录再运行，不依赖宿主技能库的当前目录：使用完整 Git 仓库时先进入 `integrations/grokbot`，使用分享包时进入解压后的模板目录。将路径、后端、工作区及目的地换成接收方核验的值。适配器使用标准库，`--ledger` 指向本实例的私有跟踪记录。命令行采用以下固定约定，stdout 返回单个 JSON Envelope。
+以下接口由 `scripts/bridge.py` 提供。先进入安装记录保存的模板根目录：完整 Git 仓库使用 `integrations/grokbot`，分享包使用解压后的目录。将路径、后端、工作区及目的地换成接收方核验的值。选定 Asterun 入口后先解析符号链接，核对真实文件的来源和版本，将其绝对路径传给 `--asterun`。适配器使用标准库，`--ledger` 指向本实例的私有真实目录。stdout 返回单个 JSON Envelope。
 
 ```sh
 python3 scripts/bridge.py --ledger /path/to/private/ledger \
   init --binding primary --asterun /absolute/venv/bin/asterun \
   --config /absolute/instance/config.json --core-state /absolute/instance/state \
   --location local --workspace PROJECT --backend AGENT \
-  --destination CHAT_ID_FROM_HOST
+  --destination PRIVATE_CHAT_ALIAS
+```
+
+读取 `init` 的 Envelope，只有 `ok=true` 后才执行提交；失败时先处理具体 `error`，再用同一绑定继续：
+
+```sh
 python3 scripts/bridge.py --ledger /path/to/private/ledger \
   submit --binding primary --request-id REQUEST_ID \
   --workspace PROJECT --backend AGENT --input /path/to/prompt.txt
@@ -44,9 +49,9 @@ python3 scripts/bridge.py --ledger /path/to/private/ledger \
   status --binding primary
 ```
 
-云电脑使用 `--location host-cloud`。`init` 的 `--workspace`、`--backend` 可重复指定。`submit --input -` 从 stdin 读取输入，需要续接时添加 `--conversation-id` 并由 Asterun 校验绑定。请求重试沿用 `REQUEST_ID`，聊天目的地从当前宿主接口取得并固定。
+云电脑使用 `--location host-cloud`。`init` 的 `--workspace`、`--backend` 可重复指定。`submit --input -` 从 stdin 读取输入，需要续接时添加 `--conversation-id` 并由 Asterun 校验绑定。请求重试沿用 `REQUEST_ID`。为每个接收聊天生成并保存唯一的私有逻辑别名，用它替换 `PRIVATE_CHAT_ALIAS`；后续沿用同一值。别名用于关联账本记录，原聊天由宿主的当前对话和 routine 归属确认，`SendToUser` 在该聊天发送。当前工具未提供稳定的原生聊天 ID，别名也无需作为发送路由参数传入。
 
-先使用 `claim` 领取具体消息。仅在 Envelope 的 `ok=true` 且 `data.already_claimed=false` 时，调用 `SendToUser`，设置 `type=text`，将 `content` 原样取自 `claim` 的 `data.content`。取得宿主返回的实际消息 ID 后提交 `ack`：
+先使用 `claim` 领取具体消息。仅在 Envelope 的 `ok=true`、`data.already_claimed=false` 且 `data.delivery_state=sending` 时，调用 `SendToUser`，设置 `type=text`、`end_turn=false`，将 `content` 原样取自 `claim` 的 `data.content`。保留当前轮次，以便取得宿主返回的实际消息 ID 后提交 `ack`：
 
 ```sh
 python3 scripts/bridge.py --ledger /path/to/private/ledger \
@@ -62,9 +67,9 @@ python3 scripts/bridge.py --ledger /path/to/private/ledger \
 
 每次提交后，保存返回的 task/run/conversation 引用及当前聊天关联。长期任务由常驻 Asterun 核心执行。通过 `update_state` 的 `target=routine`、`action=create` 创建原生 routine，使用标准五段 cron `*/5 * * * *`；已有 routine 按需 `update` 或 `resume`。该计划已在最小探针中自动触发，并在原聊天显示标记消息。
 
-routine 使用原聊天和同一 `binding`。每次唤醒在已绑定的执行主机运行一次 `poll --limit 3`，再读取 `inbox --limit 3`。按上节的 `claim`、`SendToUser`、`ack` 顺序处理本批消息。普通状态未变化时保持安静，结束本次观察后等待下一次唤醒。
+routine 使用原聊天和同一 `binding`。每次唤醒在已绑定的执行主机运行一次 `poll --limit 3`，再读取 `inbox --limit 3`。按上节的 `claim`、`SendToUser`、`ack` 顺序处理本批消息。普通状态未变化时保持安静，完成末次 poll、状态检查及必要的暂停后，再结束本轮。
 
-处理后读取 `status`。`needs_followup=true` 时保留 routine，包含正在执行、待交付或 `sending` 未决记录；为 `false` 时，通过 `update_state` 的 `target=routine`、`action=pause` 暂停该绑定的 routine。提交新任务后恢复。用户主动结束跟踪时保留原任务和交付记录。
+交付并 ack 后再次运行 `poll`，核对当前运行，再读取 `status`。`needs_followup=true` 时保留 routine，包含正在执行、待交付或 `sending` 未决记录；为 `false` 时，通过 `update_state` 的 `target=routine`、`action=pause` 暂停该绑定的 routine。提交新任务后恢复。用户主动结束跟踪时保留原任务和交付记录。
 
 routine、聊天关联、本机选择、模板解压根目录和私有账本均在接收方环境创建或记录。`Shell` 的执行位置、`SendToUser` 的当前聊天以及绑定中的目的地保持对应。
 
@@ -74,4 +79,6 @@ Bot 按用户目标组织流程。需要 PR 审查时使用[审查配方](https:
 
 分享内容保留通用文案、公开安装引用和示例。账户凭据、原生会话、真实项目路径、运行记录、routine 标识和聊天绑定留在各自私有环境。
 
-接线验收从新环境的离线任务开始，再在授权范围内验证实际后端、routine 再次唤醒、同聊天交付和异常恢复。独立接收方验收待安排。已验证三文件安装材料复制到云电脑并校验 SHA、下载固定 a13 wheel、在 Python 3.13.5 独立 venv 安装并读到版本。后端调用、完整任务交付、关闭聊天后的恢复及独立接收方验收继续按实际场景验证，分层记录结果。后端能力见[发行说明](https://github.com/zonzideka/asterun/blob/v0.1.0a13/docs/release-v0.1.md)。
+2026-09-13 已在当前账户的云电脑完成材料复制与哈希校验、固定 a13 wheel 下载、Python 3.13.5 独立 venv 安装及版本读取。fake 任务重复使用同一请求键得到相同任务与运行引用；离开聊天页面后，cron 唤醒 Bot，原聊天显示任务结果，ack 记录 `host_reported_delivered`。再次 poll 返回 `needs_followup=false`，随后暂停 routine。这轮验证覆盖云端核心、适配器和前端交付。
+
+云端真实模型、本机真实后端任务、应用重启恢复和独立接收方验收继续按[验收记录](acceptance.md)完成。同一账户中的 Bot 副本与云电脑沿用该账户环境，独立新用户仍需另行验证。后端能力见[发行说明](https://github.com/zonzideka/asterun/blob/v0.1.0a13/docs/release-v0.1.md)。

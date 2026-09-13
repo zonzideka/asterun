@@ -17,9 +17,9 @@ description: 按用户目标提交和跟踪 Asterun 任务，通过 Bot 原生 r
 
 长期任务由常驻核心执行。使用 `update_state` 的 `target=routine`、`action=create`，在原聊天创建同一 binding 的 routine，schedule 使用 `*/5 * * * *`。已有 routine 用 `resume` 恢复，执行安排变更时用 `update`。每次唤醒保持原执行位置：云端 `Shell` 不带 `machineId`，本机 `Shell` 使用安装接入时通过 `ListMachines` 选定的机器。
 
-本轮运行一次 `poll --binding NAME --limit 3`，再读取 `inbox --binding NAME --limit 3`。检查 Envelope 及 `poll` 的错误项，保留未决任务。状态未变化时保持安静，处理完本批后结束本次观察，等待下一次 routine 唤醒。
+本轮运行一次 `poll --binding NAME --limit 3`，再读取 `inbox --binding NAME --limit 3`。检查 Envelope 及 `poll` 的错误项，保留未决任务。状态未变化时保持安静。完成下述发送、ack、末次 poll 和状态检查，按需暂停 routine 后，再结束本轮。
 
-对 inbox 中的交付记录执行 `claim --binding NAME --delivery-key KEY`。先核对绑定目的地仍是原聊天；仅在 `ok=true` 且 `data.already_claimed=false` 时调用 `SendToUser`，设置 `type=text`，将 `content` 原样取自 `data.content`。`already_claimed=true` 时跳过发送。
+对 inbox 中的交付记录执行 `claim --binding NAME --delivery-key KEY`。按保存的私有聊天别名核对当前聊天和 routine 仍属于原聊天；别名用于账本关联，`SendToUser` 使用当前聊天发送。仅在 `ok=true`、`data.already_claimed=false` 且 `data.delivery_state=sending` 时调用 `SendToUser`，设置 `type=text`、`end_turn=false`，将 `content` 原样取自 `data.content`。`already_claimed=true` 时跳过发送。
 
 取得 `SendToUser` 返回的不透明消息 ID 后，使用原 delivery key、该 ID 和 `data.content_sha256` 执行 `ack`。账本记录 `host_reported_delivered`，实际聊天显示另行确认。领取后的发送结果未知时保持 `sending`，按[恢复技能](https://github.com/zonzideka/asterun/blob/grokbot-template-v0.1.0-rc1/integrations/grokbot/skills/recovery/SKILL.md)处理。
 
@@ -27,7 +27,7 @@ description: 按用户目标提交和跟踪 Asterun 任务，通过 Bot 原生 r
 
 任务完成后读取结果、产物和配置的验收状态。用户目标决定直接交付、继续另一步、执行检查或安排审查。后续提交作为明确的新步骤，保留原任务关系，并沿用该步骤的权限和预算约定。
 
-每轮交付后读取 `status`。`needs_followup=true` 时保留 routine，包含活动任务、待发消息及 `sending` 记录；为 `false` 时使用 `update_state` 的 `action=pause` 暂停。提交新任务后恢复。用户主动结束跟踪时保留原任务和交付记录；任务暂停、取消和接管按恢复技能处理。
+交付并 ack 后再次运行 `poll`，核对当前运行，再读取 `status`。`needs_followup=true` 时保留 routine，包含活动任务、待发消息及 `sending` 记录；为 `false` 时使用 `update_state` 的 `action=pause` 暂停。提交新任务后恢复。用户主动结束跟踪时保留原任务和交付记录；任务暂停、取消和接管按恢复技能处理。
 
 ## English
 
@@ -37,13 +37,13 @@ Obtain installation material from the [fixed release page](https://github.com/zo
 
 Use `bridge.py submit` to register a request and pass it to the core. Supply `--binding`, a stable `--request-id`, `--workspace`, `--backend`, and `--input`; add `--conversation-id` for continuation. The global `--ledger` selects initialized private records. See the [adapter CLI](https://github.com/zonzideka/asterun/blob/grokbot-template-v0.1.0-rc1/integrations/grokbot/README.en.md#adapter-cli). Record execution from actual responses.
 
-After acceptance, save task/run/conversation references and associate them with the original chat and execution instance. Reuse the request ID for the same request. Read the original ledger and task if the reply is unclear. Continue native sessions with the original conversation reference where the backend and binding checks support it.
+Once the submission is accepted, save task/run/conversation references and associate them with the original chat and execution instance. Reuse the request ID for the same request. Read the original ledger and task if the reply is unclear. Continue native sessions with the original conversation reference where the backend and binding checks support it.
 
 Let the persistent core execute long-running tasks. Use `update_state` with `target=routine` and `action=create` to create the binding's routine in the original chat, with schedule `*/5 * * * *`. Resume an existing routine and update it when execution arrangements change. Each wake keeps the original execution location: cloud `Shell` omits `machineId`; local `Shell` uses the machine selected through `ListMachines` during setup.
 
-Run one `poll --binding NAME --limit 3`, then read `inbox --binding NAME --limit 3`. Check the Envelope and any poll errors, retaining unresolved tasks. Stay quiet while state is unchanged. Finish this batch and end the observation until the next routine wake.
+Run one `poll --binding NAME --limit 3`, then read `inbox --binding NAME --limit 3`. Check the Envelope and any poll errors, retaining unresolved tasks. Stay quiet while state is unchanged. Complete the sends, acknowledgements, final poll, and status checks below, pausing the routine if appropriate, before ending the turn.
 
-Claim an inbox item with `claim --binding NAME --delivery-key KEY`. Confirm that the bound destination is still the original chat. Call `SendToUser` only when `ok=true` and `data.already_claimed=false`, with `type=text` and `content` taken unchanged from `data.content`. Skip sending when `already_claimed=true`.
+Claim an inbox item with `claim --binding NAME --delivery-key KEY`. Use the saved private chat alias to confirm that the current chat and routine still belong to the original chat. The alias associates ledger records; `SendToUser` sends in the current chat. Call it only when `ok=true`, `data.already_claimed=false`, and `data.delivery_state=sending`, with `type=text`, `end_turn=false`, and `content` taken unchanged from `data.content`. Skip sending when `already_claimed=true`.
 
 After `SendToUser` returns an opaque message ID, use `ack` with the original delivery key, that ID, and `data.content_sha256`. The ledger records `host_reported_delivered`; confirm actual chat visibility separately. Preserve `sending` when the outcome is unclear after a claim, and follow the [recovery skill](https://github.com/zonzideka/asterun/blob/grokbot-template-v0.1.0-rc1/integrations/grokbot/skills/recovery/SKILL.md).
 

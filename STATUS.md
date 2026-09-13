@@ -10,4 +10,4 @@
 
 开发先核对当前提交、工作区和相关任务，默认离线入口为 `scripts/verify-offline.sh`。设计与维护索引见[设计](docs/design.md)、[开发规划](docs/development-plan.md)和[协议实现表](docs/protocol/IMPLEMENTATION.md)。
 
-可选的 [GrokBot 模板](integrations/grokbot/README.md)进入 `0.1.0-rc1` 验收，使用独立 SQLite 账本和宿主 routine 跟踪普通任务。50 项模板离线测试与 34 项核心包装检查通过；核心运行代码与已有协议保持不变。当前账户已验证云端安装和原聊天探针，完整任务交付继续验收，独立新用户验收保留待办。分层结果见[模板验收记录](integrations/grokbot/acceptance.md)。
+可选的 [GrokBot 模板](integrations/grokbot/README.md)进入 `0.1.0-rc1` 验收，使用独立 SQLite 账本和宿主 routine 跟踪普通任务。56 项模板离线测试与 34 项核心包装检查通过，并发提交专项重复 10 次全部通过；核心运行代码与已有协议保持不变。当前账户已验证云端安装及 fake 任务在离开聊天页面后的唤醒、原聊天交付、ack 和停止跟进。本机真实后端前置检查因符号链接入口失败，尚未创建模型任务。真实后端、应用重启、原生模板分享和独立新用户验收保留待办。分层结果见[模板验收记录](integrations/grokbot/acceptance.md)。

@@ -26,10 +26,13 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 FAKE_ASTERUN = textwrap.dedent(
     r"""
     #!{python}
-    import hashlib, json, os, sys, time
+    import fcntl, hashlib, json, os, sys, time
     from pathlib import Path
 
     state_path = Path(__file__).with_name("fake-state.json")
+    # Model the core's serialized durable store, including concurrent CLI calls.
+    state_lock = state_path.with_suffix(".lock").open("a")
+    fcntl.flock(state_lock, fcntl.LOCK_EX)
     state = json.loads(state_path.read_text())
     args = sys.argv[1:]
     state.setdefault("calls", []).append(args)
@@ -311,7 +314,7 @@ def test_concurrent_submit_same_key(tmp_path: Path) -> None:
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(lambda _: once(), range(2)))
-    assert all(item["ok"] for item in results)
+    assert all(item["ok"] for item in results), results
     ids = {item["data"]["task_id"] for item in results}
     assert len(ids) == 1
     conn = __import__("sqlite3").connect(ledger)

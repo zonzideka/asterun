@@ -8,6 +8,7 @@ import math
 import os
 from pathlib import Path
 import re
+import secrets
 import sqlite3
 import stat
 import subprocess
@@ -361,6 +362,13 @@ class Ledger:
         )
         self.begin_write()
         try:
+            self.conn.execute(
+                "INSERT OR IGNORE INTO meta(key, value) VALUES ('ledger_namespace', ?)",
+                (secrets.token_hex(32),),
+            )
+            self.namespace = self.conn.execute(
+                "SELECT value FROM meta WHERE key='ledger_namespace'",
+            ).fetchone()["value"]
             columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(submissions)")}
             if "core_idempotency_key" not in columns:
                 self.conn.execute("ALTER TABLE submissions ADD COLUMN core_idempotency_key TEXT")
@@ -425,8 +433,9 @@ def input_digest(workspace: str, backend: str, text: str, conversation_id: str) 
     }))
 
 
-def scoped_idempotency_key(binding: sqlite3.Row, request_id: str) -> str:
+def scoped_idempotency_key(binding: sqlite3.Row, request_id: str, ledger_namespace: str) -> str:
     return "grokbot_" + sha256_text(canonical({
+        "ledger_namespace": ledger_namespace,
         "binding": binding["name"], "fingerprint": binding["fingerprint"], "request_id": request_id,
     }))
 
@@ -483,7 +492,7 @@ def build_material(task: dict[str, Any], run: dict[str, Any], approval: dict[str
         f"任务：{task.get('id')} 运行：{run.get('id')}",
         f"工作区：{task.get('workspace')} 后端：{task.get('backend')}",
         f"结果：{summary}" if summary else "结果：（无摘要）",
-        f"验收：{acceptance}（运行成功不等于验收通过）",
+        f"验收：{acceptance}",
     ]
     evidence: dict[str, Any] = {
         "task_id": task.get("id"),
@@ -675,7 +684,7 @@ def cmd_submit(ledger: Ledger, args: argparse.Namespace, timeout: float) -> dict
                     "conversation_id, core_idempotency_key, state, created_at, updated_at) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (name, request_id, digest, workspace, backend, conversation_id,
-                     scoped_idempotency_key(binding, request_id), "intended", now, now),
+                     scoped_idempotency_key(binding, request_id, ledger.namespace), "intended", now, now),
                 )
             except sqlite3.IntegrityError:
                 existing = ledger.conn.execute(
