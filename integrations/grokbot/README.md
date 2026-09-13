@@ -4,7 +4,7 @@
 
 本模板让 GrokBot 通过 Asterun 调用用户选择的 Agent，跟踪任务，并把结果发回发起任务的聊天。用户可以只用一个 Agent 处理文本、文档或开发任务，也可以自行安排实现、检查、审查和其他步骤。Agent 与工具权限按任务选择。
 
-模板由 [Bot 配置文案](bot-profile.md)和三个操作技能组成：[安装接入](skills/setup/SKILL.md)、[任务跟踪](skills/tasks/SKILL.md)、[恢复与接管](skills/recovery/SKILL.md)。模板版本为 `0.1.0-rc1`，核心版本锁定为 `0.1.0a13`，见 [release-lock.json](release-lock.json)。本目录包含模板文案和配套 CLI。48 项模板离线测试已通过，实际宿主与任务交付按场景记录，见下文。
+模板由 [Bot 配置文案](bot-profile.md)和三个操作技能组成：[安装接入](skills/setup/SKILL.md)、[任务跟踪](skills/tasks/SKILL.md)、[恢复与接管](skills/recovery/SKILL.md)。模板版本为 `0.1.0-rc1`，核心版本锁定为 `0.1.0a13`，见 [release-lock.json](release-lock.json)。本目录包含模板文案和配套 CLI。50 项模板离线测试已通过，实际宿主与任务交付按场景记录，见下文。
 
 ## 取得模板
 

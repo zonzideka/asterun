@@ -4,7 +4,7 @@
 
 This template lets GrokBot invoke the user's chosen Agent through Asterun, follow the task, and return results to the chat that started it. A user can use one Agent for text, documents, or development, or arrange their own implementation, checking, review, and other steps. Agent selection and tool permissions follow the task.
 
-The template includes a [Bot profile](bot-profile.en.md) and three operating skills: [setup](skills/setup/SKILL.md), [task tracking](skills/tasks/SKILL.md), and [recovery and handoff](skills/recovery/SKILL.md). The template version is `0.1.0-rc1`, with core `0.1.0a13` pinned in [release-lock.json](release-lock.json). This directory contains template text and the supporting CLI. All 48 template offline tests pass. Host behavior and task delivery are recorded by scenario below.
+The template includes a [Bot profile](bot-profile.en.md) and three operating skills: [setup](skills/setup/SKILL.md), [task tracking](skills/tasks/SKILL.md), and [recovery and handoff](skills/recovery/SKILL.md). The template version is `0.1.0-rc1`, with core `0.1.0a13` pinned in [release-lock.json](release-lock.json). This directory contains template text and the supporting CLI. All 50 template offline tests pass. Host behavior and task delivery are recorded by scenario below.
 
 ## Get the template
 

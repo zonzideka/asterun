@@ -967,7 +967,8 @@ def cmd_inbox(ledger: Ledger, args: argparse.Namespace, timeout: float) -> dict[
         raise BridgeError("INVALID_REQUEST", "limit 必须是 1 到 100")
     rows = ledger.conn.execute(
         "SELECT * FROM deliveries WHERE binding=? AND delivery_state IN ('pending', 'sending') "
-        "ORDER BY created_at ASC LIMIT ?",
+        "ORDER BY CASE delivery_state WHEN 'pending' THEN 0 ELSE 1 END, "
+        "created_at ASC, delivery_key ASC LIMIT ?",
         (name, args.limit),
     ).fetchall()
     return {
