@@ -9,3 +9,5 @@
 公开源码首版以 `c19535e` 为快照来源，102 个运行文件与 `37bc705` 保持一致，保留全部 102 个测试文件。Python 3.11.16 完整离线回归为 2002 通过、4 跳过；本轮使用临时状态与离线后端夹具。核心与三个插件共 4 个包、8 份 wheel/sdist 已通过 34 项包装检查，4 份 sdist 重建和 4 个 wheel 离线安装均已验收。既有现场验证范围见发行说明，内容摘要与核验方式见[来源说明](docs/source-provenance.md)。
 
 开发先核对当前提交、工作区和相关任务，默认离线入口为 `scripts/verify-offline.sh`。设计与维护索引见[设计](docs/design.md)、[开发规划](docs/development-plan.md)和[协议实现表](docs/protocol/IMPLEMENTATION.md)。
+
+可选的 [GrokBot 模板](integrations/grokbot/README.md)进入 `0.1.0-rc1` 验收，使用独立 SQLite 账本和宿主 routine 跟踪普通任务。48 项模板离线测试与 34 项核心包装检查通过；核心运行代码与已有协议保持不变。当前账户已验证云端安装和原聊天探针，完整任务交付继续验收，独立新用户验收保留待办。分层结果见[模板验收记录](integrations/grokbot/acceptance.md)。
