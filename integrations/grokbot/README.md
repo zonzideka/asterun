@@ -81,4 +81,4 @@ Bot 按用户目标组织流程。需要 PR 审查时使用[审查配方](https:
 
 2026-09-13 已在当前账户的云电脑完成材料复制与哈希校验、固定 a13 wheel 下载、Python 3.13.5 独立 venv 安装及版本读取。fake 任务重复使用同一请求键得到相同任务与运行引用；离开聊天页面后，cron 唤醒 Bot，原聊天显示任务结果，ack 记录 `host_reported_delivered`。再次 poll 返回 `needs_followup=false`，随后暂停 routine。这轮验证覆盖云端核心、适配器和前端交付。
 
-云端真实模型、本机真实后端任务、应用重启恢复和独立接收方验收继续按[验收记录](acceptance.md)完成。同一账户中的 Bot 副本与云电脑沿用该账户环境，独立新用户仍需另行验证。后端能力见[发行说明](https://github.com/zonzideka/asterun/blob/v0.1.0a13/docs/release-v0.1.md)。
+本机 Grok Build 已在真实项目目录完成短文任务，摘要核对通过；宿主回执为 `host_reported_delivered`，末次 poll 无需跟进。该结果的原聊天 UI 显示、云端真实模型、应用重启恢复和独立接收方继续按[验收记录](acceptance.md)验证。同一账户中的 Bot 副本与云电脑沿用该账户环境，独立新用户仍需另行验证。后端能力见[发行说明](https://github.com/zonzideka/asterun/blob/v0.1.0a13/docs/release-v0.1.md)。

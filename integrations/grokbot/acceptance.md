@@ -4,7 +4,7 @@
 
 [作者声明](author-profile.yaml)供 Bootstrap 离线检查，[宿主映射](host-mapping.json)记录实际入口与证据层次。`declared` 表示文档或设计已说明，`host_reported` 表示候选 Bot 已报告工具，`verified` 需要真实调用及回读证据。声明检查通过只能记录为 `schema_passed`。
 
-2026-09-13 已完成 Bootstrap 声明检查、云端独立安装，以及 fake 任务经原生 cron 唤醒、回原聊天、ack 和暂停 routine 的完整前端流程。本机常驻核心的 fake 回归也已通过。真实模型任务、应用重启恢复与原生模板分享尚待验收。用户确认暂无独立接收者，新用户验收为 `pending`。
+2026-09-13 已完成 Bootstrap 声明检查、云端独立安装，以及 fake 任务经原生 cron 唤醒、回原聊天、ack 和暂停 routine 的完整前端流程。本机 Grok Build 已完成真实短文任务，宿主回执已记录；该结果的原聊天 UI 显示仍待确认。云端真实模型、应用重启恢复与原生模板分享尚待验收。用户确认暂无独立接收者，新用户验收为 `pending`。
 
 ## 验收场景
 
@@ -13,7 +13,7 @@
 | 场景 | 验收方法与通过条件 | 当前状态 |
 |---|---|---|
 | 作者声明 | Bootstrap 校验结构、引用、模式路径和 guided 承诺。固定检查器 62b9064293a34879af3b1c26dcb760162e4e0c21 返回 0 errors、0 warnings。 | schema_passed |
-| 映射与 bridge | 映射 JSON 可解析，CLI 参数与实际实现一致。本机 fake 常驻核心回归通过；云端 fake 任务完成 submit→routine poll→inbox→claim→SendToUser→ack→poll，原聊天 UI 可见结果。 | verified，限 fake 后端；云端使用真实宿主交付 |
+| 映射与 bridge | 映射 JSON 可解析，CLI 参数与实际实现一致。云端 fake 任务完成完整 UI 交付；本机 Grok Build 真实任务执行成功，ack 后 poll 无需继续跟进。 | 云端 fake 与本机真实执行 verified；本机回执 host_reported、UI pending |
 | 发行材料 | 核对公开 wheel 下载、SHA-256 和重复调用复用；package 与 fetch 相关测试共 11 项通过。 | verified |
 | 空环境首次设置 | 由独立接收者从分享链接建立新 Bot，选择执行位置和至少一个后端，完成自己的安装、授权与首个结果。 | pending |
 | 分享内容 | 在原生模板详情及接收结果中检查技能、记忆、插件和 routine；无作者路径、账户、机器或聊天 ID、历史任务、私有内容与就绪状态。 | pending |
@@ -21,10 +21,10 @@
 | 云电脑安装 | 核对复制的 ZIP 与公开 wheel 哈希；在 Python 3.13.5 新 venv 安装，`asterun version` 返回 `0.1.0a13`、退出码 0；原始结果文件已取回核对。 | verified，未登录或调用模型 |
 | 云电脑执行 | 在云电脑安装并启动核心，从宿主调用 CLI；核对任务、工作区、后端和状态目录均属于云端。 | fake 任务 verified；真实模型 pending |
 | 宿主最小探针 | 标准 cron 唤醒候选 Bot，完成云端 Shell 最小探测，在原聊天看到唯一探针消息，并看到 routine 已禁用事件。 | verified |
-| 调用本机 | 通过宿主列出机器，解析所选 Asterun 入口并核对安装来源；init 成功后在选定机器提交任务，验证实际 cwd 与持久记录。 | pending；符号链接入口被 init 拒绝，尚无模型任务 |
-| 单 Agent 非代码任务 | 使用公开短文与一个用户选择的后端得到可核对的摘要；无需 Git、第二个 Agent 或 PR；结果回到原聊天。 | pending |
+| 调用本机 | 解析真实入口后 init 成功，在实际项目目录由 Grok Build 完成短文任务；一次模型调用、零工具调用，原生 end_turn、退出码 0，任务 succeeded。 | 真实执行 verified；宿主回执 host_reported、UI pending |
+| 单 Agent 非代码任务 | 本机 Grok Build 摘要准确保留原文的 10 月 5 日、10 月 12 日、24 个座位和最多 3 本书；结果经 routine 交付并 ack。 | 内容 verified；宿主回执 host_reported、UI pending |
 | 后台观察与唤醒 | 保存 task/run；离开聊天页面后，由原生 cron 唤醒 Bot 读取原任务并交付结果。 | 云端 fake verified；应用重启 pending |
-| 重复请求与观察恢复 | 重复同一请求键，核对 task/run/conversation 引用一致；离开聊天页面后续读同一任务。应用重启和 run 变化另行覆盖。 | 云端 fake 重复请求与离页续读 verified；其他项 pending |
+| 重复请求与观察恢复 | 云端 fake 与本机 Grok Build 重复同一请求键均复用任务；云端另已验证离开聊天页面后续读。应用重启和 run 变化另行覆盖。 | 两模式重复请求 verified；应用重启及 run 变化 pending |
 | 消息回执与交付不明 | claim 成功且 `already_claimed=false`、`delivery_state=sending` 时，以 `end_turn=false` 发送，取得消息 ID 与摘要再 ack。再次 poll 后读 status，按需暂停 routine。回执缺失时保留不明记录。 | 云端 fake 发送、ack、UI 显示和停止跟进 verified；真实发送响应丢失 pending |
 | 审批与输入 | 读取真实待批对象，按已配置策略或用户答复处理，并核对 task/run/目标摘要；策略不匹配时展示原因，旧审批不能转发。 | pending |
 | 真实代码目录 | 选择已有仓库，让具有对应能力的后端读取、修改一个测试文件并运行范围内测试；核对实际 cwd、文件差异和测试结果。 | pending |
@@ -49,6 +49,6 @@ routine 探针与 `SendToUser` 的原始回执文件已取回并核对。消息 
 
 宿主报告 `update_state` 可设置 profile、写入 memory 与全局技能库，并提供 `create_bot_share_json` 生成草稿，最终发布在 UI 完成。本轮尚未写入技能或验证分享名称、分享内容与接收结果。
 
-本机真实后端的前置检查遇到符号链接入口：init 返回 `PATH_INVALID`，随后的 submit 返回 `NOT_FOUND`，尚未创建模型任务。接入步骤已要求解析真实入口并在 init 成功后提交；该场景待重新验收。
+本机入口解析后，init 成功，Grok Build 在实际项目目录完成公开短文任务：一次模型调用、零工具调用，原生 `end_turn`、退出码 0，任务 `succeeded`。摘要中的 10 月 5 日、10 月 12 日、24 个座位和最多 3 本书与原文一致，重复 request 复用同一任务。后续 routine 完成 claim，14:28:16Z 的回执记录 `host_reported_delivered`，再次 poll 返回 `needs_followup=false`。原始 Envelope 已回读，原聊天 UI 显示待确认。
 
 公开候选保留各项实际验证层次，原生模板分享仍需完成 UI 内容检查。同账户副本与共享云电脑沿用当前账户环境；独立新用户、未覆盖执行模式和应用重启恢复继续列为待办。

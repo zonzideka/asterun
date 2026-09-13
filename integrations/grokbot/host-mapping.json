@@ -67,13 +67,17 @@
       "cloud_backend_verification": "pending"
     },
     "local_process": {
-      "level": "host_reported",
+      "level": "verified",
       "discovery_tool": "ListMachines",
       "host_tool": "Shell",
       "reported_arguments": ["command", "working_directory", "block_until_ms", "machineId"],
       "binding": "用户从实际发现结果选择机器；每次调用沿用该机器与其 Asterun 实例，机器 ID 只存于接收者私有设置。",
-      "verification": "pending",
-      "latest_attempt": "入口为符号链接导致 init 返回 PATH_INVALID；其后的 submit 返回 NOT_FOUND，尚未产生模型任务。需保存解析后的真实入口并重新验收。"
+      "verification": "local_grokbuild_text_task_verified",
+      "verified_on": "2026-09-13",
+      "verified_scope": "入口解析后 init 成功，Grok Build 在真实项目目录完成短文任务；一次模型调用、零工具调用，原生 end_turn、退出码 0，摘要核对通过。重复请求复用任务。",
+      "delivery_receipt": "host_reported_delivered",
+      "post_ack_needs_followup": false,
+      "chat_ui_visibility": "pending"
     }
   },
   "core_interfaces": {
@@ -94,7 +98,7 @@
     "level": "verified",
     "interface_verification": "resident_fake_core_and_cloud_frontend_roundtrip_verified",
     "verified_on": "2026-09-13",
-    "verified_scope": "本机常驻核心的 fake 回归，以及云端 fake 任务经真实宿主 routine、SendToUser、ack 的流程均已验证；云端原聊天结果另有 UI 回读。真实模型任务另行验收。",
+    "verified_scope": "本机 fake 回归、云端 fake 任务完整 UI 交付及本机 Grok Build 真实短文执行均已验证。本机回执为 host_reported_delivered，末次 poll 无需跟进；本机原聊天 UI 显示待确认。",
     "global_arguments": ["--ledger", "--timeout"],
     "commands": {
       "init": ["--binding", "--asterun", "--config", "--core-state", "--location", "--workspace", "--backend", "--destination"],
@@ -154,6 +158,8 @@
     "receipt_verification": "host_reported",
     "raw_receipt_verification": "file_transfer_and_content_checked",
     "asterun_task_delivery_verification": "verified_with_cloud_fake_backend",
+    "local_real_backend_receipt": "host_reported_delivered",
+    "local_real_backend_ui_visibility": "pending",
     "history_lookup": "unavailable_in_reported_toolset",
     "idempotent_send": "unverified",
     "unknown_delivery": "发送前保存交付意图。未取得可信回执时保留不明状态并交给用户核对，后续观察不自动重发。",
