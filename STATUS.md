@@ -9,3 +9,5 @@
 公开源码首版以 `c19535e` 为快照来源，102 个运行文件与 `37bc705` 保持一致，保留全部 102 个测试文件。Python 3.11.16 完整离线回归为 2002 通过、4 跳过；本轮使用临时状态与离线后端夹具。核心与三个插件共 4 个包、8 份 wheel/sdist 已通过 34 项包装检查，4 份 sdist 重建和 4 个 wheel 离线安装均已验收。既有现场验证范围见发行说明，内容摘要与核验方式见[来源说明](docs/source-provenance.md)。
 
 开发先核对当前提交、工作区和相关任务，默认离线入口为 `scripts/verify-offline.sh`。设计与维护索引见[设计](docs/design.md)、[开发规划](docs/development-plan.md)和[协议实现表](docs/protocol/IMPLEMENTATION.md)。
+
+可选的 [GrokBot 模板](integrations/grokbot/README.md)已发布 `0.1.0-rc1`，并继续现场验收，使用独立 SQLite 账本和宿主 routine 跟踪普通任务。56 项模板离线测试与 34 项核心包装检查通过，并发提交专项重复 10 次全部通过；核心运行代码与已有协议保持不变。当前账户已验证云端安装及 fake 任务在离开聊天页面后的唤醒、原聊天交付、ack 和停止跟进。本机 Grok Build 已在真实项目目录完成短文任务，摘要核对通过；宿主回执记录 host_reported_delivered，末次 poll 无需跟进。发布后已在原生 UI 确认本机结果和回执吻合，三个临时 routine 全部暂停。固定 ZIP 已通过匿名下载与 manifest 核对，包内记录保留发布时状态，当前文档补记后续现场确认。[原生 Asterun 模板](https://x.ai/bot/4r3ysO1eA-6ZLI6cRoTNU)第 3 版已发布，11 条完整 memory、3 个完整技能、发布卡及公开页面分别核对通过。同账户导入尚未执行，等待用户在点击 Add to Grok Bot 时确认[分享条款](https://x.ai/legal/bot-sharing-terms)；云端真实模型、应用重启和独立新用户验收保留待办。分层结果见[模板验收记录](integrations/grokbot/acceptance.md)。

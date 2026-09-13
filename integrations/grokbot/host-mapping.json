@@ -1,0 +1,281 @@
+{
+  "schema_version": "asterun-grokbot-host-mapping/v1",
+  "purpose": "记录 Asterun 模板对 GrokBot 宿主入口的映射及验证情况。",
+  "format_owner": "asterun.integration",
+  "template_assurance": "guided",
+  "template_version": "0.1.0-rc1",
+  "core_version": "0.1.0a13",
+  "updated_on": "2026-09-13",
+  "evidence_levels": {
+    "declared": "文档或适配设计说明了该入口。",
+    "host_reported": "候选 Bot 报告了工具和参数，尚待实际调用核对。",
+    "verified": "实际调用及必要回读已经完成，并保存对应证据。"
+  },
+  "setup": {
+    "profile": "author-profile.yaml",
+    "native_import_format": false,
+    "programmatic_setup_api": "unverified",
+    "declaration_check": {
+      "level": "schema_passed",
+      "checker_commit": "62b9064293a34879af3b1c26dcb760162e4e0c21",
+      "checked_on": "2026-09-13",
+      "errors": 0,
+      "warnings": 0
+    },
+    "state_authority": "recipient-settings-summary-and-observed-tool-results",
+    "core_task_state": "Asterun CLI/MCP 返回的持久任务和运行记录",
+    "executable_binding": "将所选入口解析为真实绝对文件路径，核对安装来源和版本后保存；ledger 使用私有真实目录。",
+    "submission_precondition": "init 返回 ok=true 后才执行 submit；失败先处理具体 error。",
+    "destination_binding": {
+      "example": "PRIVATE_CHAT_ALIAS",
+      "kind": "private_unique_logical_alias_per_receiving_chat",
+      "native_chat_id_available": false,
+      "send_routing_argument": false,
+      "verification": "由保存的别名关联记录核对当前聊天和 routine 归属，SendToUser 在原聊天发送。"
+    },
+    "recipient_configuration": [
+      "execution_mode",
+      "selected_machine_when_local",
+      "asterun_executable",
+      "config_path",
+      "state_dir",
+      "workspace",
+      "selected_backends",
+      "conversation_destination",
+      "observation_routine_when_enabled"
+    ],
+    "author_values_included": false
+  },
+  "execution_modes": {
+    "host_cloud": {
+      "level": "verified",
+      "host_tool": "Shell",
+      "reported_arguments": ["command", "working_directory", "block_until_ms"],
+      "binding": "在宿主确认的云电脑上安装并运行 Asterun，核对真实执行位置后保存接收者设置。",
+      "verification": "cloud_fake_task_frontend_delivery_verified",
+      "verified_on": "2026-09-13",
+      "verified_scope": "云端安装与版本核对后，fake 任务已验证相同请求键复用任务、离开聊天页面后的 cron 唤醒、原聊天交付、ack、末次 poll 无需跟进及暂停 routine。",
+      "runtime_probe": {
+        "python_version": "3.13.5",
+        "asterun_version": "0.1.0a13",
+        "version_exit_code": 0,
+        "reported_backend_cli": {"grok": "1.0.5", "codex": "not_in_path", "claude": "not_in_path"},
+        "backend_login_or_model_call": "not_performed",
+        "raw_result_transfer": "verified"
+      },
+      "asterun_task_verification": "verified_with_fake_backend",
+      "cloud_backend_verification": "pending"
+    },
+    "local_process": {
+      "level": "verified",
+      "discovery_tool": "ListMachines",
+      "host_tool": "Shell",
+      "reported_arguments": ["command", "working_directory", "block_until_ms", "machineId"],
+      "binding": "用户从实际发现结果选择机器；每次调用沿用该机器与其 Asterun 实例，机器 ID 只存于接收者私有设置。",
+      "verification": "local_grokbuild_text_task_verified",
+      "verified_on": "2026-09-13",
+      "verified_scope": "入口解析后 init 成功，Grok Build 在真实项目目录完成短文任务；一次模型调用、零工具调用，原生 end_turn、退出码 0，摘要核对通过。重复请求复用任务。",
+      "delivery_receipt": "host_reported_delivered",
+      "post_ack_needs_followup": false,
+      "chat_ui_visibility": "verified",
+      "chat_ui_verified_scope": "发布后在原生 UI 核对本地时间 22:28:01 的原聊天结果、回执和摘要，并看到 local routine 停用事件。"
+    }
+  },
+  "core_interfaces": {
+    "resident": "asterun --config CONFIG --state-dir STATE serve",
+    "cli": "asterun --state-dir STATE --connect COMMAND",
+    "mcp": "asterun --state-dir STATE --connect mcp",
+    "ordinary_task": ["task.submit", "task.get", "task.events"],
+    "ordinary_control": ["approval.assess", "approval.apply-policy", "approval.respond", "task.cancel", "task.reconcile", "session.resume", "task.present"],
+    "optional_capability_profile": ["capability.discovery", "capability.prepare", "capability.submit", "capability.get"],
+    "optional_review_delivery": ["review.status", "review.inbox", "review.ack"],
+    "ordinary_task_inbox": "not_implemented",
+    "review_consumer_scope": "仅消费明确选择的审查记录；普通任务使用独立的任务跟踪与交付记录。",
+    "task_watch_output": "逐行 events，末尾 type=observation；退出码 124 表示观察窗口到期。"
+  },
+  "bridge": {
+    "entry": "python3 scripts/bridge.py",
+    "working_directory": "模板目录；完整 Git 检出使用 integrations/grokbot，发行 ZIP 使用解压根目录。",
+    "level": "verified",
+    "interface_verification": "resident_fake_core_and_cloud_frontend_roundtrip_verified",
+    "verified_on": "2026-09-13",
+    "verified_scope": "本机 fake 回归、云端 fake 任务完整 UI 交付及本机 Grok Build 真实短文执行均已验证。本机回执为 host_reported_delivered，末次 poll 无需跟进；发布后的原聊天 UI 回读确认结果和回执一致。",
+    "global_arguments": ["--ledger", "--timeout"],
+    "commands": {
+      "init": ["--binding", "--asterun", "--config", "--core-state", "--location", "--workspace", "--backend", "--destination"],
+      "submit": ["--binding", "--request-id", "--workspace", "--backend", "--input", "--conversation-id"],
+      "poll": ["--binding", "--limit"],
+      "inbox": ["--binding", "--limit"],
+      "status": ["--binding"],
+      "claim": ["--binding", "--delivery-key"],
+      "ack": ["--binding", "--delivery-key", "--message-id", "--content-sha256"],
+      "resolve": ["--binding", "--delivery-key", "--not-sent"]
+    },
+    "location_values": ["local", "host-cloud"],
+    "argument_notes": "ledger 必填，timeout 可选；init 的 workspace/backend 可重复；submit 的 conversation-id 与 poll/inbox 的 limit 为可选参数，input 可为文件或 stdin。",
+    "stdout": "单个 JSON Envelope",
+    "responsibilities": [
+      "保存原请求、幂等键与任务引用",
+      "有界读取当前任务和事件，按 run 保存游标",
+      "准备具有稳定交付键的结果材料",
+      "记录实际消息回执或交付不明状态"
+    ],
+    "host_actions": "宿主负责安排 routine、调用桥接入口和在绑定聊天中发送结果。"
+  },
+  "continuous_observation": {
+    "level": "verified",
+    "host_tool": "update_state",
+    "reported_target": "routine",
+    "reported_actions": ["create", "update", "pause", "resume"],
+    "reported_arguments": ["name", "prompt", "schedule", "enabled"],
+    "verified_schedule": "*/5 * * * *",
+    "verification": "cloud_fake_task_followup_verified",
+    "verified_on": "2026-09-13",
+    "verified_scope": "标准 cron 探针及云端 fake 任务均已回到原聊天；离开聊天页面后 routine 唤醒，任务 ack 后再次 poll 返回 needs_followup=false，并暂停 routine。",
+    "automatic_trigger_receipt": "host_reported",
+    "raw_probe_result_transfer": "verified",
+    "schedule_probe_results": [
+      {"schedule": "@every 5m", "result": "no_trigger_observed", "observation_minutes": 14},
+      {"schedule": "*/5 * * * *", "result": "probe_message_visible_in_original_chat"}
+    ],
+    "asterun_task_followup": "verified_with_cloud_fake_backend",
+    "away_from_chat_page": "verified",
+    "closed_chat_recovery": "pending",
+    "application_restart_recovery": "pending",
+    "temporary_routines_paused": {
+      "level": "verified",
+      "scope": "发布后通过原生详情页确认 probe、cloud、local 三个临时 routine 全部暂停。"
+    },
+    "required_readback": ["routine_identity", "owning_bot_and_destination", "schedule_and_time_zone", "enabled_state", "next_run", "actual_run_result"],
+    "behavior": "存在未完成或待交付任务时安排后续观察；仅在结果或待处理事项变化时回帖。发送后在本轮 ack，再次 poll 后读取 status，needs_followup=false 时暂停 routine。保留原任务引用，观察到期后继续读取。",
+    "template_export": "不携带作者 routine；接收者选择后台跟进后建立自己的观察记录。"
+  },
+  "chat_delivery": {
+    "level": "verified",
+    "host_tool": "SendToUser",
+    "reported_arguments": ["type", "content", "end_turn"],
+    "reported_type": "text",
+    "end_turn": false,
+    "destination": "创建本次任务的原聊天；PRIVATE_CHAT_ALIAS 是每接收聊天私有唯一的逻辑别名，记录在账本中。原聊天由宿主当前对话和 routine 归属确认。",
+    "verified_on": "2026-09-13",
+    "verified_scope": "原聊天 UI 中的最小探针及云端 fake 任务结果均可见；任务结果在离开聊天页面后的 routine 唤醒中交付。",
+    "receipt": "宿主报告 SendToUser 已返回消息 ID；原始回执文件已复制回本机并核对。消息 ID 的来源仍为宿主自报，UI 消息显示单独验证。",
+    "receipt_verification": "host_reported",
+    "raw_receipt_verification": "file_transfer_and_content_checked",
+    "asterun_task_delivery_verification": "verified_with_cloud_fake_backend",
+    "local_real_backend_receipt": "host_reported_delivered",
+    "local_real_backend_ui_visibility": "verified",
+    "history_lookup": "unavailable_in_reported_toolset",
+    "idempotent_send": "unverified",
+    "unknown_delivery": "发送前保存交付意图。未取得可信回执时保留不明状态并交给用户核对，后续观察不自动重发。",
+    "acknowledgement": "仅在 claim 返回 ok=true、already_claimed=false 且 delivery_state=sending 时发送；SendToUser 使用 end_turn=false。取得消息回执后在本轮调用 ack，记录 host_reported_delivered；再次 poll 并读取 status 后判断是否暂停 routine。聊天实际显示单独验收。"
+  },
+  "template_and_skills": {
+    "level": "host_reported",
+    "reported_state_tool": "update_state",
+    "reported_targets": {
+      "profile": {"action": "set", "scope": "当前 Bot profile"},
+      "memory": {"action": "write", "scope": "agent profile/log"},
+      "skill": {"action": "write", "arguments": ["name", "description", "body"], "scope": "全局技能库"}
+    },
+    "reported_share_tool": {
+      "name": "create_bot_share_json",
+      "arguments": ["profile", "memory", "skills", "routines", "plugins", "visibility", "gettingStarted"],
+      "result": "分享草稿；最终发布在原生 UI 完成。"
+    },
+    "minimal_share_draft_probe": {
+      "level": "verified",
+      "host_version": "0.47.0",
+      "verified_on": "2026-09-13",
+      "scope": "候选 Bot 与空白发布 Bot 分别在本地时间 23:08:59、23:09:39 显示 create_bot_share_json 最小诊断草稿卡，均有发布和查看详情按钮。",
+      "published": false,
+      "publish_action": "not_performed"
+    },
+    "formal_share_material": {
+      "json_size_description": "约 37 KB",
+      "sha256_check": "verified",
+      "native_draft": "version_3_verified",
+      "version_2_card": {
+        "level": "verified",
+        "name": "Asterun",
+        "skills": 3,
+        "memory": 1,
+        "routines": 0,
+        "plugins": 0,
+        "memory_readback": "原稿 2167 字符，原生详情只显示约 500 字符，末尾为 Shel。"
+      },
+      "version_3_preparation": {
+        "payload_sha256": "88ed147a86b76ad95f9abef54315f62957bdb8ec6224708568ca5e34a9b90428",
+        "memory_entries": 11,
+        "maximum_entry_characters": 453,
+        "change_scope": "按双换行无损拆分原 memory，其他 payload 内容保持不变。",
+        "native_card_verification": "verified",
+        "verified_scope": "原生 UI 显示 11 条完整 memory，末条包含完整 ZIP SHA-256；3 个技能均可滚动至完整英文末尾。"
+      },
+      "published": true
+    },
+    "private_skill_registration": {
+      "level": "verified",
+      "scope": "原生市场的你的插件、私有技能中可见 asterun-bot-setup、asterun-bot-tasks、asterun-bot-recovery。",
+      "body_readback": "setup、tasks、recovery 三个技能的正文均可滚动至完整英文末尾。"
+    },
+    "getting_started_skill_requirement": {
+      "level": "verified",
+      "evidence_scope": "正式 JSON 调用实际返回的校验错误。",
+      "field": "gettingStarted.skill",
+      "rejected_value": "asterun-bot-setup",
+      "observed_error": "This template names a gettingStarted skill that was not packed. The getting-started skill must exist as one of this bot's own skills, and its skills entry must carry that skill's prose job text.",
+      "required_order": [
+        "先核对发布 Bot 中 asterun-bot-setup、asterun-bot-tasks、asterun-bot-recovery 三个名称及已有内容。",
+        "按授权写入技能，核对正文及发布 Bot 自己的技能列表。",
+        "将对应技能正文装入正式 JSON 的 skills 条目，再用 gettingStarted.skill 引用已有技能，重试完整 JSON。"
+      ],
+      "skill_write_and_retry": "registration_and_version_3_draft_verified"
+    },
+    "native_publication": {
+      "level": "verified",
+      "url": "https://x.ai/bot/4r3ysO1eA-6ZLI6cRoTNU",
+      "payload_sha256": "88ed147a86b76ad95f9abef54315f62957bdb8ec6224708568ca5e34a9b90428",
+      "native_card": "第 3 版正式卡发布后明确显示 Asterun 已发布。",
+      "public_page": {
+        "level": "verified",
+        "title": "Asterun by Quazi",
+        "description": "已核对与模板用途一致。",
+        "add_to_grok_bot_link": "visible"
+      },
+      "same_account_import": "pending",
+      "import_terms_url": "https://x.ai/legal/bot-sharing-terms",
+      "import_confirmation": "页面说明点击 Add to Grok Bot 即接受分享条款；导入动作等待用户当时确认，当前未点击。"
+    },
+    "create_bot": "通过 GrokBot 原生创建入口建立新的 Bot，并设置 Profile；工具参数以宿主实际提供的定义为准。",
+    "install_skill": "调用已报告的 skill:write 前核对全局技能库中的同名条目与使用范围；写入后检查当前 Bot 可调用。",
+    "share_bot": "先确认 gettingStarted.skill 指向发布 Bot 已有技能，且 JSON 的对应 skills 条目包含该技能正文，再生成完整草稿。将长 memory 按段拆成短条目，核对拼接后与原文一致；在原生详情逐条核对正文和末尾，并检查名称、profile、skills、routines 和 plugins 后完成发布。",
+    "custom_code_distribution": "Asterun 和 bridge.py 由接收者按首次引导安装；实际导出清单单独核对。",
+    "profile_memory_skill_write_verification": "skill_registration_and_body_verified_profile_and_memory_pending",
+    "share_draft_and_alias_verification": "version_3_card_verified",
+    "verification": "native_publication_verified_import_pending",
+    "new_user": "pending",
+    "recipient_scope": "当前账户中的副本与共享云电脑沿用该账户环境，独立新用户验收保留待办。"
+  },
+  "distribution_checks": {
+    "published_template": {
+      "tag": "grokbot-template-v0.1.0-rc1",
+      "source_commit": "58c618b08db3327fb56b0fb91ffcec0831cabd19",
+      "zip_sha256": "17e3aed380721b169a73d3b40b90aa54cc42b486234bc2e2349c977114cb2ac4",
+      "anonymous_download_and_manifest": "verified",
+      "record_scope": "包内记录固定于发布时；当前文档另行记录发布后的本机 UI、routine 暂停及原生模板发布确认。"
+    },
+    "verified_on": "2026-09-13",
+    "fetch_runtime": "公开 wheel 下载、SHA-256 核对与重复调用复用已通过。",
+    "cloud_artifact_copy": "CopyToBox 传入的模板 ZIP 哈希与本地原件一致；CopyFromBox 取回的运行结果已核对。",
+    "cloud_runtime_install": "Python 3.13.5 新 venv 安装哈希匹配的公开 a13 wheel，asterun version 返回 0.1.0a13，退出码 0。",
+    "package_and_fetch_tests": {"passed": 11},
+    "verification_scope": "发行材料与下载脚本；真实宿主后端任务另行验收。"
+  },
+  "references": [
+    "https://docs.x.ai/grok-bot/skills-routines-and-automations",
+    "https://docs.x.ai/grok-bot/bots",
+    "https://docs.x.ai/grok-bot/approvals-security-and-privacy",
+    "https://x.ai/bot/guides/templates-for-grok-bot"
+  ]
+}

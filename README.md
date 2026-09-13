@@ -51,6 +51,8 @@ MCP 客户端使用 `asterun --state-dir /path/to/state --connect mcp`。观察�
 
 [用户手册](docs/user-manual.md)说明提交、观察、审批和恢复。[PR 审查](docs/pr-review.md)提供一套可选工作流示例，包括固定代码版本、读取结构化结论、关联复审和交付结果。
 
-GrokBot 等调用方可以在云电脑中部署 Asterun，也可以通过已有授权通道调用本地进程。工作区、账户和原生会话随执行主机保存。[结果交付模块](docs/review-consumer.md)用于接入宿主的消息发送与定时调度。
+GrokBot 等调用方可以在云电脑中部署 Asterun，也可以通过已有授权通道调用本地进程。工作区、账户和原生会话随执行主机保存。普通任务由调用方跟踪任务和事件；[审查结果交付模块](docs/review-consumer.md)用于将审查收件箱接入宿主消息发送与定时调度。
+
+[Asterun Bot 模板](https://x.ai/bot/4r3ysO1eA-6ZLI6cRoTNU)提供 GrokBot 的安装引导、任务跟踪和聊天交付，作为可选接入独立发布。[安装说明与配套代码](https://github.com/zonzideka/asterun/blob/grokbot-template-v0.1.0-rc1/integrations/grokbot/README.md)按固定版本提供。
 
 接口集成查阅 [runner-control/v1](docs/protocol/IMPLEMENTATION.md) 和 [capability profile](docs/capability-profile.md)。

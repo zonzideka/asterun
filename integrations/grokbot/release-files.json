@@ -1,0 +1,18 @@
+[
+  "LICENSE",
+  "README.en.md",
+  "README.md",
+  "acceptance.md",
+  "author-profile.yaml",
+  "bot-profile.en.md",
+  "bot-profile.md",
+  "examples/first-task.txt",
+  "host-mapping.json",
+  "release-files.json",
+  "release-lock.json",
+  "scripts/bridge.py",
+  "scripts/fetch_runtime.py",
+  "skills/recovery/SKILL.md",
+  "skills/setup/SKILL.md",
+  "skills/tasks/SKILL.md"
+]

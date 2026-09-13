@@ -1,0 +1,135 @@
+# 模板作者声明，供 GrokBot Bootstrap 检查与首次引导使用。
+# GrokBot 的实际导入、技能和 routine 操作见 host-mapping.json。
+schema_version: grokbot-bootstrap/v0.1
+standard_version: 0.1.0-draft
+template:
+  id: asterun
+  name: Asterun
+  version: 0.1.0-rc1
+  purpose: 在用户选择的电脑上调用 Agent 完成任务，跟进执行、处理输入并将结果带回原聊天。
+  enforcement: guided
+  distribution: free
+dependencies:
+  required:
+    - id: asterun-runtime
+      purpose: 在所选执行主机安装 Asterun，连接保存任务与会话的常驻核心。
+    - id: execution-backend
+      purpose: 至少配置一个用户选择的 Agent 后端及该主机上的有效授权。
+      auth_methods: [selected-backend-official-authorization]
+      reuse_scope: 复用当前用户已授权且覆盖本次工作区与动作的连接。
+  optional:
+    - id: native-desktop
+      purpose: 在支持的执行主机查看后端原生会话；Codex 可登记真实项目。
+      skip_behavior: 继续通过 Asterun 查看任务结果和原生会话引用。
+    - id: scheduled-observation
+      purpose: 用户需要后台跟进时，由宿主 routine 唤醒负责的 Bot。
+      skip_behavior: 保留任务引用，下次主动查询时从已有记录继续。
+    - id: review-workflow
+      purpose: 用户选择代码审查时，准备固定输入并读取结构化审查结论。
+      skip_behavior: 使用普通 Agent 任务流程。
+runtime:
+  required_frameworks: [Python 3.11 or later, Asterun 0.1.0a13]
+profiles:
+  host_cloud:
+    required_connections: [execution-backend]
+    required_inputs: [user-selected-backend, user-selected-workspace]
+    notes: Asterun、工作区和后端账户位于用户的 GrokBot 云电脑；根据实际发现结果保存执行入口。
+  local_process:
+    required_connections: [execution-backend]
+    required_inputs: [user-selected-machine, user-selected-backend, user-selected-workspace]
+    notes: 通过宿主提供的本机执行通道连接用户选定电脑上的 Asterun；机器引用在接收者环境重新发现。
+setup:
+  default_profile: host_cloud
+  one_primary_decision_per_turn: true
+  steps:
+    - id: introduce
+      kind: explain-purpose
+      notes: 说明任务在所选主机执行，后端使用用户自己的授权；实际调用可能消耗该后端额度。
+    - id: choose-location
+      kind: user-choice
+      decision:
+        id: execution-location
+        prompt: 选择在 GrokBot 云电脑运行，或调用自己的电脑。
+        optional: false
+    - id: inspect-cloud
+      kind: observable-check
+      when: {profile: host_cloud}
+      depends_on: [choose-location]
+      verify: 确认实际云端执行位置、可用 Python 与 Asterun 安装，记录该位置上的工作区和状态目录。
+    - id: inspect-local
+      kind: observable-check
+      when: {profile: local_process}
+      depends_on: [choose-location]
+      verify: 通过宿主列出可用机器，在用户选定机器执行低风险检查，核对工作目录、本机权限和 Asterun 入口。
+    - id: choose-backend
+      kind: user-choice
+      depends_on: [choose-location]
+      decision:
+        id: backend-selection
+        prompt: 从当前可用后端中选择至少一个 Agent；先用一个完成首次验证，后续按需要增加。
+        optional: false
+      notes: 普通任务无需代码仓库或第二个 Agent；可选插件按其实际安装和能力单独配置。
+    - id: choose-workspace
+      kind: user-choice
+      depends_on: [choose-backend]
+      decision:
+        id: workspace-selection
+        prompt: 选择任务使用的目录；文档和文本任务可以使用独立的非 Git 目录。
+        optional: false
+      notes: 使用已有代码项目时，登记该项目的真实目录或经核验的 worktree。
+    - id: connect-backend
+      kind: connection-reuse
+      connection: execution-backend
+      depends_on: [choose-backend, choose-workspace]
+      verify: 核对所选后端在执行主机的授权与范围；缺少授权时，引导用户完成该后端支持的官方登录，再检查工具侧结果。
+      notes: 安装、配置、登录、实际调用、原生续接和桌面显示分别记录。
+    - id: verify-runtime
+      kind: capability-verify
+      depends_on: [connect-backend]
+      verify: 解析并核对 Asterun 真实入口，记录每聊天唯一的私有逻辑别名；确认 init 返回 ok=true，再完成隔离样例提交与查询。核对客户端与常驻核心版本、工作区和后端；后续真实样例使用用户选择的后端。
+    - id: first-result
+      kind: useful-example
+      depends_on: [verify-runtime]
+      produces_first_result: true
+      verify: 用一个 Agent 处理随包公开短文，核对结果与原文，并在原聊天展示任务引用和实际输出。
+      notes: 记录执行结果；配置了额外验收的任务，同时读取对应验收结论。
+    - id: choose-observation
+      kind: user-choice
+      depends_on: [first-result]
+      decision:
+        id: background-observation
+        prompt: 是否需要在任务后台运行时持续跟进，并把完成或待处理事项发回这个聊天？
+        optional: true
+      notes: 有效授权已包含后台跟进时直接复用；创建后核对 routine 归属、频率、下一次运行和真实回帖。
+    - id: finish
+      kind: settings-summary
+      depends_on: [first-result]
+      verify: 汇总执行位置、已验证后端、工作区、观察方式和待完成项，保存接收者自己的设置摘要。
+state:
+  authority: unverified
+  recovery: 首次设置按保存摘要重新核对；已提交任务读取 Asterun 持久记录，复用原请求与任务引用。聊天交付不明时保留待确认记录。
+permissions:
+  read: user-selected-workspace-and-input
+  external_publish: user-authorized-destination-and-action
+  schedule_creation: reuse-valid-authorization-or-obtain-user-choice
+  paid_overage: explicit-opt-in
+  notes: 文件修改、命令、测试和依赖安装按用户授权及后端权限执行。固定读取适用于明确选择的只读任务；消息回原聊天使用已绑定目的地。
+release:
+  include_author_state: false
+  include_account_references: false
+  include_active_routines: false
+  initialize_recipient_instance: true
+claims:
+  program_gate: false
+  transaction_recovery: false
+  per_bot_credential_isolation: false
+  host_setup_api: false
+  automatic_upgrade: false
+evidence:
+  - id: declaration-check
+    capability: 作者声明结构与 guided 语义
+    source: GrokBot Bootstrap 62b9064293a34879af3b1c26dcb760162e4e0c21 检查结果
+    level: schema_passed
+    collected_at: '2026-09-13'
+    notes: 实际检查器返回 0 errors、0 warnings；具体运行与接收者设置分别验收。
+notes: Asterun 核心独立校验任务绑定、幂等和授权，并保存运行记录。模板首次设置采用 guided；宿主接线证据分层记录在 host-mapping.json，新用户验收见 acceptance.md。

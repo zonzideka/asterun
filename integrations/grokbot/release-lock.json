@@ -1,0 +1,12 @@
+{
+  "schema_version": "asterun-grokbot-release/v1",
+  "template_version": "0.1.0-rc1",
+  "core_version": "0.1.0a13",
+  "python_requires": ">=3.11",
+  "core_wheel": {
+    "url": "https://github.com/zonzideka/asterun/releases/download/v0.1.0a13/asterun-0.1.0a13-py3-none-any.whl",
+    "filename": "asterun-0.1.0a13-py3-none-any.whl",
+    "sha256": "9af4e5568f832a643d7e9ff318182616a2e4c8ea792dec4558799cbf3e43d483"
+  },
+  "license": "Apache-2.0"
+}
