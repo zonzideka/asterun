@@ -77,7 +77,8 @@
       "verified_scope": "入口解析后 init 成功，Grok Build 在真实项目目录完成短文任务；一次模型调用、零工具调用，原生 end_turn、退出码 0，摘要核对通过。重复请求复用任务。",
       "delivery_receipt": "host_reported_delivered",
       "post_ack_needs_followup": false,
-      "chat_ui_visibility": "pending"
+      "chat_ui_visibility": "verified",
+      "chat_ui_verified_scope": "发布后在原生 UI 核对本地时间 22:28:01 的原聊天结果、回执和摘要，并看到 local routine 停用事件。"
     }
   },
   "core_interfaces": {
@@ -98,7 +99,7 @@
     "level": "verified",
     "interface_verification": "resident_fake_core_and_cloud_frontend_roundtrip_verified",
     "verified_on": "2026-09-13",
-    "verified_scope": "本机 fake 回归、云端 fake 任务完整 UI 交付及本机 Grok Build 真实短文执行均已验证。本机回执为 host_reported_delivered，末次 poll 无需跟进；本机原聊天 UI 显示待确认。",
+    "verified_scope": "本机 fake 回归、云端 fake 任务完整 UI 交付及本机 Grok Build 真实短文执行均已验证。本机回执为 host_reported_delivered，末次 poll 无需跟进；发布后的原聊天 UI 回读确认结果和回执一致。",
     "global_arguments": ["--ledger", "--timeout"],
     "commands": {
       "init": ["--binding", "--asterun", "--config", "--core-state", "--location", "--workspace", "--backend", "--destination"],
@@ -141,6 +142,10 @@
     "away_from_chat_page": "verified",
     "closed_chat_recovery": "pending",
     "application_restart_recovery": "pending",
+    "temporary_routines_paused": {
+      "level": "verified",
+      "scope": "发布后通过原生详情页确认 probe、cloud、local 三个临时 routine 全部暂停。"
+    },
     "required_readback": ["routine_identity", "owning_bot_and_destination", "schedule_and_time_zone", "enabled_state", "next_run", "actual_run_result"],
     "behavior": "存在未完成或待交付任务时安排后续观察；仅在结果或待处理事项变化时回帖。发送后在本轮 ack，再次 poll 后读取 status，needs_followup=false 时暂停 routine。保留原任务引用，观察到期后继续读取。",
     "template_export": "不携带作者 routine；接收者选择后台跟进后建立自己的观察记录。"
@@ -159,7 +164,7 @@
     "raw_receipt_verification": "file_transfer_and_content_checked",
     "asterun_task_delivery_verification": "verified_with_cloud_fake_backend",
     "local_real_backend_receipt": "host_reported_delivered",
-    "local_real_backend_ui_visibility": "pending",
+    "local_real_backend_ui_visibility": "verified",
     "history_lookup": "unavailable_in_reported_toolset",
     "idempotent_send": "unverified",
     "unknown_delivery": "发送前保存交付意图。未取得可信回执时保留不明状态并交给用户核对，后续观察不自动重发。",
@@ -178,9 +183,36 @@
       "arguments": ["profile", "memory", "skills", "routines", "plugins", "visibility", "gettingStarted"],
       "result": "分享草稿；最终发布在原生 UI 完成。"
     },
+    "minimal_share_draft_probe": {
+      "level": "verified",
+      "host_version": "0.47.0",
+      "verified_on": "2026-09-13",
+      "scope": "候选 Bot 与空白发布 Bot 分别在本地时间 23:08:59、23:09:39 显示 create_bot_share_json 最小诊断草稿卡，均有发布和查看详情按钮。",
+      "published": false,
+      "publish_action": "not_performed"
+    },
+    "formal_share_material": {
+      "json_size_description": "约 37 KB",
+      "sha256_check": "verified",
+      "native_draft": "pending",
+      "published": false
+    },
+    "getting_started_skill_requirement": {
+      "level": "verified",
+      "evidence_scope": "正式 JSON 调用实际返回的校验错误。",
+      "field": "gettingStarted.skill",
+      "rejected_value": "asterun-bot-setup",
+      "observed_error": "This template names a gettingStarted skill that was not packed. The getting-started skill must exist as one of this bot's own skills, and its skills entry must carry that skill's prose job text.",
+      "required_order": [
+        "先核对发布 Bot 中 asterun-bot-setup、asterun-bot-tasks、asterun-bot-recovery 三个名称及已有内容。",
+        "按授权写入技能，核对正文及发布 Bot 自己的技能列表。",
+        "将对应技能正文装入正式 JSON 的 skills 条目，再用 gettingStarted.skill 引用已有技能，重试完整 JSON。"
+      ],
+      "skill_write_and_retry": "pending"
+    },
     "create_bot": "通过 GrokBot 原生创建入口建立新的 Bot，并设置 Profile；工具参数以宿主实际提供的定义为准。",
     "install_skill": "调用已报告的 skill:write 前核对全局技能库中的同名条目与使用范围；写入后检查当前 Bot 可调用。",
-    "share_bot": "生成草稿后，在原生 UI 检查分享名称及包含的 profile、memory、skills、routines 和 plugins，再完成发布。",
+    "share_bot": "先确认 gettingStarted.skill 指向发布 Bot 已有技能，且 JSON 的对应 skills 条目包含该技能正文，再生成完整草稿。在原生 UI 检查分享名称及 profile、memory、skills、routines 和 plugins 后完成发布。",
     "custom_code_distribution": "Asterun 和 bridge.py 由接收者按首次引导安装；实际导出清单单独核对。",
     "profile_memory_skill_write_verification": "pending",
     "share_draft_and_alias_verification": "pending",
@@ -189,6 +221,13 @@
     "recipient_scope": "当前账户中的副本与共享云电脑沿用该账户环境，独立新用户验收保留待办。"
   },
   "distribution_checks": {
+    "published_template": {
+      "tag": "grokbot-template-v0.1.0-rc1",
+      "source_commit": "58c618b08db3327fb56b0fb91ffcec0831cabd19",
+      "zip_sha256": "17e3aed380721b169a73d3b40b90aa54cc42b486234bc2e2349c977114cb2ac4",
+      "anonymous_download_and_manifest": "verified",
+      "record_scope": "包内记录固定于发布时；当前文档另行记录发布后的本机 UI 及 routine 暂停确认。"
+    },
     "verified_on": "2026-09-13",
     "fetch_runtime": "公开 wheel 下载、SHA-256 核对与重复调用复用已通过。",
     "cloud_artifact_copy": "CopyToBox 传入的模板 ZIP 哈希与本地原件一致；CopyFromBox 取回的运行结果已核对。",
