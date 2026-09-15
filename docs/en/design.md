@@ -50,9 +50,13 @@ A task defines its objective, resources, allowed actions, output, checks, and bu
 
 Code quality workflows run checks, independent review, repairs, and verification against a fixed revision. Findings bind to a commit or file hash. Reaching a round or budget limit hands back the current result. Gate verdicts, check evidence, and publication state are returned separately. See [PR review](pr-review.md).
 
+The [external caller workflow](../caller-orchestration.md) (Chinese) uses `workflow.snapshot` to bind the current run and selected files. External check reports must match the task, run, configuration, input, target, and report bytes; `file_exists` and `file_contains` checks in the same fixed evaluation must also be listed in `target_paths`. Reports use the `external_reported` source and do not establish independent review. The persisted `external_require_review` requirement survives evaluations and repairs, so later requests cannot weaken it. Repairs create new runs within the original task, atomically accumulate counts, and retain fixed bindings, idempotency, and existing limits. Task continuity does not establish native session continuation.
+
 Optional plugins use fixed execution plans. Submission rechecks the input, configuration, installed plugin, account, permissions, and shared pool, then records reservations and dispatch intent in one transaction. Usage retains its original units, source, and unknown values. First-release routing is explicitly configured. See [plugins](plugins.md).
 
 Observers read results within bounded windows. The host schedules subsequent observation and chat delivery. Inbox consumers acknowledge results after the host confirms delivery. See [result delivery](review-consumer.md).
+
+`task.get compact` and `task-watch --compact --no-events` preserve status, approval, and continuation references while reducing text and event transfer. Defaults are unchanged, and unread event cursors do not advance. `usage.report` only aggregates persisted native observations, retaining unknown values, partial reports, and cumulative scopes that cannot be summed. It does not query providers or verify charges. See [STATUS](../../STATUS.en.md) for deployment and validation records; live effects and net caller token savings require separate measurement.
 
 ## Maintenance and verification
 

@@ -20,6 +20,7 @@ class Store(Protocol):
     def get_task(self, task_id: TaskId) -> Task: ...
     def save_run(self, run: Run) -> None: ...
     def get_run(self, run_id: RunId) -> Run: ...
+    def list_runs(self, task_id: TaskId) -> list[Run]: ...
     def save_approval(self, approval: ApprovalRequest) -> None: ...
     def get_approval(self, approval_id: ApprovalId) -> ApprovalRequest: ...
     def find_pending_approval(self, run_id: RunId) -> ApprovalRequest | None: ...
@@ -71,6 +72,9 @@ class MemoryStore:
 
     def save_approval(self, approval: ApprovalRequest) -> None:
         self.approvals[approval.id.value] = approval
+
+    def list_runs(self, task_id: TaskId) -> list[Run]:
+        return [run for run in self.runs.values() if run.task_id == task_id]
 
     def get_approval(self, approval_id: ApprovalId) -> ApprovalRequest:
         try:
@@ -270,6 +274,10 @@ class JsonFileStore(MemoryStore):
     def get_run(self, run_id: RunId) -> Run:
         self._load()
         return super().get_run(run_id)
+
+    def list_runs(self, task_id: TaskId) -> list[Run]:
+        self._load()
+        return super().list_runs(task_id)
 
     def save_approval(self, approval: ApprovalRequest) -> None:
         self._load()

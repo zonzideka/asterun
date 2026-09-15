@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+from contextlib import closing
 import hashlib
 import importlib.util
 import json
@@ -379,7 +380,7 @@ def test_poll_run_switch_creates_new_key(tmp_path: Path) -> None:
     assert first["data"]["observed"][0]["delivery_key"] != second["data"]["observed"][0]["delivery_key"]
     keys = {item["delivery_key"] for item in envelope(run_bridge(ledger, ["inbox", "--binding", "primary"], home=home))["data"]["items"]}
     assert keys == {second["data"]["observed"][0]["delivery_key"]}
-    with sqlite3.connect(ledger) as connection:
+    with closing(sqlite3.connect(ledger)) as connection, connection:
         assert connection.execute("SELECT delivery_state FROM deliveries WHERE delivery_key=?",
                                   (first["data"]["observed"][0]["delivery_key"],)).fetchone()[0] == "superseded"
 
@@ -557,7 +558,7 @@ def test_private_files_and_symlink_rejected(tmp_path: Path) -> None:
         home=home,
     ))
     assert bad_bin["error"]["code"] == "PATH_INVALID"
-    with sqlite3.connect(ledger) as connection:
+    with closing(sqlite3.connect(ledger)) as connection, connection:
         assert connection.execute("SELECT COUNT(*) FROM bindings").fetchone()[0] == 0
 
     open_dir = tmp_path / "open"

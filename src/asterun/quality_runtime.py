@@ -61,7 +61,10 @@ class QualityRuntime:
         target, _ = snapshot(app.config.get_workspace(task.workspace).root, payload["target_paths"],
                              state_dir=app.state_dir)
         previous = task.quality
+        # 通过启动校验后改由内部质量目标持有验收，旧实现运行的外部绑定不能跟随审查/修复运行。
+        # 外部报告仍保存在原运行的 acceptance_evaluated 事件中，持久审查要求也继续保留。
         task = replace(task, acceptance=AcceptanceStatus.PENDING, evidence_stale=False, review_status="pending",
+                       evidence_input_hash="", external_evaluation={},
                        quality={"phase": "checking", "principal": app.principal.subject_id, "entry": app.entry,
                                 "idempotency_key": payload["idempotency_key"], "request_hash": request_hash,
                                 "requests": {**previous_requests, payload["idempotency_key"]: request_hash},

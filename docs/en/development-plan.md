@@ -11,12 +11,15 @@ Check the commit, working tree, and related task records before reproducing a pr
 | Work | Completion evidence |
 |---|---|
 | Caller acceptance | Submit through the actual entry point, observe the terminal result, and confirm delivery to the user |
+| External caller workflow maintenance | Compatibility and fault checks for compact observation, cursor retention, read-only usage, fixed external reports, and bounded repairs within one task; record deployment read-only acceptance and live execution acceptance separately |
 | Codex project visibility | Check execution directory, Git worktree, registration receipt, and the same thread in the native client |
 | Approval experience | Verify fixed-read access and configured policy decisions, including how requests outside that scope are handled |
 | Release files | Clean builds, sdist rebuilds, offline installation, license and content checks, and guide examples |
 | Existing defects | A reproducible failure, a fix, relevant regression checks, and compatibility notes |
 
 Workspace binding, fixed reads, desktop project registration, structured review status, and inbox consumption are implemented. Maintenance starts by checking these entry points. Remaining live checks are listed in [STATUS](../../STATUS.en.md). Windows, cross-host scheduling, multi-tenancy, a web console, public HTTP MCP, automatic paid routing, and marketplace distribution remain future candidates.
+
+The [external caller workflow](../caller-orchestration.md) (Chinese) is implemented and retains observation defaults, permissions, and repair limits. See [STATUS](../../STATUS.en.md) for local deployment and read-only entry acceptance. Regression coverage must include stale reports or targets, fixed file checks outside `target_paths`, `external_require_review` retention across evaluate/repair, changed instructions under the same key, and no redispatch of unknown results. External reports retain their reported source, and task continuity is not native continuation evidence. Record backend usage, caller overhead, and net savings under equivalent quality gates separately.
 
 ## Delivered work
 

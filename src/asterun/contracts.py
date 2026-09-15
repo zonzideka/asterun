@@ -190,6 +190,8 @@ class Task:
     capability: str | None = None
     capability_input: dict[str, Any] = field(default_factory=dict)
     read_scope: dict[str, str] | None = None
+    external_evaluation: dict[str, Any] = field(default_factory=dict)
+    external_require_review: bool = False
 
     def __post_init__(self) -> None:
         require_type(self.id, TaskId)
@@ -237,6 +239,8 @@ class Task:
             "quality": self.quality,
             **({"capability": self.capability, "capability_input": deepcopy(self.capability_input)} if self.capability else {}),
             **({"read_scope": dict(self.read_scope)} if self.read_scope is not None else {}),
+            **({"external_evaluation": deepcopy(self.external_evaluation)} if self.external_evaluation else {}),
+            **({"external_require_review": True} if self.external_require_review else {}),
         }
 
     @classmethod
@@ -273,6 +277,8 @@ class Task:
             capability=data.get("capability"),
             capability_input=dict(data.get("capability_input") or {}),
             read_scope=None if data.get("read_scope") is None else dict(data["read_scope"]),
+            external_evaluation=deepcopy(data.get("external_evaluation") or {}),
+            external_require_review=bool(data.get("external_require_review", False)),
         )
 
 

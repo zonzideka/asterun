@@ -70,19 +70,57 @@ CREATE TABLE IF NOT EXISTS sessions (
 class SqliteStore:
     """A1-03 事务存储。等待后端时不持有写事务。"""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, readonly: bool = False) -> None:
         self.path = path
-        self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self.readonly = readonly
+        if readonly:
+            if not self.path.is_file():
+                raise AsterunError(NOT_FOUND, "只读查询需要已存在的状态库")
+        else:
+            self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.fail_next_intent = False
         self.intent_hook = None
         self.run_hook = None
-        self._conn = sqlite3.connect(self.path, isolation_level=None)
+        self.migration_backup = None
+        self._conn = (sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True, isolation_level=None)
+                      if readonly else sqlite3.connect(self.path, isolation_level=None))
         self._conn.row_factory = sqlite3.Row
         try:
-            self._initialize()
+            if readonly:
+                self._validate_readonly()
+            else:
+                self._initialize()
         except BaseException:
             self._conn.close()
             raise
+
+    def _validate_readonly(self) -> None:
+        """只检查当前结构；只读入口不能创建、升级或补齐状态表。"""
+        from asterun.control_store import TABLE_COLUMNS as CONTROL_COLUMNS
+        from asterun.plugin_store import TABLE_COLUMNS as PLUGIN_COLUMNS
+
+        expected = {
+            "meta": {"key", "value"},
+            "operations": {"id", "idempotency_key", "principal", "action", "target", "input_hash",
+                           "status", "created_at", "task_id", "run_id"},
+            "tasks": {"id", "payload"}, "runs": {"id", "payload"}, "approvals": {"id", "payload"},
+            "events": {"run_id", "seq", "payload"}, "sessions": {"conversation_id", "payload"},
+            **CONTROL_COLUMNS, **PLUGIN_COLUMNS,
+        }
+        try:
+            tables = {row[0] for row in self._conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            valid = expected.keys() <= tables
+            if valid:
+                valid = all(columns <= {row[1] for row in self._conn.execute(f"PRAGMA table_info({table})")}
+                            for table, columns in expected.items())
+            current = (self._conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+                       if valid else None)
+            valid = valid and current is not None and str(current[0]) == str(SCHEMA_VERSION)
+        except sqlite3.Error as exc:
+            raise AsterunError(INTENT_PERSIST_FAILED, "无法只读验证状态库结构") from exc
+        if not valid:
+            raise AsterunError(INTENT_PERSIST_FAILED, "只读查询要求当前版本的完整状态库",
+                               next_action="先通过正常维护流程备份并升级状态库；只读查询不会执行迁移")
 
     def _initialize(self) -> None:
         meta = self._conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta'").fetchone()
@@ -348,6 +386,13 @@ class SqliteStore:
     def list_task_ids(self) -> list[TaskId]:
         rows = self._conn.execute("SELECT id FROM tasks").fetchall()
         return [TaskId(row["id"]) for row in rows]
+
+    def list_runs(self, task_id: TaskId) -> list[Run]:
+        rows = self._conn.execute(
+            "SELECT payload FROM runs WHERE json_extract(payload, '$.task_id')=? ORDER BY rowid",
+            (task_id.value,),
+        ).fetchall()
+        return [Run.from_dict(_json_load(row["payload"])) for row in rows]
 
     def find_operation_for_run(self, run_id: RunId) -> Operation | None:
         row = self._conn.execute("SELECT id FROM operations WHERE run_id=?", (run_id.value,)).fetchone()

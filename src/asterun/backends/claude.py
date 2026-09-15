@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import shutil
 import signal
@@ -58,6 +59,7 @@ class ClaudeSession:
     result_text: str = ""
     is_error: bool = False
     total_cost_usd: float = 0.0
+    cost_reported: bool = field(default=False, kw_only=True)
     num_turns: int = 0
     provider_session_id: str = ""
     last_error: str = ""
@@ -75,6 +77,8 @@ class ClaudeSession:
             "message": self.result_text,
             "message_preview": self.result_text[:500],
             "total_cost_usd": self.total_cost_usd,
+            "cost_reported": self.cost_reported,
+            "cost_source": "claude_cli_result" if self.cost_reported else "unknown",
             "num_turns": self.num_turns,
             "claude_session_id": self.provider_session_id,
             "last_error": self.last_error,
@@ -145,11 +149,18 @@ def build_env(
 
 def parse_result(stdout: str) -> dict[str, Any]:
     data = json.loads(stdout)
+    cost = data.get("total_cost_usd")
+    try:
+        parsed_cost = float(cost) if type(cost) in (int, float) else float("nan")
+    except OverflowError:
+        parsed_cost = float("nan")
+    cost_reported = math.isfinite(parsed_cost) and parsed_cost >= 0
     return {
         "is_error": bool(data.get("is_error", False)),
         "result": data.get("result", "") or "",
         "session_id": data.get("session_id", "") or "",
-        "total_cost_usd": float(data.get("total_cost_usd", 0) or 0),
+        "total_cost_usd": parsed_cost if cost_reported else 0.0,
+        "cost_reported": cost_reported,
         "num_turns": int(data.get("num_turns", 0) or 0),
         "stop_reason": data.get("stop_reason", "") or "",
     }
@@ -159,6 +170,7 @@ def apply_result(session: ClaudeSession, parsed: dict[str, Any]) -> None:
     session.result_text = parsed.get("result", "")
     session.provider_session_id = parsed.get("session_id", "")
     session.total_cost_usd = parsed.get("total_cost_usd", 0.0)
+    session.cost_reported = parsed.get("cost_reported") is True
     session.num_turns = parsed.get("num_turns", 0)
     session.stop_reason = parsed.get("stop_reason", "")
     session.is_error = parsed.get("is_error", False)

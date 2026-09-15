@@ -68,7 +68,7 @@ class ControlRuntime:
         self.namespace = "ns_local"
         self.own_connection = not hasattr(app.store, "_conn")
         connection = (sqlite3.connect(":memory:", isolation_level=None) if self.own_connection else app.store._conn)
-        self.store = ControlStore(connection)
+        self.store = ControlStore(connection, initialize=not getattr(app.store, "readonly", False))
         self.busy = False
         self.worker = identifier("wrk")
 

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from asterun.backends.claude import (
     DEPTH_ENV,
     PARENT_ENV,
@@ -82,6 +84,27 @@ def test_parse_result_reads_probe_shape() -> None:
     assert parsed["session_id"] == "cae5f133"
     assert parsed["total_cost_usd"] == 0.084
     assert parsed["num_turns"] == 2
+
+
+@pytest.mark.parametrize("cost,reported", [(0, True), (0.125, True), (True, False), (None, False),
+                                          (float("nan"), False), (float("inf"), False),
+                                          (-1, False), (10 ** 400, False), ("0.1", False)])
+def test_cost_presence_distinguishes_reported_zero_and_invalid_native_values(cost, reported):
+    parsed = parse_result(json.dumps({"total_cost_usd": cost}))
+    session = _session()
+    apply_result(session, parsed)
+    native = session.to_status_dict()
+    assert native["cost_reported"] is reported
+    assert native["cost_source"] == ("claude_cli_result" if reported else "unknown")
+    assert native["total_cost_usd"] == (cost if reported else 0.0)
+
+
+def test_absent_or_unparsed_cost_is_not_a_reported_zero():
+    session = _session()
+    assert session.to_status_dict()["cost_reported"] is False
+    apply_result(session, parse_result("{}"))
+    assert session.to_status_dict()["cost_reported"] is False
+    assert session.to_status_dict()["total_cost_usd"] == 0.0
 
 
 def _session() -> ClaudeSession:

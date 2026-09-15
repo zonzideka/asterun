@@ -74,6 +74,13 @@ for line in sys.stdin:
             break
         emit({"id": message["id"], "result": {"turn": turn}})
         emit({"method": "turn/started", "params": {"threadId": thread_id, "turn": turn}})
+        if "with-token-usage" in text:
+            emit({"method": "thread/tokenUsage/updated", "params": {
+                "threadId": thread_id, "turnId": turn["id"], "tokenUsage": {
+                    "total": {"inputTokens": 100, "cachedInputTokens": 80, "outputTokens": 20,
+                              "reasoningOutputTokens": 8, "totalTokens": 120},
+                    "last": {"inputTokens": 10, "cachedInputTokens": 0, "outputTokens": 2,
+                             "reasoningOutputTokens": 1, "totalTokens": 12}}}})
         if "disconnect" in text:
             break
         if "approval" in text:

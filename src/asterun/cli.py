@@ -51,6 +51,13 @@ def build_parser() -> argparse.ArgumentParser:
     usage.add_argument("--pool-ref")
     usage.add_argument("--meter")
     usage.add_argument("--window-id")
+    report = sub.add_parser("usage-report", help="汇总指定工作区、会话或任务的全部运行用量；不是账单")
+    report.add_argument("--workspace")
+    report.add_argument("--task-id")
+    report.add_argument("--conversation-id")
+    report.add_argument("--include-runs", action="store_true", help="附各运行的原生用量明细")
+    report.add_argument("--page-size", type=int, help="每类明细每页最多 1–100 条，默认 20；总计覆盖完整查询")
+    report.add_argument("--cursor", help="沿用上页 pagination.next_cursor 和相同查询范围")
     invoke = sub.add_parser("capability-invoke", help="以结构化输入调用已注册能力，复用持久任务/预留")
     invoke.add_argument("--request", type=Path, required=True)
     sub.add_parser("capability-discovery", help="发现独立能力 profile，不启动插件")
@@ -105,7 +112,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     get_p = sub.add_parser("task-get", help="读取任务与当前运行")
     get_p.add_argument("task_id")
+    get_p.add_argument("--compact", action="store_true", help="只返回有界状态、摘要和原生引用")
     watch = sub.add_parser("task-watch", help="通过 --connect 有截止时间地观察任务；只读，不审批或重派")
+    watch.add_argument("--compact", action="store_true", help="仅返回状态与有界摘要，不输出原生正文")
+    watch.add_argument("--no-events", action="store_true", help="只观察状态，不读取事件或推进事件游标")
     watch.add_argument("task_id")
     watch.add_argument("--timeout", type=float, default=60, help="总观察秒数，默认 60；到期返回已知状态")
     watch.add_argument("--request-timeout", type=float, default=5, help="单次请求最多秒数，且受剩余总时限裁剪")
@@ -117,6 +127,7 @@ def build_parser() -> argparse.ArgumentParser:
     events.add_argument("task_id")
     events.add_argument("--cursor", type=int, default=0)
     events.add_argument("--page-size", type=int, default=100)
+    events.add_argument("--compact", action="store_true", help="服务端投影有界事件页，保留运行和游标")
     cancel = sub.add_parser("task-cancel", help="请求取消，并区分受理与终止")
     cancel.add_argument("task_id")
     approval = sub.add_parser("approval-respond", help="答复匹配的待处理审批")
@@ -152,6 +163,9 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("task_id")
     evaluate.add_argument("--revision", type=int)
     evaluate.add_argument("--input-hash", dest="expected_input_hash")
+    evaluate.add_argument("--run-id", dest="expected_run_id")
+    evaluate.add_argument("--target-hash", dest="expected_target_hash")
+    evaluate.add_argument("--target", action="append", dest="target_paths")
     evaluate.add_argument("--require-review", action="store_true")
     evaluate.add_argument("--review-backend", dest="review_backend")
     evaluate.add_argument("--checks", help="JSON 检查数组，例如 [{\"kind\":\"contains\",\"text\":\"x\"}]")
@@ -160,6 +174,17 @@ def build_parser() -> argparse.ArgumentParser:
     repair.add_argument("task_id")
     repair.add_argument("--max-repairs", dest="max_repairs", type=int)
     repair.add_argument("--idempotency-key", dest="idempotency_key")
+    repair.add_argument("--instructions", help="本轮修复指令；原任务目标保持不变")
+    repair.add_argument("--request", type=Path, help="含修复指令及固定版本绑定的 JSON")
+    repair.add_argument("--run-id", dest="expected_run_id")
+    repair.add_argument("--input-hash", dest="expected_input_hash")
+    repair.add_argument("--revision", type=int)
+    repair.add_argument("--target-hash", dest="expected_target_hash")
+    repair.add_argument("--target", action="append", dest="target_paths")
+    snapshot = sub.add_parser("workflow-snapshot", help="读取终态代码目标摘要，准备绑定外部验收；不执行代码")
+    snapshot.add_argument("task_id")
+    snapshot.add_argument("--target", action="append", dest="target_paths", required=True)
+    snapshot.add_argument("--run-id", dest="expected_run_id")
     quality = sub.add_parser("workflow-start", help="启动版本绑定的审查、修复、复核流程")
     quality.add_argument("task_id")
     quality.add_argument("--request", type=Path, required=True, help="含 idempotency_key、target_paths、checks 的 JSON")
@@ -211,6 +236,7 @@ def _load_request(args: argparse.Namespace) -> dict[str, Any]:
         "expected_input_hash": "expected_input_hash",
         "review_backend": "review_backend",
         "max_repairs": "max_repairs",
+        "target_paths": "target_paths", "instructions": "instructions",
         "output": "output",
         "kind": "kind", "id": "id", "after": "after", "limit": "limit", "artifact_id": "artifact_id",
     }
@@ -231,6 +257,10 @@ def _load_request(args: argparse.Namespace) -> dict[str, Any]:
         payload["require_review"] = True
     if getattr(args, "native", False):
         payload["native"] = True
+    if getattr(args, "compact", False):
+        payload["compact"] = True
+    if getattr(args, "include_runs", False):
+        payload["include_runs"] = True
     checks = getattr(args, "checks", None)
     if checks:
         parsed = json.loads(checks)
@@ -265,7 +295,8 @@ def _app(args: argparse.Namespace, *, entry: str = "cli") -> Application:
         app.instance_lock = lock
         return app
     return Application.from_paths(config_path, state_dir, entry=entry,
-                                  background=args.command in {"serve", "mcp"})
+                                  background=args.command in {"serve", "mcp"},
+                                  restore_scheduler=args.command != "usage-report")
 
 
 COMMAND_METHODS = {
@@ -288,6 +319,7 @@ COMMAND_METHODS = {
     "connection-verify": "connection.verify",
     "task-submit": "task.submit",
     "task-get": "task.get",
+    "usage-report": "usage.report",
     "task-events": "task.events",
     "task-cancel": "task.cancel",
     "approval-respond": "approval.respond",
@@ -296,6 +328,7 @@ COMMAND_METHODS = {
     "task-reconcile": "task.reconcile",
     "task-present": "task.present",
     "workflow-evaluate": "workflow.evaluate",
+    "workflow-snapshot": "workflow.snapshot",
     "workflow-repair": "workflow.repair",
     "workflow-start": "workflow.start",
     "scheduler-status": "scheduler.status",
@@ -362,6 +395,7 @@ def main(argv: list[str] | None = None) -> int:
             result = watch_task(state_dir / "asterun.sock", args.task_id, timeout=args.timeout,
                                 request_timeout=args.request_timeout, interval=args.interval,
                                 cursor=args.cursor, run_id=args.run_id, page_size=args.page_size,
+                                compact=args.compact, include_events=not args.no_events,
                                 on_events=lambda page: print(json.dumps(
                                     {"type": "events", "data": page}, ensure_ascii=False), flush=True))
             print(json.dumps({"type": "observation", **result.to_dict()}, ensure_ascii=False), flush=True)

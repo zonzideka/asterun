@@ -100,14 +100,15 @@ def _amounts(values: list[dict[str, Any]], field: str = "amount") -> dict[tuple[
 
 
 class ControlStore:
-    def __init__(self, connection: sqlite3.Connection) -> None:
+    def __init__(self, connection: sqlite3.Connection, *, initialize: bool = True) -> None:
         self._conn = connection
         self._savepoint = 0
         # executescript implicitly commits an existing transaction; execute each
         # DDL statement separately to preserve the caller's transaction boundary.
-        with self.transaction():
-            for statement in _SCHEMA:
-                self._conn.execute(statement)
+        if initialize:
+            with self.transaction():
+                for statement in _SCHEMA:
+                    self._conn.execute(statement)
 
     @contextmanager
     def transaction(self) -> Iterator[None]:

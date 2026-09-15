@@ -127,10 +127,13 @@ class Application:
         entry: str = "core",
         state_dir: Path | None = None,
         background: bool = False,
+        restore_scheduler: bool = True,
     ) -> None:
+        if background and not restore_scheduler:
+            raise AsterunError(INVALID_REQUEST, "只读打开不能启动后台执行器")
         self.config = config
         self.store = store or MemoryStore()
-        self.backends = backends or build_backends(config)
+        self.backends = backends or (build_backends(config) if restore_scheduler else {})
         self.policy = policy or AllowConfiguredWorkspaces(set(config.workspaces))
         self.principal = principal or process_principal()
         self.grant = grant
@@ -146,14 +149,16 @@ class Application:
         self._polling = False
         self.quality = QualityRuntime(self)
         self._control = None
-        self.store.bootstrap_applied_revision(config.revision)
+        if restore_scheduler:
+            self.store.bootstrap_applied_revision(config.revision)
         self.admission = None
-        if config.schema_version == 2:
+        if config.schema_version == 2 and restore_scheduler:
             from asterun.connections.admission import AdmissionService
             self.admission = AdmissionService(self)
             from asterun.plugins.management import sync_runtime_latches
             sync_runtime_latches(self)
-        self._restore_scheduler()
+        if restore_scheduler:
+            self._restore_scheduler()
         if hasattr(self.store, "_conn"):
             self.control
 
@@ -178,6 +183,7 @@ class Application:
         runtime_ref: RuntimeRef | None = None,
         entry: str = "core",
         background: bool = False,
+        restore_scheduler: bool = True,
     ) -> Application:
         if config_path is None:
             raise AsterunError(
@@ -197,11 +203,11 @@ class Application:
             else:
                 lock = InstanceLock(state_dir / "asterun.lock")
                 lock.acquire()
-                store = SqliteStore(state_dir / "asterun.sqlite")
+                store = SqliteStore(state_dir / "asterun.sqlite", readonly=not restore_scheduler)
             app = cls(
                 config, store=store, policy=policy, principal=principal, grant=grant,
                 account_ref=account_ref, runtime_ref=runtime_ref, entry=entry, state_dir=state_dir,
-                background=background,
+                background=background, restore_scheduler=restore_scheduler,
             )
         except BaseException:
             try:
@@ -289,6 +295,11 @@ class Application:
                 managed = self.control.legacy_action(payload["task_id"])
                 if managed:
                     self.control.task(managed["task_id"], method)
+            if method == "usage.report":
+                # 成本查询只读持久记录，不推进队列、修复或任何供应商调用。
+                return self.usage_report(payload)
+            if method == "workflow.snapshot":
+                return self.workflow_snapshot(payload)
             if method == "task.present":
                 # 客户端展示重试不推进队列、模型轮次或质量流程。
                 return self.task_present(payload)
@@ -306,12 +317,13 @@ class Application:
             if method == "task.submit":
                 return self.task_submit(payload)
             if method == "task.get":
-                return self.task_get(str(payload.get("task_id") or ""))
+                return self.task_get(str(payload.get("task_id") or ""), compact=payload.get("compact", False))
             if method == "task.events":
                 return self.task_events(
                     str(payload.get("task_id") or ""),
                     cursor=payload.get("cursor", 0),
                     page_size=payload.get("page_size", 100),
+                    compact=payload.get("compact", False),
                 )
             if method == "task.cancel":
                 return self.task_cancel(str(payload.get("task_id") or ""))
@@ -615,17 +627,67 @@ class Application:
             )
         return self._dispatch_committed(task, run, operation, session, backend, backend_conf.name, now)
 
-    def task_get(self, task_id: str) -> Envelope:
+    def task_get(self, task_id: str, *, compact: bool = False) -> Envelope:
         task = self._require_task(task_id)
         enforce(self.policy.authorize(self.principal, "task.get", task.workspace))
         task = self.quality.validate_evidence(task)
         run = self.store.get_run(task.current_run_id) if task.current_run_id else None
+        task = self._validate_external_evidence(task, run)
+        data = self._task_view(task, run, extra={"session": self._session_for_task(task)})
+        if compact:
+            from asterun.observe import compact_task_snapshot
+            data = compact_task_snapshot(data)
         return ok(
-            self._task_view(task, run, extra={"session": self._session_for_task(task)}),
+            data,
             ids={"task_id": task.id.value, **_conversation_ids(task)},
         )
 
-    def task_events(self, task_id: str, cursor: int = 0, page_size: int = 100) -> Envelope:
+    def usage_report(self, payload: dict[str, Any]) -> Envelope:
+        from asterun.usage.report import build_usage_report, paginate_usage_report
+
+        if not any(payload.get(key) for key in ("task_id", "workspace", "conversation_id")):
+            raise AsterunError(INVALID_REQUEST, "用量查询需要 task_id、workspace 或 conversation_id 范围")
+        if payload.get("workspace"):
+            self.config.get_workspace(payload["workspace"])
+            enforce(self.policy.authorize(self.principal, "task.get", payload["workspace"]))
+        candidates = ([self._require_task(payload["task_id"])] if payload.get("task_id") else
+                      [self.store.get_task(ident) for ident in self.store.list_task_ids()])
+        tasks, runs = [], []
+        for task in candidates:
+            if payload.get("workspace") and task.workspace != payload["workspace"]:
+                continue
+            if payload.get("conversation_id") and (task.conversation_id is None or
+                    task.conversation_id.value != payload["conversation_id"]):
+                continue
+            enforce(self.policy.authorize(self.principal, "task.get", task.workspace))
+            if self._control is not None:
+                managed = self.control.legacy_action(task.id.value)
+                if managed:
+                    self.control.task(managed["task_id"], "task.get")
+            tasks.append(task)
+            runs.extend(self.store.list_runs(task.id))
+        if payload.get("task_id") and not tasks:
+            raise AsterunError(INVALID_REQUEST, "任务与请求的工作区或会话不匹配")
+        data = build_usage_report(runs, tasks=tasks)
+        if not payload.get("include_runs", False):
+            data.pop("runs", None)
+        data["scope"] = {key: payload[key] for key in ("task_id", "workspace", "conversation_id") if key in payload}
+        data["tasks"] = [{"task_id": task.id.value, "workspace": task.workspace,
+                          "conversation_id": None if task.conversation_id is None else task.conversation_id.value,
+                          "acceptance": str(task.acceptance), "evidence_stale": task.evidence_stale,
+                          "review_status": task.review_status, "repair_count": task.repair_count,
+                          "run_count": task.run_count, "current_run_id":
+                          None if task.current_run_id is None else task.current_run_id.value} for task in tasks]
+        data["readonly"] = True
+        data["task_status_source"] = "persisted_snapshot"
+        data["acceptance_revalidated"] = False
+        try:
+            data = paginate_usage_report(data, page_size=payload.get("page_size", 20), cursor=payload.get("cursor"))
+        except ValueError as exc:
+            raise AsterunError(INVALID_REQUEST, str(exc)) from exc
+        return ok(data)
+
+    def task_events(self, task_id: str, cursor: int = 0, page_size: int = 100, *, compact: bool = False) -> Envelope:
         if page_size < 1 or page_size > 500:
             raise AsterunError(INVALID_REQUEST, "page_size 必须在 1 到 500 之间")
         task = self._require_task(task_id)
@@ -634,14 +696,13 @@ class Application:
             raise AsterunError(NOT_FOUND, "任务没有运行")
         events = self.store.list_events(task.current_run_id, cursor=cursor, page_size=page_size)
         next_cursor = events[-1].seq if events else cursor
+        data = {"task_id": task.id.value, "run_id": task.current_run_id.value,
+                "cursor": cursor, "next_cursor": next_cursor, "events": [item.to_dict() for item in events]}
+        if compact:
+            from asterun.observe import compact_event_page
+            data = compact_event_page({**data, "has_more": len(events) == page_size})
         return ok(
-            {
-                "task_id": task.id.value,
-                "run_id": task.current_run_id.value,
-                "cursor": cursor,
-                "next_cursor": next_cursor,
-                "events": [item.to_dict() for item in events],
-            },
+            data,
             ids={"task_id": task.id.value, "run_id": task.current_run_id.value},
         )
 
@@ -962,9 +1023,11 @@ class Application:
         if action not in {"pause", "resume"}:
             raise AsterunError(INVALID_REQUEST, "task.handoff 的 action 必须是 pause 或 resume")
         run = self.store.get_run(task.current_run_id) if task.current_run_id else None
+        task = self._validate_external_evidence(task, run)
         if payload.get("external_change") is True:
             previous_acceptance = task.acceptance
             task.evidence_stale = True
+            task.evidence_input_hash = ""
             if task.acceptance is AcceptanceStatus.PASSED:
                 task.acceptance = AcceptanceStatus.PENDING
             if run is not None:
@@ -1101,6 +1164,59 @@ class Application:
             }
         )
 
+    def workflow_snapshot(self, payload: dict[str, Any]) -> Envelope:
+        from asterun.external_evaluation import prepare_snapshot
+
+        task = self._require_task(payload["task_id"])
+        enforce(self.policy.authorize(self.principal, "task.get", task.workspace))
+        enforce(self.policy.authorize(self.principal, "workspace.read", task.workspace))
+        self._assert_task_binding(task)
+        run = self.store.get_run(task.current_run_id) if task.current_run_id else None
+        if payload.get("expected_run_id") and (run is None or run.id.value != payload["expected_run_id"]):
+            raise AsterunError(REVISION_CONFLICT, "目标运行已经改变，请重新读取当前任务")
+        data = prepare_snapshot(task, run, self.config.get_workspace(task.workspace).root,
+                                payload["target_paths"], state_dir=self.state_dir)
+        return ok(data, ids={"task_id": task.id.value, "run_id": run.id.value})
+
+    def _bound_external_target(self, task: Task, run: Run | None, payload: dict, *, required=False) -> dict | None:
+        from asterun.external_evaluation import prepare_snapshot
+
+        fields = {"expected_run_id", "expected_revision", "expected_input_hash", "target_paths", "expected_target_hash"}
+        bound = required or "target_paths" in payload or "expected_target_hash" in payload
+        if bound and not fields.issubset(payload):
+            raise AsterunError(INVALID_REQUEST, "固定目标需要 workflow.snapshot 返回的运行、配置、输入和目标绑定")
+        if "expected_run_id" in payload and (run is None or run.id.value != payload["expected_run_id"]):
+            raise AsterunError(REVISION_CONFLICT, "证据或修复指令绑定的是旧运行")
+        if "expected_revision" in payload and payload["expected_revision"] != task.config_revision:
+            raise AsterunError(REVISION_CONFLICT, "证据或修复指令的配置 revision 已改变")
+        if "expected_input_hash" in payload and payload["expected_input_hash"] != task.input_hash:
+            raise AsterunError(INVALID_REQUEST, "证据或修复指令的原任务输入不匹配")
+        if not bound:
+            return None
+        enforce(self.policy.authorize(self.principal, "workspace.read", task.workspace))
+        data = prepare_snapshot(task, run, self.config.get_workspace(task.workspace).root,
+                                payload["target_paths"], state_dir=self.state_dir)
+        if data["target_hash"] != payload["expected_target_hash"]:
+            raise AsterunError(REVISION_CONFLICT, "所选目标文件已经改变，需要重新验收或准备修复")
+        return data
+
+    def _validate_external_evidence(self, task: Task, run: Run | None) -> Task:
+        if not task.external_evaluation or task.evidence_stale:
+            return task
+        from asterun.external_evaluation import validate_external_evaluation
+        if validate_external_evaluation(task, run, self.config.get_workspace(task.workspace).root,
+                                        state_dir=self.state_dir):
+            return task
+        task = replace(task, evidence_stale=True, acceptance=AcceptanceStatus.PENDING,
+                       evidence_input_hash="")
+        self.store.save_task(task)
+        if run is not None:
+            self._event(run.id, EventType.EVIDENCE_INVALIDATED, "core", {
+                "source": task.external_evaluation.get("source", "core_check"),
+                "target_hash": task.external_evaluation.get("target_hash"),
+            })
+        return task
+
     def workflow_evaluate(self, payload: dict[str, Any]) -> Envelope:
         task = self._require_task(str(payload.get("task_id") or ""))
         enforce(self.policy.authorize(self.principal, "workflow.evaluate", task.workspace))
@@ -1108,6 +1224,8 @@ class Application:
         self._require_applied_config()
         self._assert_task_binding(task)
         if task.quality:
+            if any(key in payload for key in ("target_paths", "expected_target_hash", "expected_run_id")):
+                raise AsterunError(INVALID_REQUEST, "核心质量流程使用自身持久化目标，不接受外部验收绑定")
             # 已启动流程使用持久化检查和受信审查记录；调用方不能改写成更低的验收条件。
             if (payload.get("checks", task.quality["checks"]) != task.quality["checks"]
                     or payload.get("expected_revision", task.config_revision) != task.config_revision
@@ -1119,9 +1237,20 @@ class Application:
                        "review_status": task.review_status, "quality": task.quality,
                        "run_success_is_not_acceptance": True}, ids={"task_id": task.id.value})
         run = self.store.get_run(task.current_run_id) if task.current_run_id else None
+        reports = [item for item in payload.get("checks", []) if item.get("kind") == "external_report"]
+        target = self._bound_external_target(task, run, payload, required=bool(reports))
+        if task.external_evaluation and target is None:
+            raise AsterunError(INVALID_REQUEST, "已有版本绑定验收，请为当前版本重新提供完整绑定")
+        if target is not None:
+            for check in payload.get("checks", []):
+                if check["kind"] in {"file_exists", "file_contains"} and check.get("path") not in target["target_paths"]:
+                    raise AsterunError(INVALID_REQUEST, "固定版本的文件检查必须包含在 target_paths 中")
+        task = replace(task, evidence_stale=False if target is not None else task.evidence_stale)
         workspace = self.config.get_workspace(task.workspace)
         review_available = None
-        require_review = self.config.workflow.require_review or payload.get("require_review", False)
+        require_review = (self.config.workflow.require_review or task.external_require_review
+                          or payload.get("require_review", False))
+        payload = {**payload, "require_review": require_review}
         if require_review:
             review_name = payload.get("review_backend") or self.config.workflow.review_backend
             if review_name:
@@ -1139,8 +1268,22 @@ class Application:
         task.findings = evaluation.findings
         task.review_status = evaluation.review_status
         task.acceptance = evaluation.acceptance
+        task.external_require_review = require_review
+        if target is not None:
+            task.external_evaluation = {
+                "source": "external_reported" if reports else "core_check",
+                "expected_run_id": run.id.value, "expected_revision": task.config_revision,
+                "expected_input_hash": task.input_hash, "target_paths": list(payload["target_paths"]),
+                "target_hash": target["target_hash"],
+                "reports": [{"path": item["path"], "sha256": item["sha256"]} for item in reports],
+            }
+            from asterun.external_evaluation import validate_external_evaluation
+            if not validate_external_evaluation(task, run, workspace.root, state_dir=self.state_dir):
+                raise AsterunError(REVISION_CONFLICT, "验收期间目标或报告改变，未保存验收结论")
         if evaluation.acceptance is AcceptanceStatus.PASSED:
             task.evidence_input_hash = evaluation.bound_input_hash
+        else:
+            task.evidence_input_hash = ""
         self.store.save_task(task)
         if run is not None:
             self._event(
@@ -1152,6 +1295,11 @@ class Application:
                     "review_status": evaluation.review_status,
                     "bound_revision": evaluation.bound_revision,
                     "bound_input_hash": evaluation.bound_input_hash,
+                    "source": task.external_evaluation.get("source", "core_check"),
+                    "target_hash": task.external_evaluation.get("target_hash"),
+                    "external_evaluation": task.external_evaluation,
+                    "checks": evaluation.to_dict()["checks"],
+                    "require_review": task.external_require_review,
                 },
             )
             if evaluation.paused_for_review:
@@ -1178,36 +1326,45 @@ class Application:
         self._assert_task_binding(task)
         if task.quality and not _quality:
             raise AsterunError(CAPABILITY_UNSUPPORTED, "修复由质量流程持有，不能再启动第二个修复编排")
-        if task.paused or task.orchestration_owner == "human":
-            raise AsterunError(
-                CAPABILITY_UNSUPPORTED,
-                "任务已交给人工，不能自动修复",
-                next_action="先 task.handoff resume，或由人决定是否继续",
-            )
         limit = min(payload.get("max_repairs", self.config.workflow.max_repairs), self.config.workflow.max_repairs)
         backend = self._backend(task.backend.value)
-        if not backend.can_dispatch():
-            raise backend.unavailable_error()
+        from asterun.quality import bounded_prompt, digest
         now = utc_now()
+        request_binding = {key: value for key, value in payload.items() if key not in {"idempotency_key", "task_id"}}
+        request_binding.setdefault("max_repairs", self.config.workflow.max_repairs)
+        if "target_paths" in request_binding:
+            request_binding["target_paths"] = sorted(request_binding["target_paths"])
         operation = Operation(
             id=new_operation_id(),
             idempotency_key=payload.get("idempotency_key") or new_id("idem"),
             principal=self.principal.subject_id,
             action="workflow.repair",
             target=task.id.value,
-            input_hash=task.input_hash,
+            input_hash=digest({"version": 2, "task_input_hash": task.input_hash, "request": request_binding}),
             status=OperationStatus.INTENDED,
             created_at=now,
         )
         existing = self.store.find_idempotent_operation(operation)
         if existing is not None:
+            # 旧版仅保存原任务输入摘要。只允许旧式请求读取该历史意图，
+            # 不能让新指令或版本绑定借用旧键；任何重放都不再次派发。
+            if (existing.input_hash == task.input_hash
+                    and set(payload) <= {"task_id", "idempotency_key", "max_repairs"}):
+                operation = replace(operation, input_hash=existing.input_hash)
             old_run = self.store.get_run(existing.run_id)
             saved_op, saved_task, saved_run, _ = self.store.commit_intent(operation, task, old_run)
             return ok(self._task_view(saved_task, saved_run, extra={"reused": True, "operation": saved_op.to_dict()}),
                       ids={"task_id": task.id.value, "run_id": saved_run.id.value, "operation_id": saved_op.id.value})
+        if task.paused or task.orchestration_owner == "human":
+            raise AsterunError(CAPABILITY_UNSUPPORTED, "任务已交给人工，不能自动修复",
+                               next_action="先 task.handoff resume，或由人决定是否继续")
         previous_run = self.store.get_run(task.current_run_id) if task.current_run_id else None
         if previous_run is not None and previous_run.status not in TERMINAL_RUN_STATUSES:
             raise AsterunError(INVALID_REQUEST, "当前运行尚未终止或结果未决，不能开始修复")
+        target = self._bound_external_target(task, previous_run, payload,
+                    required="instructions" in payload or bool(task.external_evaluation))
+        if not backend.can_dispatch():
+            raise backend.unavailable_error()
         if task.repair_count >= limit:
             if task.current_run_id:
                 self._event(task.current_run_id, EventType.REPAIR_LIMIT, "core", {"repair_count": task.repair_count})
@@ -1223,6 +1380,11 @@ class Application:
                 "已达到每任务运行上限，停止新调用",
                 details={"run_count": task.run_count, "max_runs_per_task": self.config.scheduler.max_runs_per_task},
             )
+        prompt = repair_prompt(task) if task.findings else task.text
+        if "instructions" in payload:
+            if not payload["instructions"].strip():
+                raise AsterunError(INVALID_REQUEST, "修复指令不能为空白")
+            prompt = bounded_prompt(prompt + "\n本轮调用方修复指令（不扩大权限或预算）：\n" + payload["instructions"])
         run = Run(
             id=new_run_id(),
             task_id=task.id,
@@ -1230,15 +1392,18 @@ class Application:
             status=RunStatus.QUEUED,
             created_at=now,
             role="repair",
-            prompt=repair_prompt(task) if task.findings else task.text,
-            target_hash=task.quality.get("target", {}).get("hash", ""),
+            prompt=prompt,
+            target_hash=target["target_hash"] if target else task.quality.get("target", {}).get("hash", ""),
+            native={"external_repair_target": {"target_paths": target["target_paths"],
+                                              "target_hash": target["target_hash"]}} if target else {},
         )
         workspace_root = str(self.config.get_workspace(task.workspace).root.resolve())
         decision = self.scheduler.admit(task.backend.value, workspace_root)
         # 新 run、当前 run 指针及预算计数必须与意图一起提交。
         task = replace(task, repair_count=task.repair_count + 1, run_count=task.run_count + 1,
                        acceptance=AcceptanceStatus.PENDING, current_run_id=run.id,
-                       review_status="not_configured")
+                       review_status="not_configured", evidence_stale=False,
+                       evidence_input_hash="", external_evaluation={})
         if task.quality:
             task = replace(task, quality={**task.quality, "phase": "repairing"})
         operation, task, run, reused = self.store.commit_intent(operation, task, run)
@@ -1275,7 +1440,14 @@ class Application:
                     **_conversation_ids(task),
                 },
             )
-        return self._dispatch_committed(task, run, operation, session, backend, task.backend.value, now)
+        try:
+            return self._dispatch_committed(task, run, operation, session, backend, task.backend.value, now)
+        except AsterunError as error:
+            if operation.status == OperationStatus.INTENDED:
+                self._set_run(run, RunStatus.FAILED, error_code=error.code, terminated=True,
+                              summary="派发前校验失败，未调用后端")
+                self._finish_operation(run)
+            raise
 
     def scheduler_status(self) -> Envelope:
         enforce(self.policy.authorize(self.principal, "scheduler.status", "*"))
@@ -1365,6 +1537,13 @@ class Application:
         reader = (self._fixed_reader(self.config.get_workspace(task.workspace).root, task.read_scope, backend)
                   if task.read_scope is not None and run.role != "review" else None)
         self.quality.before_dispatch(task, run)
+        if run.native.get("external_repair_target"):
+            from asterun.quality import snapshot
+            bound = run.native["external_repair_target"]
+            current, _ = snapshot(self.config.get_workspace(task.workspace).root,
+                                  bound["target_paths"], state_dir=self.state_dir)
+            if current["hash"] != bound["target_hash"]:
+                raise AsterunError(REVISION_CONFLICT, "修复排队期间所选目标改变，未派发后端")
         if self.admission is not None:
             plan = self.admission.guard_run(run.id.value)
             from asterun.connections.admission import input_digest
