@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import closing
 import importlib.util
 from pathlib import Path
 import sqlite3
@@ -159,7 +160,7 @@ def test_v1_intent_preserves_original_core_key_on_migration(tmp_path, monkeypatc
 def test_overlapping_submit_cannot_overwrite_known_ids_or_rewind_observation(
         ledger, tmp_path, monkeypatch, conflicting):
     def core(executable, argv, **kwargs):
-        with sqlite3.connect(ledger.path) as other:
+        with closing(sqlite3.connect(ledger.path)) as other, other:
             other.execute("UPDATE submissions SET task_id='task-1', run_id='run-1', "
                           "result_conversation_id='conversation', state='submitted'")
             other.execute('INSERT INTO observations(binding, task_id, request_id, run_id, '
@@ -418,7 +419,7 @@ def test_copied_ledger_keeps_namespace_for_new_requests(ledger, tmp_path, monkey
     directory = tmp_path.resolve() / 'copied'
     directory.mkdir(mode=0o700)
     path = directory / 'ledger.sqlite'
-    with sqlite3.connect(path) as target:
+    with closing(sqlite3.connect(path)) as target, target:
         ledger.conn.backup(target)
     path.chmod(0o600)
     copied = bridge.Ledger(path)

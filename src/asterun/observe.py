@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 import math
 import os
@@ -15,6 +16,111 @@ from asterun.contracts import Envelope
 from asterun.control_protocol import loads
 from asterun.errors import AsterunError, BACKEND_UNAVAILABLE, INVALID_REQUEST, REMOTE_STATE_UNKNOWN
 from asterun.service import MAX_MESSAGE
+
+
+COMPACT_SUMMARY_CHARS = 1000
+
+
+def _fields(value: dict[str, Any], names: tuple[str, ...]) -> dict[str, Any]:
+    return {name: deepcopy(value[name]) for name in names if name in value}
+
+
+def _bounded_summary(value: dict[str, Any], result: dict[str, Any]) -> None:
+    summary = value.get("summary")
+    if not isinstance(summary, str):
+        return
+    result["summary"] = summary[:COMPACT_SUMMARY_CHARS]
+    result["summary_truncated"] = bool(value.get("summary_truncated")) or len(summary) > COMPACT_SUMMARY_CHARS
+    # 服务端可能已投影；再次投影时保留原文长度和截断事实。
+    prior_length = value.get("summary_chars")
+    result["summary_chars"] = max(len(summary), prior_length) if type(prior_length) is int else len(summary)
+
+
+def compact_task_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """保留状态判断和续查引用，不返回任务正文、完整原生日志或审批执行内容。"""
+    result: dict[str, Any] = {"compact": True}
+    task = snapshot.get("task")
+    if isinstance(task, dict):
+        result["task"] = _fields(task, (
+            "id", "workspace", "backend", "script", "acceptance", "delivery", "created_at",
+            "current_run_id", "conversation_id", "account_ref", "model_id", "billing_pool_ref",
+            "runtime_ref", "config_revision", "paused", "orchestration_owner", "evidence_stale",
+            "input_hash", "evidence_input_hash", "repair_count", "review_status", "run_count", "capability",
+            "external_require_review",
+        ))
+        if isinstance(task.get("external_evaluation"), dict):
+            result["task"]["external_evaluation"] = _fields(task["external_evaluation"], (
+                "source", "expected_run_id", "expected_revision", "expected_input_hash", "target_hash",
+            ))
+        if isinstance(task.get("findings"), list):
+            result["task"]["findings_count"] = len(task["findings"])
+        elif "findings_count" in task:
+            result["task"]["findings_count"] = task["findings_count"]
+    elif "task" in snapshot:
+        result["task"] = task
+    run = snapshot.get("run")
+    if isinstance(run, dict):
+        short_run = _fields(run, (
+            "id", "task_id", "backend", "status", "created_at", "cancel_requested", "terminated",
+            "error_code", "role", "conversation_id", "target_hash",
+        ))
+        _bounded_summary(run, short_run)
+        native = run.get("native")
+        if isinstance(native, dict):
+            short_run["native"] = _fields(native, (
+                "session_id", "thread_id", "turn_id", "backend_session_id", "backend_turn_id",
+                "native_resumed", "native_checked", "execution_profile", "transport", "stop_reason",
+                "tool_calls_count", "num_turns", "summary_truncated", "events_truncated", "usage",
+                "modelUsage", "total_cost_usd", "total_cost_usd_ticks", "usage_source",
+                "usage_is_incomplete", "cost_is_partial", "token_usage", "usage_scope",
+            ))
+        if "output" in run or "output_available" in run:
+            short_run["output_available"] = run.get("output_available", run.get("output") is not None)
+        result["run"] = short_run
+    elif "run" in snapshot:
+        result["run"] = run
+    session = snapshot.get("session")
+    if isinstance(session, dict):
+        result["session"] = _fields(session, (
+            "conversation_id", "backend", "workspace", "account_ref", "runtime_ref", "created_at",
+            "updated_at", "backend_session_id", "latest_turn_id", "task_id", "config_revision",
+        ))
+    elif "session" in snapshot:
+        result["session"] = session
+    approval = snapshot.get("approval")
+    if isinstance(approval, dict):
+        result["approval"] = _fields(approval, (
+            "id", "task_id", "run_id", "state", "created_at", "expires_at", "target_hash",
+            "decision_source", "response_status", "native_confirmed",
+        ))
+        _bounded_summary(approval, result["approval"])
+    elif "approval" in snapshot:
+        result["approval"] = approval
+    notes = snapshot.get("notes")
+    if isinstance(notes, dict):
+        result["notes"] = _fields(notes, ("run_success_is_not_acceptance", "fake_is_not_real_connection"))
+    result["details"] = {"method": "task.get", "compact": False}
+    if isinstance(task, dict) and isinstance(task.get("id"), str):
+        result["details"]["task_id"] = task["id"]
+    return result
+
+
+def _compact_event_page(page: dict[str, Any]) -> dict[str, Any]:
+    result = _fields(page, ("task_id", "run_id", "cursor", "next_cursor"))
+    result["compact"] = True
+    result["events"] = []
+    for event in page["events"]:
+        if not isinstance(event, dict):
+            raise AsterunError(INVALID_REQUEST, "观察事件不是有效对象")
+        short_event = _fields(event, ("seq", "type", "source", "timestamp", "schema_version"))
+        payload = event.get("payload")
+        if isinstance(payload, dict):
+            short_event["payload"] = _fields(payload, (
+                "kind", "status", "toolName", "toolCallId", "tool_kind", "usage", "error_code",
+                "approval_id", "run_id", "task_id",
+            ))
+        result["events"].append(short_event)
+    return result
 
 
 def _read(path: Path, method: str, payload: dict[str, Any], deadline: float) -> Envelope:
@@ -57,7 +163,10 @@ def _read(path: Path, method: str, payload: dict[str, Any], deadline: float) -> 
 
 def watch_task(path: Path, task_id: str, *, timeout: float = 60, request_timeout: float = 5,
                interval: float = 0.5, cursor: int = 0, run_id: str | None = None,
-               page_size: int = 100, on_events: Callable[[dict[str, Any]], None] | None = None) -> Envelope:
+               page_size: int = 100, on_events: Callable[[dict[str, Any]], None] | None = None,
+               compact: bool = False, include_events: bool = True) -> Envelope:
+    if type(compact) is not bool or type(include_events) is not bool:
+        raise AsterunError(INVALID_REQUEST, "compact 和 include-events 必须是布尔值")
     if any(not math.isfinite(value) or value <= 0 for value in (timeout, request_timeout, interval)):
         raise AsterunError(INVALID_REQUEST, "timeout、request-timeout 和 interval 必须是有限正数")
     if type(cursor) is not int or cursor < 0 or not 1 <= page_size <= 500:
@@ -70,11 +179,17 @@ def watch_task(path: Path, task_id: str, *, timeout: float = 60, request_timeout
     delay = min(interval, 5.0)
 
     def finish(reason: str, error: dict[str, Any] | None = None) -> Envelope:
-        return Envelope(ok=error is None, ids={"task_id": task_id}, error=error, data={
-            "reason": reason, "last_snapshot": latest, "run_id": run_id, "cursor": cursor,
+        data = {
+            "reason": reason, "last_snapshot": compact_task_snapshot(latest) if compact and latest is not None else latest,
+            "run_id": run_id, "cursor": cursor,
             "requests": count, "readonly": True,
             "next_action": "继续观察时复用 task_id、run_id 与 cursor；不创建新的任务或幂等键",
-        })
+        }
+        if compact:
+            data["compact"] = True
+        if not include_events:
+            data["events_skipped"] = True
+        return Envelope(ok=error is None, ids={"task_id": task_id}, error=error, data=data)
 
     def request(method: str, payload: dict[str, Any]) -> Envelope:
         nonlocal count
@@ -85,7 +200,7 @@ def watch_task(path: Path, task_id: str, *, timeout: float = 60, request_timeout
 
     try:
         while time.monotonic() < deadline:
-            snapshot = request("task.get", {"task_id": task_id})
+            snapshot = request("task.get", {"task_id": task_id, **({"compact": True} if compact else {})})
             if not snapshot.ok:
                 return finish("read_error", snapshot.error)
             if not isinstance(snapshot.data, dict) or not isinstance(snapshot.data.get("run"), dict):
@@ -112,7 +227,7 @@ def watch_task(path: Path, task_id: str, *, timeout: float = 60, request_timeout
                 reason = "unknown"
             changed = False
             # 消费有限事件页；即使持续有新事件，每次请求前也检查固定总时限。
-            while time.monotonic() < deadline:
+            while include_events and time.monotonic() < deadline:
                 page = request("task.events", {"task_id": task_id, "cursor": cursor, "page_size": page_size})
                 if not page.ok:
                     return finish("read_error", page.error)
@@ -131,7 +246,7 @@ def watch_task(path: Path, task_id: str, *, timeout: float = 60, request_timeout
                 if events and next_cursor <= cursor:
                     raise AsterunError(INVALID_REQUEST, "观察事件页未推进游标")
                 if events and on_events:
-                    on_events(data)
+                    on_events(_compact_event_page(data) if compact else data)
                 cursor = next_cursor
                 changed = changed or bool(events)
                 if len(events) < page_size:

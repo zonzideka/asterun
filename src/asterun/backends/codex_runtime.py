@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 import hashlib
 import json
 from pathlib import Path
@@ -158,6 +159,9 @@ class CodexRuntime:
                     "native": {**bound_native, "turn_id": snapshot["current_turn_id"]},
                     "approvals": snapshot["pending_requests"] if read_scope is None and status not in TERMINALS else [],
                 }
+                if snapshot.get("token_usage"):
+                    result["native"].update(token_usage=deepcopy(snapshot["token_usage"]),
+                                            usage_scope="thread_cumulative", usage_source="codex_app_server")
                 if scope_errors:
                     result["native"]["read_scope_violation"] = True
                     result["summary"] = "原生请求超出固定只读工具协议，本轮停止"

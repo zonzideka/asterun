@@ -63,6 +63,45 @@ def test_admission_returns_before_native_process_completes_and_idle_poll_persist
         app.close()
 
 
+@pytest.mark.parametrize("with_usage", [False, True])
+def test_codex_runtime_preserves_only_observed_thread_usage(native_config, isolated_env, workspace_root, with_usage):
+    state_dir = isolated_env / "usage-state"
+    app = Application.from_paths(native_config, state_dir, background=True)
+    try:
+        submitted = submit(app, "finish with-token-usage" if with_usage else "finish")
+        done = wait_for(app, submitted.ids["task_id"], lambda data: data["run"]["status"] == "succeeded")
+        native = done["run"]["native"]
+        usage = app.handle("usage.report", {"task_id": submitted.ids["task_id"], "include_runs": True})
+        assert usage.ok
+        row = usage.data["runs"][0]
+        if with_usage:
+            expected = {"threadId": "native-thread-1", "turnId": "native-turn-1", "tokenUsage": {
+                "total": {"inputTokens": 100, "cachedInputTokens": 80, "outputTokens": 20,
+                          "reasoningOutputTokens": 8, "totalTokens": 120},
+                "last": {"inputTokens": 10, "cachedInputTokens": 0, "outputTokens": 2,
+                         "reasoningOutputTokens": 1, "totalTokens": 12}}}
+            assert native["token_usage"] == expected
+            assert native["usage_scope"] == "thread_cumulative"
+            assert native["usage_source"] == "codex_app_server"
+            assert row["scope"] == "thread_cumulative"
+            assert row["observed_tokens"]["total_tokens"] == 120
+            assert row["aggregation_eligible"] is False
+            assert usage.data["totals"]["tokens"]["total_tokens"]["known_sum"] is None
+        else:
+            assert not {"token_usage", "usage_scope", "usage_source"}.intersection(native)
+            assert row["observed_tokens"]["total_tokens"] is None
+        calls = [json.loads(line) for line in (workspace_root / "native-calls.jsonl").read_text().splitlines()]
+        assert sum(call.get("method") == "turn/start" for call in calls) == 1
+    finally:
+        app.close()
+    reopened = Application.from_paths(native_config, state_dir, background=True)
+    try:
+        persisted = reopened.store.get_run(RunId(submitted.ids["run_id"])).native
+        assert persisted == native
+    finally:
+        reopened.close()
+
+
 def test_cancel_is_requested_then_confirmed_by_native_terminal(native_config, isolated_env):
     app = Application.from_paths(native_config, isolated_env / "state", background=True)
     try:

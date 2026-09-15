@@ -6,6 +6,12 @@
 
 核心包含 CLI/MCP、常驻执行、任务与原生会话引用、权限和审批、幂等、取消与对账、调度、备份恢复及可选代码质量流程。配置 v1/v2、SQLite schema 6、runner-control/v1 和 capability profile 保持兼容。各 Agent 按配置提供能力，由调用方组织任务流程。
 
+当前工作区的[外部主控维护候选](docs/caller-orchestration.md)增加可选紧凑状态、跳过事件的观察、按任务/工作区/会话汇总的只读原生用量报告，以及 `workflow-snapshot`、固定外部报告和同任务有限修复。默认观察与既有接口保持兼容；观察截止不取消任务，跳过事件不推进游标。候选尚未部署到运行实例；真实后端、原生客户端与节省率仍待独立验证，用量报告不代表实付账单。
+
+外部验收绑定当前运行、配置 revision、原任务输入、所选文件版本及报告字节；固定验收中的文件检查也必须属于 `target_paths`。外部报告保留 `external_reported` 来源，不升级为独立审查证据；`external_require_review` 持久保留已提出的审查要求，后续 evaluate 或 repair 不能将其降级。修复累计保留在原任务及既有上限内，不宣称 Grok 原生会话已续接。以下发布快照与现场记录保留原验证范围。
+
+本维护候选于 2026-09-15 使用 Python 3.14.0 完成 `scripts/verify-offline.sh` 隔离验证：2205 通过、4 跳过。Antigravity 的 3 份固定来源文件校验及 34 项发行包检查通过。验证包含真实离线协议进程、SQLite 重开与 CLI/MCP 入口，未调用真实模型或切换运行实例。
+
 公开源码首版以 `c19535e` 为快照来源，102 个运行文件与 `37bc705` 保持一致，保留全部 102 个测试文件。Python 3.11.16 完整离线回归为 2002 通过、4 跳过；本轮使用临时状态与离线后端夹具。核心与三个插件共 4 个包、8 份 wheel/sdist 已通过 34 项包装检查，4 份 sdist 重建和 4 个 wheel 离线安装均已验收。既有现场验证范围见发行说明，内容摘要与核验方式见[来源说明](docs/source-provenance.md)。
 
 开发先核对当前提交、工作区和相关任务，默认离线入口为 `scripts/verify-offline.sh`。设计与维护索引见[设计](docs/design.md)、[开发规划](docs/development-plan.md)和[协议实现表](docs/protocol/IMPLEMENTATION.md)。

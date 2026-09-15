@@ -18,6 +18,7 @@ class CheckResult:
     detail: str
     bound_revision: int
     bound_input_hash: str
+    source: str = "core_check"
 
 
 @dataclass
@@ -44,6 +45,7 @@ class Evaluation:
                     "detail": item.detail,
                     "bound_revision": item.bound_revision,
                     "bound_input_hash": item.bound_input_hash,
+                    "source": item.source,
                 }
                 for item in self.checks
             ],
@@ -98,7 +100,13 @@ def evaluate_quality(
     for item in raw_checks:
         if not isinstance(item, dict) or "kind" not in item:
             raise AsterunError(INVALID_REQUEST, "每个 check 需要 kind")
-        result = _run_check(item, task, run, workspace_root, bound_revision, bound_hash)
+        if item["kind"] == "external_report":
+            from asterun.external_evaluation import check_external_report
+            external = check_external_report(item, task, run, payload.get("expected_target_hash"), workspace_root)
+            result = CheckResult("external_report", external["passed"], external["detail"],
+                                 bound_revision, bound_hash, source="external_reported")
+        else:
+            result = _run_check(item, task, run, workspace_root, bound_revision, bound_hash)
         checks.append(result)
         if not result.passed:
             findings.append(
@@ -142,7 +150,8 @@ def evaluate_quality(
         message = "检查未通过；运行成功仍不是验收通过。"
     else:
         acceptance = AcceptanceStatus.PASSED
-        message = "确定性检查通过。"
+        message = ("外部报告与所选目标版本匹配，报告中的检查通过；未代执行外部检查。"
+                   if any(item.source == "external_reported" for item in checks) else "确定性检查通过。")
 
     return Evaluation(
         acceptance=acceptance,

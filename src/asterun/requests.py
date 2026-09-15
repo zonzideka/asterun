@@ -20,6 +20,12 @@ CHECK = obj({
     "kind": {"type": "string", "enum": ["contains", "file_exists", "file_contains", "run_succeeded"]},
     "text": STRING, "path": IDENTIFIER,
 }, ["kind"])
+EVALUATION_CHECK = obj({**CHECK["properties"],
+    "kind": {"type": "string", "enum": [*CHECK["properties"]["kind"]["enum"], "external_report"]},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+}, ["kind"])
+TARGET_BINDING = {"expected_run_id": IDENTIFIER, "expected_target_hash": IDENTIFIER,
+                  "target_paths": {"type": "array", "minItems": 1, "maxItems": 64, "items": IDENTIFIER}}
 
 REQUEST_SCHEMAS = {
     "review.status": obj({"review_id": IDENTIFIER}, ["review_id"]),
@@ -38,6 +44,8 @@ REQUEST_SCHEMAS = {
         ["plugin_id", "registration", "output", "backup", "expected_source_sha256"]),
     "connection.setup": obj({"connection_ref": IDENTIFIER}, ["connection_ref"]),
     "usage.inspect": obj({"pool_ref": IDENTIFIER, "meter": IDENTIFIER, "window_id": IDENTIFIER}),
+    "usage.report": obj({"workspace": IDENTIFIER, "task_id": IDENTIFIER, "conversation_id": IDENTIFIER,
+                         "include_runs": {"type": "boolean"}}),
     "capability.invoke": obj({"workspace": IDENTIFIER, "backend": IDENTIFIER, "capability": IDENTIFIER,
         "input": JSON_OBJECT, "idempotency_key": IDENTIFIER, "expected_revision": REVISION},
         ["workspace", "backend", "capability", "input", "idempotency_key"]),
@@ -60,7 +68,7 @@ REQUEST_SCHEMAS = {
         "read_scope": obj({"manifest_path": IDENTIFIER, "manifest_sha256": IDENTIFIER},
                           ["manifest_path", "manifest_sha256"]),
     }, ["workspace"]),
-    "task.get": obj(TASK, ["task_id"]),
+    "task.get": obj({**TASK, "compact": {"type": "boolean"}}, ["task_id"]),
     "task.present": obj(TASK, ["task_id"]),
     "task.events": obj({
         **TASK, "cursor": {"type": "integer", "minimum": 0},
@@ -83,12 +91,17 @@ REQUEST_SCHEMAS = {
     "task.reconcile": obj(TASK),
     "workflow.evaluate": obj({
         **TASK, "expected_revision": REVISION, "expected_input_hash": IDENTIFIER,
+        **TARGET_BINDING,
         "require_review": {"type": "boolean"}, "review_backend": IDENTIFIER,
-        "checks": {"type": "array", "items": CHECK},
+        "checks": {"type": "array", "items": EVALUATION_CHECK},
     }, ["task_id"]),
     "workflow.repair": obj({
         **TASK, "max_repairs": {"type": "integer", "minimum": 0}, "idempotency_key": IDENTIFIER,
+        **TARGET_BINDING, "expected_revision": REVISION, "expected_input_hash": IDENTIFIER,
+        "instructions": {"type": "string", "minLength": 1, "maxLength": 32000},
     }, ["task_id"]),
+    "workflow.snapshot": obj({**TASK, "target_paths": TARGET_BINDING["target_paths"],
+                              "expected_run_id": IDENTIFIER}, ["task_id", "target_paths"]),
     "workflow.start": obj({
         **TASK, "idempotency_key": IDENTIFIER,
         "target_paths": {"type": "array", "items": IDENTIFIER},
@@ -182,5 +195,12 @@ def _validate(value: Any, schema: dict, location: str) -> None:
     elif expected == "integer":
         if value < schema.get("minimum", value) or value > schema.get("maximum", value):
             raise AsterunError(INVALID_REQUEST, f"{location} 超出允许范围")
-    elif expected == "string" and len(value) < schema.get("minLength", 0):
-        raise AsterunError(INVALID_REQUEST, f"{location} 不得为空")
+    elif expected == "string":
+        if len(value) < schema.get("minLength", 0):
+            raise AsterunError(INVALID_REQUEST, f"{location} 不得为空")
+        if len(value) > schema.get("maxLength", len(value)):
+            raise AsterunError(INVALID_REQUEST, f"{location} 超过长度上限")
+        if "pattern" in schema:
+            import re
+            if re.search(schema["pattern"], value) is None:
+                raise AsterunError(INVALID_REQUEST, f"{location} 格式无效")

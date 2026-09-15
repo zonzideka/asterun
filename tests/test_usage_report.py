@@ -1,0 +1,154 @@
+from copy import deepcopy
+
+import pytest
+
+from asterun.contracts import AcceptanceStatus, DeliveryStatus, Run, RunStatus, Task
+from asterun.ids import AccountRef, BackendId, BillingPoolRef, ModelId, RunId, TaskId
+from asterun.usage.report import build_usage_report
+
+
+def run(id="run-1", *, native=None, status=RunStatus.SUCCEEDED, backend="grok-code", role="implementation"):
+    return Run(RunId(id), TaskId("task-1"), BackendId(backend), status, "2026-09-15T00:00:00Z",
+               native=native or {}, role=role)
+
+
+def grok(**changes):
+    value = {"usage_source": "native_headless_report", "usage": {
+        "input_tokens": 10, "cache_read_input_tokens": 80, "cache_creation_input_tokens": 5,
+        "output_tokens": 20, "reasoning_tokens": 12},
+        "modelUsage": {"grok-observed": {"inputTokens": 10, "cacheReadInputTokens": 80,
+                                       "cacheCreationInputTokens": 5, "outputTokens": 20,
+                                       "reasoningTokens": 12}}, "total_cost_usd": 0.1}
+    value.update(changes)
+    return value
+
+
+def test_grok_inclusive_input_reasoning_subset_and_model_breakdown_are_not_double_counted():
+    native = grok()
+    original = deepcopy(native)
+    report = build_usage_report([run(native=native), run("repair", native=grok(), role="repair")])
+    totals = report["totals"]["tokens"]
+    assert totals["input_tokens"]["known_sum"] == 190
+    assert totals["non_cached_input_tokens"]["known_sum"] == 30
+    assert totals["cached_input_tokens"]["known_sum"] == 160
+    assert totals["output_tokens"]["known_sum"] == 40
+    assert totals["reasoning_output_tokens"]["known_sum"] == 24
+    assert totals["total_tokens"]["known_sum"] == 230
+    assert report["totals"]["costs"][0]["known_sum"] == "0.2"
+    assert report["runs"][0]["dimensions"]["model_id"] == "grok-observed"
+    assert report["runs"][0]["native_usage"]["modelUsage"] == native["modelUsage"]
+    report["runs"][0]["native_usage"]["modelUsage"].clear()
+    assert native == original
+
+
+def test_missing_cache_and_usage_are_unknown_not_zero():
+    partial = grok(usage={"input_tokens": 10, "output_tokens": 4})
+    report = build_usage_report([run(native=partial), run("unknown")])
+    totals = report["totals"]["tokens"]
+    assert totals["total_tokens"] == {"known_sum": None, "reported_runs": 0, "unknown_runs": 2, "partial": True}
+    assert totals["output_tokens"] == {"known_sum": 4, "reported_runs": 1, "unknown_runs": 1, "partial": True}
+    assert report["totals"]["costs"][0]["partial"] is True
+
+
+def test_reported_total_derives_input_without_inventing_missing_cache_write():
+    native = grok(usage={"input_tokens": 10, "cache_read_input_tokens": 80,
+                         "output_tokens": 20, "total_tokens": 110})
+    row = build_usage_report([run(native=native)])["runs"][0]
+    assert row["tokens"]["input_tokens"] == 90
+    assert row["tokens"]["non_cached_input_tokens"] == 10
+    assert row["tokens"]["cache_write_input_tokens"] is None
+    assert row["tokens"]["total_tokens"] == 110
+    assert row["token_sources"]["input_tokens"] == "difference(usage.total_tokens,usage.output_tokens)"
+
+
+def test_inconsistent_reported_total_keeps_native_evidence_and_reports_issue():
+    native = grok(usage={"input_tokens": 10, "cache_read_input_tokens": 80,
+                         "output_tokens": 20, "total_tokens": 50})
+    row = build_usage_report([run(native=native)])["runs"][0]
+    assert row["tokens"]["input_tokens"] is None
+    assert row["tokens"]["total_tokens"] == 50
+    assert "reported_total_less_than_known_components" in row["issues"]
+    assert row["usage_is_partial"] is True
+
+
+def test_duplicate_runs_are_deduplicated_but_conflicting_snapshots_fail():
+    item = run(native=grok())
+    report = build_usage_report([item, deepcopy(item)])
+    assert report["duplicate_runs_ignored"] == 1
+    assert report["totals"]["tokens"]["total_tokens"]["known_sum"] == 115
+    different = deepcopy(item)
+    different.native["usage"]["input_tokens"] += 1
+    with pytest.raises(ValueError, match="run_id"):
+        build_usage_report([item, different])
+
+
+def test_codex_total_is_thread_cumulative_and_last_is_not_a_run_total():
+    # Shape generated offline by codex app-server generate-json-schema:
+    # v2/ThreadTokenUsageUpdatedNotification.json, local CLI 0.154.0-alpha.6.2.
+    total = {"inputTokens": 100, "cachedInputTokens": 90, "outputTokens": 20,
+             "reasoningOutputTokens": 8, "totalTokens": 120}
+    native = {"model": "gpt-6-astra", "token_usage": {"threadId": "thread-1", "turnId": "turn-1",
+              "tokenUsage": {"total": total, "last": {**total, "inputTokens": 1}}}}
+    report = build_usage_report([run(native=native, backend="codex"), run("resume", native=native, backend="codex")])
+    assert report["totals"]["tokens"]["total_tokens"]["known_sum"] is None
+    row = report["runs"][0]
+    assert row["observed_tokens"]["total_tokens"] == 120
+    assert row["observed_tokens"]["non_cached_input_tokens"] == 10
+    assert row["observed_tokens"]["reasoning_output_tokens"] == 8
+    assert row["observed_tokens"]["cache_write_input_tokens"] is None
+    assert row["scope"] == "thread_cumulative" and row["aggregation_eligible"] is False
+    assert row["native_usage"]["token_usage"] == native["token_usage"]
+
+
+@pytest.mark.parametrize("status", [RunStatus.RUNNING, RunStatus.PENDING_RECONCILE])
+def test_unfinished_usage_is_partial_even_when_all_counters_exist(status):
+    report = build_usage_report([run(native=grok(), status=status)])
+    assert report["totals"]["tokens"]["total_tokens"]["known_sum"] == 115
+    assert report["totals"]["tokens"]["total_tokens"]["partial"] is True
+    assert report["totals"]["costs"][0]["partial"] is True
+
+
+def test_partial_costs_keep_original_units_and_never_claim_billing():
+    report = build_usage_report([run(native=grok(cost_is_partial=True, total_cost_usd_ticks=1234))])
+    assert report["totals"]["costs"] == [
+        {"unit": "USD", "known_sum": "0.1", "reported_runs": 1, "unknown_runs": 0,
+         "partial": True, "source": "persisted_native_report", "billed_usage_verified": False},
+        {"unit": "native_usd_ticks", "known_sum": "1234", "reported_runs": 1, "unknown_runs": 0,
+         "partial": True, "source": "persisted_native_report", "billed_usage_verified": False}]
+
+
+def test_task_binding_and_native_model_have_distinct_sources():
+    task = Task(TaskId("task-1"), "workspace", BackendId("grok-code"), "prompt", "",
+                AcceptanceStatus.PENDING, DeliveryStatus.NOT_CONFIGURED, "2026-09-15T00:00:00Z",
+                account_ref=AccountRef("account:test"), model_id=ModelId("configured-model"),
+                billing_pool_ref=BillingPoolRef("pool:test"))
+    rows = build_usage_report([run(native=grok()), run("review", backend="other")], tasks=[task])["runs"]
+    by_id = {row["run_id"]: row for row in rows}
+    assert by_id["run-1"]["dimensions"]["model_id"] == "grok-observed"
+    assert by_id["run-1"]["configured_model_id"] == "configured-model"
+    assert by_id["run-1"]["dimensions"]["account_ref"] == "account:test"
+    assert by_id["run-1"]["dimension_sources"]["account_ref"] == "task_binding"
+    assert by_id["review"]["dimensions"]["account_ref"] is None
+    assert by_id["run-1"]["dimensions"]["model_provider"] is None
+
+
+@pytest.mark.parametrize("bad", [True, -1, 1.5, "100"])
+def test_invalid_token_counter_is_not_added(bad):
+    native = grok()
+    native["usage"]["input_tokens"] = bad
+    row = build_usage_report([run(native=native)])["runs"][0]
+    assert row["tokens"]["input_tokens"] is None
+    assert row["tokens"]["total_tokens"] is None
+
+
+def test_unknown_adapter_and_cumulative_session_never_infer_run_total():
+    rows = build_usage_report([run(native={"usage": {"total_tokens": 22}}),
+                              run("session", native={"usage_scope": "session", "usage": {"total_tokens": 44}})])["runs"]
+    assert {row["observed_tokens"]["total_tokens"] for row in rows} == {22, 44}
+    assert all(row["tokens"]["total_tokens"] is None for row in rows)
+
+
+def test_empty_report_has_no_fabricated_zero():
+    report = build_usage_report([])
+    assert report["totals"]["run_count"] == 0 and report["groups"] == []
+    assert report["totals"]["tokens"]["total_tokens"]["known_sum"] is None

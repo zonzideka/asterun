@@ -17,6 +17,7 @@ include docs/codex-projects.md
 include docs/plugins.md
 include docs/capability-profile.md
 include docs/review-consumer.md
+include docs/caller-orchestration.md
 include docs/release-v0.1.md
 include docs/en/user-manual.md
 include docs/en/install.md

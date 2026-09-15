@@ -51,6 +51,8 @@ Choose the agents, tool permissions, and collaboration workflow that fit your ta
 
 The [user manual](docs/en/user-manual.md) covers submission, observation, approvals, and recovery. The [PR review guide](docs/en/pr-review.md) provides an optional workflow example with fixed revisions, structured findings, follow-up reviews, and result delivery.
 
+The working tree also contains an [external caller maintenance candidate](docs/caller-orchestration.md) (Chinese): `task-get --compact`, `task-watch --compact --no-events`, read-only `usage-report`, and external acceptance reports and bounded repairs against fixed targets within one task. It has not been deployed to running instances. External reports do not establish independent review, and repairs within one task do not establish native session continuation. Existing calls retain their default behavior.
+
 Callers such as GrokBot can deploy Asterun on a cloud computer or invoke a local process over an existing authorized channel. Workspaces, accounts, and native sessions stay on the execution host. Callers track ordinary tasks through task and event records; the [review result consumer](docs/en/review-consumer.md) connects the review inbox to the host's messaging and scheduling facilities.
 
 The optional [Asterun Bot template](https://x.ai/bot/4r3ysO1eA-6ZLI6cRoTNU) provides GrokBot setup, task tracking, and chat delivery. Its [setup guide and companion code](https://github.com/zonzideka/asterun/blob/grokbot-template-v0.1.0-rc1/integrations/grokbot/README.en.md) are available in a pinned release.
