@@ -323,6 +323,7 @@ class Application:
                     str(payload.get("task_id") or ""),
                     cursor=payload.get("cursor", 0),
                     page_size=payload.get("page_size", 100),
+                    compact=payload.get("compact", False),
                 )
             if method == "task.cancel":
                 return self.task_cancel(str(payload.get("task_id") or ""))
@@ -642,7 +643,7 @@ class Application:
         )
 
     def usage_report(self, payload: dict[str, Any]) -> Envelope:
-        from asterun.usage.report import build_usage_report
+        from asterun.usage.report import build_usage_report, paginate_usage_report
 
         if not any(payload.get(key) for key in ("task_id", "workspace", "conversation_id")):
             raise AsterunError(INVALID_REQUEST, "用量查询需要 task_id、workspace 或 conversation_id 范围")
@@ -680,9 +681,13 @@ class Application:
         data["readonly"] = True
         data["task_status_source"] = "persisted_snapshot"
         data["acceptance_revalidated"] = False
+        try:
+            data = paginate_usage_report(data, page_size=payload.get("page_size", 20), cursor=payload.get("cursor"))
+        except ValueError as exc:
+            raise AsterunError(INVALID_REQUEST, str(exc)) from exc
         return ok(data)
 
-    def task_events(self, task_id: str, cursor: int = 0, page_size: int = 100) -> Envelope:
+    def task_events(self, task_id: str, cursor: int = 0, page_size: int = 100, *, compact: bool = False) -> Envelope:
         if page_size < 1 or page_size > 500:
             raise AsterunError(INVALID_REQUEST, "page_size 必须在 1 到 500 之间")
         task = self._require_task(task_id)
@@ -691,14 +696,13 @@ class Application:
             raise AsterunError(NOT_FOUND, "任务没有运行")
         events = self.store.list_events(task.current_run_id, cursor=cursor, page_size=page_size)
         next_cursor = events[-1].seq if events else cursor
+        data = {"task_id": task.id.value, "run_id": task.current_run_id.value,
+                "cursor": cursor, "next_cursor": next_cursor, "events": [item.to_dict() for item in events]}
+        if compact:
+            from asterun.observe import compact_event_page
+            data = compact_event_page({**data, "has_more": len(events) == page_size})
         return ok(
-            {
-                "task_id": task.id.value,
-                "run_id": task.current_run_id.value,
-                "cursor": cursor,
-                "next_cursor": next_cursor,
-                "events": [item.to_dict() for item in events],
-            },
+            data,
             ids={"task_id": task.id.value, "run_id": task.current_run_id.value},
         )
 

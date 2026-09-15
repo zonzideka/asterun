@@ -2,6 +2,11 @@
 from dataclasses import replace
 import json
 import sqlite3
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
 
 import pytest
 
@@ -12,6 +17,7 @@ from asterun.errors import AsterunError
 from asterun.mcp_server import handle_rpc
 from asterun.policy import DenyAll, Principal
 from asterun.sqlite_store import SqliteStore
+from asterun.service import LocalClient, MAX_MESSAGE
 from tests.test_cli import _run
 from tests.test_control_runtime import create_task, start_command
 
@@ -145,14 +151,17 @@ def test_mcp_schema_invocation_and_invalid_scope_are_consistent(config_path, iso
         listed = handle_rpc(app, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
         tool = next(tool for tool in listed["result"]["tools"] if tool["name"] == "usage_report")
         schema = tool["inputSchema"]
-        assert set(schema["properties"]) == {"task_id", "workspace", "conversation_id", "include_runs"}
+        assert set(schema["properties"]) == {"task_id", "workspace", "conversation_id", "include_runs",
+                                             "page_size", "cursor"}
         assert schema["additionalProperties"] is False
         request = {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
             "name": "usage_report", "arguments": {"task_id": task.id.value, "include_runs": True}}}
         response = handle_rpc(app, request)["result"]
         assert response["isError"] is False
         assert json.loads(response["content"][0]["text"])["data"]["totals"]["run_count"] == 3
-        for arguments in ({}, {"task_id": task.id.value, "include_runs": "true"}):
+        for arguments in ({}, {"task_id": task.id.value, "include_runs": "true"},
+                          {"workspace": "demo", "page_size": 0}, {"workspace": "demo", "page_size": 101},
+                          {"workspace": "demo", "cursor": "x" * 257}):
             request["params"]["arguments"] = arguments
             response = handle_rpc(app, request)["result"]
             assert response["isError"] is True
@@ -164,6 +173,8 @@ def test_mcp_schema_invocation_and_invalid_scope_are_consistent(config_path, iso
 def test_cli_payload_and_sqlite_report_roundtrip(config_path, isolated_env):
     args = build_parser().parse_args(["usage-report", "--workspace", "demo", "--include-runs"])
     assert _load_request(args) == {"workspace": "demo", "include_runs": True}
+    paged = build_parser().parse_args(["usage-report", "--workspace", "demo", "--page-size", "1", "--cursor", "saved"])
+    assert _load_request(paged) == {"workspace": "demo", "page_size": 1, "cursor": "saved"}
     state = isolated_env / "usage-state"
     app = Application.from_paths(config_path, state)
     task = _seed_chain(app)
@@ -175,6 +186,94 @@ def test_cli_payload_and_sqlite_report_roundtrip(config_path, isolated_env):
     assert report["ok"] and report["data"]["readonly"]
     assert report["data"]["totals"]["tokens"]["total_tokens"]["known_sum"] == 220
     assert len(report["data"]["runs"]) == 3
+
+
+def test_paginated_report_reauthorizes_and_rejects_changed_snapshots(config_path, isolated_env, monkeypatch):
+    app = Application.from_paths(config_path, isolated_env / "paged-usage")
+    try:
+        task = _seed_chain(app)
+        def forbidden(*args, **kwargs):
+            pytest.fail("分页用量报告不能 poll 或派发")
+        monkeypatch.setattr(app, "poll", forbidden)
+        monkeypatch.setattr(app.backends["fake"], "dispatch", forbidden)
+        before = app.store._conn.total_changes
+        request = {"task_id": task.id.value, "include_runs": True, "page_size": 1}
+        first = app.handle("usage.report", request)
+        assert first.ok, first.error
+        cursor = first.data["pagination"]["next_cursor"]
+        next_request = {**request, "cursor": cursor}
+        second = app.handle("usage.report", next_request)
+        assert second.ok, second.error
+        assert first.data["totals"] == second.data["totals"]
+        assert first.data["runs"][0]["run_id"] != second.data["runs"][0]["run_id"]
+        assert app.store._conn.total_changes == before
+        changed_scope = app.handle("usage.report", {"workspace": "demo", "include_runs": True, "cursor": cursor})
+        assert not changed_scope.ok and changed_scope.error["code"] == "INVALID_REQUEST"
+        policy = app.policy
+        monkeypatch.setattr(app, "policy", DenyAll())
+        denied = app.handle("usage.report", next_request)
+        assert not denied.ok and denied.error["code"] == "SCOPE_DENIED" and denied.data is None
+        monkeypatch.setattr(app, "policy", policy)
+        task.repair_count += 1
+        app.store.save_task(task)
+        stale = app.handle("usage.report", next_request)
+        assert not stale.ok and stale.error["code"] == "INVALID_REQUEST"
+        assert "快照或范围" in stale.error["message"]
+    finally:
+        app.close()
+
+
+def test_thousand_task_reports_fit_real_ipc_and_mcp_with_complete_totals(config_path, isolated_env):
+    # Use real temporary SQLite + resident socket, with only the offline fake
+    # task used as a template. No production state or provider process is used.
+    with tempfile.TemporaryDirectory(prefix="asterun-usage-", dir="/tmp") as directory:
+        state = Path(directory)
+        app = Application.from_paths(config_path, state)
+        try:
+            task = _seed_chain(app)
+            template = app.store.get_run(RunId("run_usage_repair"))
+            for index in range(1, 1100):
+                task_id, run_id = TaskId(f"bulk-task-{index:04}"), RunId(f"bulk-run-{index:04}")
+                native = {**_native(), "model_id": f"model-{index:04}"}
+                app.store.save_task(replace(task, id=task_id, current_run_id=run_id, repair_count=0, run_count=1))
+                app.store.save_run(replace(template, id=run_id, task_id=task_id, native=native))
+        finally:
+            app.close()
+        command = [sys.executable, "-m", "asterun", "--config", str(config_path), "--state-dir", str(state)]
+        process = subprocess.Popen([*command, "serve"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            client = LocalClient(state / "asterun.sock")
+            deadline = time.monotonic() + 8
+            while not client.path.exists() and process.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.02)
+            assert client.path.exists()
+            first = client.handle("usage.report", {"workspace": "demo"})
+            assert first.ok, first.error
+            totals = first.data["totals"]
+            assert totals["run_count"] == 1102 and totals["task_count"] == 1100
+            assert totals["tokens"]["total_tokens"]["known_sum"] == 121110
+            assert totals["tokens"]["total_tokens"]["unknown_runs"] == 1
+            assert len(first.data["tasks"]) == 20 and len(first.data["groups"]) == 20
+            assert "runs" not in first.data
+            assert first.data["pagination"]["has_more"] is True
+            assert len(json.dumps(first.to_dict(), ensure_ascii=False).encode()) < MAX_MESSAGE
+            second = client.handle("usage.report", {"workspace": "demo", "cursor": first.data["pagination"]["next_cursor"]})
+            assert second.ok and second.data["totals"] == totals
+            assert not ({row["task_id"] for row in first.data["tasks"]} &
+                        {row["task_id"] for row in second.data["tasks"]})
+            rpc = handle_rpc(client, {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+                "name": "usage_report", "arguments": {"workspace": "demo", "include_runs": True, "page_size": 100}}})
+            assert rpc["result"]["isError"] is False
+            assert len(json.dumps(rpc, ensure_ascii=False).encode()) < MAX_MESSAGE
+            report = json.loads(rpc["result"]["content"][0]["text"])["data"]
+            assert report["totals"] == totals
+            assert report["pagination"]["has_more"] is True
+            assert report["pagination"]["collections"]["runs"]["total_items"] == 1102
+            assert len(report["runs"]) <= 100
+        finally:
+            process.terminate()
+            stdout, stderr = process.communicate(timeout=8)
+            assert process.returncode == 0, (stdout, stderr)
 
 
 def test_standalone_cli_report_does_not_reconcile_an_unfinished_run(config_path, isolated_env):

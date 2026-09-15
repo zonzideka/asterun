@@ -45,7 +45,9 @@ REQUEST_SCHEMAS = {
     "connection.setup": obj({"connection_ref": IDENTIFIER}, ["connection_ref"]),
     "usage.inspect": obj({"pool_ref": IDENTIFIER, "meter": IDENTIFIER, "window_id": IDENTIFIER}),
     "usage.report": obj({"workspace": IDENTIFIER, "task_id": IDENTIFIER, "conversation_id": IDENTIFIER,
-                         "include_runs": {"type": "boolean"}}),
+                         "include_runs": {"type": "boolean"},
+                         "page_size": {"type": "integer", "minimum": 1, "maximum": 100},
+                         "cursor": {"type": "string", "minLength": 1, "maxLength": 256}}),
     "capability.invoke": obj({"workspace": IDENTIFIER, "backend": IDENTIFIER, "capability": IDENTIFIER,
         "input": JSON_OBJECT, "idempotency_key": IDENTIFIER, "expected_revision": REVISION},
         ["workspace", "backend", "capability", "input", "idempotency_key"]),
@@ -73,6 +75,7 @@ REQUEST_SCHEMAS = {
     "task.events": obj({
         **TASK, "cursor": {"type": "integer", "minimum": 0},
         "page_size": {"type": "integer", "minimum": 1, "maximum": 500},
+        "compact": {"type": "boolean"},
     }, ["task_id"]),
     "task.cancel": obj(TASK, ["task_id"]),
     "approval.respond": obj({

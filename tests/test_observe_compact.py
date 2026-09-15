@@ -147,8 +147,11 @@ def test_no_events_resets_cursor_only_when_task_changes_run(monkeypatch, clock):
 def test_compact_event_pages_omit_native_text_but_keep_resumable_cursor(monkeypatch, clock):
     page = event_page(3)
     before = deepcopy(page)
-    monkeypatch.setattr(observe, "_read", lambda path, method, payload, deadline:
-                        Envelope(ok=True, data=snapshot("succeeded") if method == "task.get" else page))
+    def read(path, method, payload, deadline):
+        assert payload["compact"] is True
+        return Envelope(ok=True, data=snapshot("succeeded") if method == "task.get" else page)
+
+    monkeypatch.setattr(observe, "_read", read)
     emitted = []
     result = observe.watch_task(Path("unused.sock"), "tsk_1", cursor=3, run_id="run_1",
                                 compact=True, on_events=emitted.append)
@@ -158,6 +161,76 @@ def test_compact_event_pages_omit_native_text_but_keep_resumable_cursor(monkeypa
     assert "text" not in emitted[0]["events"][0]["payload"]
     assert "input" not in emitted[0]["events"][0]["payload"]
     assert page == before
+
+
+def test_compact_meter_projection_is_byte_bounded_and_idempotent():
+    original = snapshot("pending_reconcile")
+    native = original["run"]["native"]
+    native["usage"]["unknown_vendor_payload"] = "大" * 350000
+    native["usage"]["output_tokens_details"] = {"reasoning_tokens": 12, "raw": "x" * 50000}
+    native["token_usage"]["unrecognized_notification"] = "x" * 1000000
+    native["modelUsage"] = {("model-" + str(i) + "x" * 700): {"inputTokens": i, "raw": "x" * 20000}
+                            for i in range(40)}
+    native["execution_profile"] = "x" * 20000
+    native["cost_reported"] = False
+    native["cost_source"] = "unknown"
+    native.update(mode="claude", resume_supported=False, claude_session_id="original-native-ref")
+    result = observe.compact_task_snapshot(original)
+    short = result["run"]["native"]
+    assert len(json.dumps(result, ensure_ascii=False).encode()) < 32000
+    assert short["usage"]["input_tokens"] == 50
+    assert short["usage"]["output_tokens_details"] == {"reasoning_tokens": 12}
+    assert short["token_usage"]["tokenUsage"]["total"]["totalTokens"] == 800
+    assert short["usage_truncated"] is True
+    assert short["model_usage_count"] == 40
+    assert 0 < short["model_usage_returned"] <= observe.COMPACT_MODEL_LIMIT
+    meter = {name: value for name, value in short.items() if name in {
+        "usage", "token_usage", "modelUsage", "model_usage_count", "model_usage_returned",
+        "usage_truncated", "usage_byte_limit", "model_usage_limit"}}
+    assert len(json.dumps(meter, ensure_ascii=False).encode()) <= observe.COMPACT_USAGE_BYTES
+    assert "execution_profile" in short["omitted_fields"]
+    assert short["cost_reported"] is False and short["cost_source"] == "unknown"
+    assert short["mode"] == "claude" and short["resume_supported"] is False
+    assert short["claude_session_id"] == "original-native-ref"
+    assert short["session_id"] == "native_1"
+    assert result["run"]["status"] == "pending_reconcile"
+    assert observe.compact_task_snapshot(result) == result
+    assert "unknown_vendor_payload" in native["usage"]
+
+
+def test_compact_metadata_cannot_reintroduce_unbounded_values():
+    current = snapshot()
+    current["task"]["id"] = "x" * 1000000
+    current["task"].pop("findings")
+    current["task"]["findings_count"] = {"unexpected": "x" * 1000000}
+    current["run"]["output_available"] = {"unexpected": "x" * 1000000}
+    current["run"]["summary_chars"] = 10 ** 5000
+    current["session"] = ["x" * 1000000]
+    result = observe.compact_task_snapshot(current)
+    assert len(json.dumps(result, ensure_ascii=False).encode()) < 32000
+    assert "id" in result["task"]["omitted_fields"] and "task_id" not in result["details"]
+    assert "findings_count" not in result["task"]
+    assert result["run"]["output_available"] is True
+    assert result["run"]["summary_chars"] == len(current["run"]["summary"])
+    assert result["session"] is None
+    assert observe.compact_task_snapshot(result) == result
+
+
+def test_compact_event_budget_advances_only_through_returned_events():
+    page = event_page()
+    base = page["events"][0]
+    base["payload"].update(toolName="n" * 1000, toolCallId="c" * 1000,
+                           modelUsage={"model-" + str(i) + "x" * 700: {"inputTokens": i} for i in range(8)})
+    page["events"] = [{**deepcopy(base), "seq": i} for i in range(1, 41)]
+    page["next_cursor"] = 40
+    result = observe.compact_event_page(page)
+    assert 0 < len(result["events"]) < 40
+    assert result["has_more"] is True
+    assert result["next_cursor"] == result["events"][-1]["seq"]
+    assert len(json.dumps(result, ensure_ascii=False).encode()) <= observe.COMPACT_EVENT_PAGE_BYTES
+    assert observe.compact_event_page(result) == result
+    empty = observe.compact_event_page({**page, "cursor": 40, "next_cursor": 40, "events": []})
+    assert empty["next_cursor"] == 40 and empty["events"] == []
 
 
 def test_default_watch_retains_full_snapshot_and_event_payload(monkeypatch, clock):

@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+import base64
 from copy import deepcopy
 from decimal import Decimal
+import hashlib
+import json
 from typing import Any
 
 from asterun.contracts import Run, Task, TERMINAL_RUN_STATUSES
@@ -18,6 +21,7 @@ _NATIVE_FIELDS = (
     "usage", "modelUsage", "token_usage", "usage_source", "usage_scope",
     "usage_is_incomplete", "cost_is_partial", "total_cost_usd", "total_cost_usd_ticks",
     "num_turns", "model", "model_id", "model_provider",
+    "mode", "session_id", "resume_supported", "cost_reported", "cost_source",
 )
 
 
@@ -124,14 +128,34 @@ def _dimensions(run: Run, task: Task | None) -> tuple[dict, dict]:
     return values, sources
 
 
-def _costs(native: dict, *, eligible: bool, partial: bool) -> list[dict]:
+def _costs(run: Run, *, eligible: bool, partial: bool, cumulative: bool) -> list[dict]:
+    native = run.native
+    # ClaudeBackend creates a new ClaudeSession(session_id=run_id) for each
+    # invocation. Identify that persisted shape, not the configurable backend name.
+    claude_one_shot = (not cumulative and native.get("mode") == "claude"
+                       and native.get("session_id") == run.id.value
+                       and native.get("resume_supported") is False)
     rows = []
     for field, unit in (("total_cost_usd", "USD"), ("total_cost_usd_ticks", "native_usd_ticks")):
         value = native.get(field)
         valid = type(value) in (int, float) and Decimal(str(value)).is_finite() and value >= 0
-        rows.append({"unit": unit, "value": value if valid else None,
-                     "source": "run.native." + field, "partial": partial or not valid,
-                     "aggregation_eligible": eligible, "billed_usage_verified": False})
+        cost_eligible = not cumulative and (eligible or (claude_one_shot and unit == "USD"))
+        # The historical Claude adapter defaults absent/unparsed cost to 0.0.
+        # Positive values prove a parsed result; a zero cannot prove a free run.
+        reported = native.get("cost_reported")
+        ambiguous_zero = (claude_one_shot and unit == "USD" and valid and value == 0
+                          and reported is not True)
+        unreported = claude_one_shot and unit == "USD" and reported is False
+        known = valid and not ambiguous_zero and not unreported
+        rows.append({"unit": unit, "value": value if known else None,
+                     "source": "run.native." + field, "partial": partial or not known,
+                     "scope": "run" if cost_eligible else "unknown",
+                     "scope_source": "claude_one_shot_snapshot" if claude_one_shot and unit == "USD"
+                     else "native_headless_report" if eligible and not cumulative else "unknown",
+                     "aggregation_eligible": cost_eligible and not ambiguous_zero and not unreported,
+                     "issue": "claude_cost_not_reported" if unreported else
+                     "claude_zero_may_be_adapter_default" if ambiguous_zero else None,
+                     "billed_usage_verified": False})
     return rows
 
 
@@ -142,19 +166,21 @@ def _row(run: Run, task: Task | None) -> dict:
     scope, convention, eligible = "unknown", "unknown", False
     raw = _mapping(native.get("usage"))
     # Only the adapter's explicit marker establishes the Grok counter convention.
-    if native.get("usage_source") == "native_headless_report":
-        scope, convention, eligible = "run", "grok_headless", True
-    elif "token_usage" in native:
+    cumulative = "token_usage" in native or native.get("usage_scope") in {
+        "session", "session_cumulative", "thread_cumulative"}
+    if "token_usage" in native:
         notification = _mapping(native["token_usage"])
-        cumulative = _mapping(notification.get("tokenUsage"))
-        raw = _mapping(cumulative.get("total"))
+        cumulative_tokens = _mapping(notification.get("tokenUsage"))
+        raw = _mapping(cumulative_tokens.get("total"))
         scope, convention = "thread_cumulative", "codex_app_server"
         issues.append("cumulative_usage_not_attributable_to_run")
-        if not cumulative:
+        if not cumulative_tokens:
             issues.append("unrecognized_codex_usage_shape")
     elif native.get("usage_scope") in {"session", "session_cumulative", "thread_cumulative"}:
         scope = native["usage_scope"]
         issues.append("cumulative_usage_not_attributable_to_run")
+    elif native.get("usage_source") == "native_headless_report":
+        scope, convention, eligible = "run", "grok_headless", True
     else:
         issues.append("usage_scope_or_convention_unknown")
     token_sources: dict[str, str] = {}
@@ -173,7 +199,7 @@ def _row(run: Run, task: Task | None) -> dict:
             "tokens": observed if eligible else _empty_tokens(), "observed_tokens": observed,
             "token_sources": token_sources,
             "usage_is_partial": incomplete or bool(issues),
-            "costs": _costs(native, eligible=eligible, partial=cost_partial),
+            "costs": _costs(run, eligible=eligible, partial=cost_partial, cumulative=cumulative),
             "native_usage": deepcopy({key: native[key] for key in _NATIVE_FIELDS if key in native}),
             "issues": issues}
 
@@ -230,3 +256,92 @@ def build_usage_report(runs: Iterable[Run], *, tasks: Iterable[Task] = ()) -> di
                       "modelUsage 是原生分解，不与运行总量重复相加。",
                       "会话累计用量保留为观察值；没有运行起点基线时不计入运行总量。",
                       "USD 与 native_usd_ticks 分开保留，不相加、不换算，不代表实际扣款。"]}
+
+
+_DETAIL_COLLECTIONS = ("tasks", "groups", "runs")
+DETAIL_BUDGET_BYTES = 128 * 1024
+_ITEM_BUDGET_BYTES = 16 * 1024
+
+
+def _json_bytes(value: Any) -> bytes:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True).encode("utf-8")
+
+
+def _bounded_detail(row: dict) -> dict:
+    encoded = _json_bytes(row)
+    if len(encoded) <= _ITEM_BUDGET_BYTES:
+        return row
+    omitted = {"reason": "detail_byte_limit", "full_detail_bytes": len(encoded),
+               "full_detail_sha256": hashlib.sha256(encoded).hexdigest()}
+    if "native_usage" in row:
+        reduced = {key: value for key, value in row.items() if key != "native_usage"}
+        reduced["detail_omitted"] = {**omitted, "fields": ["native_usage"]}
+        if len(_json_bytes(reduced)) <= _ITEM_BUDGET_BYTES:
+            return reduced
+    # A model/account identifier can itself be very large. A small explicit
+    # placeholder advances the cursor; totals were computed before this step.
+    reduced = {key: row[key] for key in ("task_id", "run_id", "dimensions")
+               if key in row and len(_json_bytes(row[key])) <= 2048}
+    reduced["detail_omitted"] = {**omitted, "fields": "all_except_returned_references"}
+    return reduced
+
+
+def paginate_usage_report(data: dict, *, page_size: int = 20, cursor: str | None = None) -> dict:
+    """Bound detail output, retaining totals for the entire authorized query.
+
+    Cursors name the saved report snapshot and all three detail offsets. They
+    are not authorization grants; the application rechecks every task first.
+    """
+    if type(page_size) is not int or not 1 <= page_size <= 100:
+        raise ValueError("page_size 必须在 1 到 100 之间")
+    snapshot = hashlib.sha256(_json_bytes(data)).hexdigest()
+    collections = [data.get(key, []) for key in _DETAIL_COLLECTIONS]
+    counts = [len(rows) for rows in collections]
+    offsets = [0, 0, 0]
+    if cursor is not None:
+        try:
+            if not isinstance(cursor, str) or not 1 <= len(cursor) <= 256:
+                raise ValueError
+            decoded = json.loads(base64.b64decode(cursor.encode("ascii"), altchars=b"-_", validate=True))
+            offsets = decoded["offsets"]
+            if (set(decoded) != {"snapshot", "offsets"} or not isinstance(offsets, list)
+                    or len(offsets) != 3 or any(type(value) is not int or value < 0 or value > count
+                                              for value, count in zip(offsets, counts))):
+                raise ValueError
+        except (ValueError, KeyError, TypeError, UnicodeError) as exc:
+            raise ValueError("用量报告 cursor 无效，请从第一页重新查询") from exc
+        if decoded["snapshot"] != snapshot:
+            raise ValueError("用量报告快照或范围已变化，请省略 cursor 从第一页重新查询")
+    starts = offsets.copy()
+    pages: list[list[dict]] = [[], [], []]
+    byte_count, budget_full = 0, False
+    while not budget_full:
+        advanced = False
+        for index, rows in enumerate(collections):
+            if offsets[index] >= len(rows) or len(pages[index]) >= page_size:
+                continue
+            row = _bounded_detail(rows[offsets[index]])
+            size = len(_json_bytes(row)) + 2
+            if byte_count + size > DETAIL_BUDGET_BYTES:
+                budget_full = True
+                break
+            pages[index].append(row)
+            byte_count += size
+            offsets[index] += 1
+            advanced = True
+        if not advanced:
+            break
+    has_more = offsets != counts
+    next_cursor = (base64.urlsafe_b64encode(_json_bytes({"snapshot": snapshot, "offsets": offsets})).decode("ascii")
+                   if has_more else None)
+    result = {key: value for key, value in data.items() if key not in _DETAIL_COLLECTIONS}
+    result.update({key: rows for key, rows in zip(_DETAIL_COLLECTIONS, pages) if key in data})
+    result["pagination"] = {
+        "page_size": page_size, "snapshot": snapshot, "next_cursor": next_cursor,
+        "has_more": has_more, "totals_scope": "complete_query",
+        "detail_budget_bytes": DETAIL_BUDGET_BYTES,
+        "collections": {key: {"total_items": count, "offset": offset, "returned_items": len(rows),
+                              "omitted_items": sum("detail_omitted" in row for row in rows)}
+                        for key, count, offset, rows in zip(_DETAIL_COLLECTIONS, counts, starts, pages)
+                        if key in data}}
+    return result

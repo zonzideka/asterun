@@ -24,9 +24,9 @@ asterun --state-dir .asterun/state --connect task-watch \
   > .asterun/caller/observation.json
 ```
 
-`task-get --compact` 对应 `task.get` 的 `compact: true`。它省略任务正文、完整工具日志和审批操作内容，保留任务验收状态、运行状态、取消与终止事实、错误、原生会话引用和已有用量。运行及审批摘要最多 1000 字符，`summary_truncated`、`summary_chars` 说明截断情况；`details` 指向完整的 `task.get`。需要核实结果或处理审批时，去掉 `--compact` 读取完整响应。
+`task-get --compact` 对应 `task.get` 的 `compact: true`。它省略任务正文、完整工具日志和审批操作内容，保留任务验收状态、运行状态、取消与终止事实、错误、原生会话引用和已有用量。运行及审批摘要最多 1000 字符，`summary_truncated`、`summary_chars` 说明截断情况；`details` 指向完整的 `task.get`。用量只保留已知计数字段，合计最多 8 KiB、8 个模型；`usage_truncated` 和 `model_usage_count`、`model_usage_returned` 标明省略情况。标识和其它文本字段最多 1024 字节，超限字段列入 `omitted_fields`，不会截成另一个可用于恢复的标识。需要核实结果或处理审批时，去掉 `--compact` 读取完整响应。
 
-`task-watch` 已经只在终态、待输入、待认证、暂停、未决状态或观察截止时返回。`--compact` 还会把输出的事件页缩成元数据；`--no-events` 则完全不读取事件、不调用事件输出，也不推进事件游标。两者组合适合交给主控等待，不需要把每个原生工具调用送回模型。
+`task-watch` 已经只在终态、待输入、待认证、暂停、未决状态或观察截止时返回。`--compact` 还会请求服务端先把事件页缩成元数据，再经 IPC 返回；单独读取事件可用 `task-events --compact`（MCP `task_events` 的 `compact: true`）。事件页最多 64 KiB，可能在达到 `page_size` 前分页；`has_more` 表示继续读取，`next_cursor` 只推进到实际返回的最后一条事件，无事件时保持原游标。`events_truncated` 表示完整正文或事件因投影、预算被省略，后续页使用返回的游标续查。`--no-events` 则完全不读取事件、不调用事件输出，也不推进事件游标。两者组合适合交给主控等待，不需要把每个原生工具调用送回模型。
 
 观察结果中的 `reason=terminal` 仍需检查 `last_snapshot.run.status`，它也可能是 `failed` 或 `cancelled`，不表示验收通过。`waiting_input` 可能来自待批请求；`unknown` 保留未决语义，不能重新派发。`deadline` 只表示本次观察到期，CLI 退出码为 124，后台任务继续执行；中断观察退出码为 130，也不会取消任务。
 
@@ -170,10 +170,16 @@ asterun --state-dir .asterun/state --connect usage-report \
   --task-id "$ASTERUN_TASK_ID" --include-runs > .asterun/caller/usage.json
 ```
 
-也可使用 `usage-report --conversation-id CONVERSATION_ID` 汇总该会话关联的任务；多个筛选条件同时提供时取交集，至少提供一个范围。对应 MCP 工具为 `usage_report`（应用方法为 `usage.report`），字段使用 `task_id`、`workspace`、`conversation_id`、`include_runs`。默认返回总计、按后端及模型等维度的分组和任务状态；只有 `--include-runs` 才附逐运行原生统计，避免日常查询搬运明细。
+也可使用 `usage-report --conversation-id CONVERSATION_ID` 汇总该会话关联的任务；多个筛选条件同时提供时取交集，至少提供一个范围。对应 MCP 工具为 `usage_report`（应用方法为 `usage.report`），字段使用 `task_id`、`workspace`、`conversation_id`、`include_runs`、`page_size`、`cursor`。默认返回完整查询的总计，以及首批分组和任务状态；只有 `--include-runs` 才附逐运行原生统计。
+
+明细默认每类最多 20 条，可用 `--page-size 1` 至 `--page-size 100` 调整；每页明细还受 128 KiB 字节预算限制，因此可能提前分页。`pagination.collections` 分别列出任务、分组和运行的 `total_items`、`offset`、`returned_items` 与 `omitted_items`；`pagination.has_more=true` 时，保持相同范围和 `--include-runs` 选项，将 `pagination.next_cursor` 原样传给 `--cursor`。`totals` 每页都覆盖完整授权查询，不能再把多页总计相加。游标绑定本次报告的内容摘要；用量、任务状态或范围变化时会拒绝旧游标，此时省略游标重新查询。翻页仍会检查全部任务的读取权限。
+
+单条明细超过 16 KiB 时，优先省略该条的 `native_usage`；仍过大时只返回可容纳的引用。`detail_omitted` 明确给出省略原因、字段、原明细字节数及 SHA256，不把省略值当作零或完整明细；需要完整超大原始统计时读取本地持久记录。省略仅影响返回的明细，不改变总计，也不修改原生记录。
 
 不使用 `--connect` 的独立 `usage-report` 只读打开已存在且结构完整的当前 schema 状态库；旧版、未来版本或缺表都会被拒绝，不创建、修补或迁移数据库，升级须走正常备份维护流程。报告内任务状态来自已保存快照，`acceptance_revalidated=false` 表示此次没有重新核对外部验收文件；要确认当前验收状态，另用 `task-get`。
 
 报告按原 task 下保存的全部运行计量，包含失败、取消和修复轮，不只看最后一次成功。缺失值保持未知，部分用量保留不完整标记；原生费用不是已核验账单，`billed_usage_verified` 保持 `false`。输入缓存与输出内的 reasoning 是不同统计维度，不能把父项与子项重复相加。Codex Runtime 会保留已收到的非空 `token_usage` 通知，标记 `thread_cumulative`；没有通知时保持未知。线程累计计数不能直接当作每轮增量反复累加；不可加总的范围与原因会单列。
+
+Claude 单次调用的美元费用独立于 token 来源计入运行汇总，依据原生一次性快照及费用上报标记识别，不能只凭后端名称推断。新快照用 `cost_reported`、`cost_source` 区分原生确报零费用与未报告费用；旧快照中的正数仍可计入，旧版默认零值无法证明免费，保留原始值但在规范统计中记为未知。累计会话或线程费用不会作为单次费用重复相加。
 
 衡量搭配效果时，另行记录主控模型的用量、等待、验收与返工，按相同任务范围和质量门比较整个完成过程。Asterun 的输出变短、Grok 承担编码或缓存命中增加，都不能单独证明 Astra 节省了某个百分比；没有可比较的实测对照时，节省率应保持未测量。

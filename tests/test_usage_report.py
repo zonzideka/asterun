@@ -1,10 +1,12 @@
 from copy import deepcopy
+from dataclasses import replace
+import json
 
 import pytest
 
 from asterun.contracts import AcceptanceStatus, DeliveryStatus, Run, RunStatus, Task
 from asterun.ids import AccountRef, BackendId, BillingPoolRef, ModelId, RunId, TaskId
-from asterun.usage.report import build_usage_report
+from asterun.usage.report import build_usage_report, paginate_usage_report
 
 
 def run(id="run-1", *, native=None, status=RunStatus.SUCCEEDED, backend="grok-code", role="implementation"):
@@ -152,3 +154,113 @@ def test_empty_report_has_no_fabricated_zero():
     report = build_usage_report([])
     assert report["totals"]["run_count"] == 0 and report["groups"] == []
     assert report["totals"]["tokens"]["total_tokens"]["known_sum"] is None
+
+
+@pytest.mark.parametrize("status", [RunStatus.SUCCEEDED, RunStatus.FAILED])
+def test_claude_single_invocation_cost_is_independent_of_token_convention(status):
+    from asterun.backends.claude import ClaudeSession, apply_result, parse_result
+
+    session = ClaudeSession("run-1", "/tmp", "t0")
+    apply_result(session, parse_result(json.dumps({"total_cost_usd": 0.25, "session_id": "native-session"})))
+    item = run(native=session.to_status_dict(), backend="custom-claude-name", status=status)
+    report = build_usage_report([item, replace(item, id=RunId("repair"), native={
+        **session.to_status_dict(), "session_id": "repair"}, role="repair")])
+    assert report["totals"]["costs"][0]["known_sum"] == "0.50"
+    assert report["totals"]["costs"][0]["reported_runs"] == 2
+    assert report["totals"]["costs"][0]["partial"] is False
+    assert report["totals"]["tokens"]["total_tokens"]["known_sum"] is None
+    assert report["runs"][0]["costs"][0]["scope_source"] == "claude_one_shot_snapshot"
+
+
+@pytest.mark.parametrize("raw,amount,reported", [({"total_cost_usd": 0}, "0.0", 1), ({}, None, 0),
+                                                 ({"total_cost_usd": None}, None, 0)])
+def test_claude_reported_zero_and_absent_cost_remain_distinct(raw, amount, reported):
+    from asterun.backends.claude import ClaudeSession, apply_result, parse_result
+
+    session = ClaudeSession("run-1", "/tmp", "t0")
+    apply_result(session, parse_result(json.dumps(raw)))
+    row = run(native=session.to_status_dict())
+    report = build_usage_report([row])
+    assert report["totals"]["costs"][0]["known_sum"] == amount
+    assert report["totals"]["costs"][0]["reported_runs"] == reported
+    assert report["totals"]["costs"][0]["unknown_runs"] == 1 - reported
+    assert report["runs"][0]["native_usage"]["cost_reported"] is bool(reported)
+
+
+@pytest.mark.parametrize("cost,expected", [(0.15, "0.15"), (0, None)])
+def test_legacy_claude_cost_preserves_zero_ambiguity(cost, expected):
+    native = {"mode": "claude", "session_id": "run-1", "resume_supported": False, "total_cost_usd": cost}
+    report = build_usage_report([run(native=native, backend="renamed-backend")])
+    assert report["totals"]["costs"][0]["known_sum"] == expected
+    if cost == 0:
+        assert report["runs"][0]["costs"][0]["issue"] == "claude_zero_may_be_adapter_default"
+        assert report["runs"][0]["native_usage"]["total_cost_usd"] == 0
+
+
+@pytest.mark.parametrize("marker", [{"usage_scope": "thread_cumulative"}, {"token_usage": {}}])
+def test_cumulative_cost_takes_precedence_over_run_like_markers(marker):
+    native = grok(**marker, mode="claude", session_id="run-1", resume_supported=False)
+    report = build_usage_report([run(native=native)])
+    assert report["totals"]["costs"][0]["known_sum"] is None
+    assert report["runs"][0]["costs"][0]["aggregation_eligible"] is False
+
+
+def test_backend_name_alone_does_not_prove_cost_scope():
+    report = build_usage_report([run(native={"total_cost_usd": 3}, backend="claude")])
+    assert report["totals"]["costs"][0]["known_sum"] is None
+
+
+def test_detail_budget_and_cursor_preserve_all_rows_and_full_totals():
+    # Each native model breakdown is large enough for the byte budget to cut a
+    # page before its item limit, but not large enough to omit the individual row.
+    data = build_usage_report([run(str(i), native=grok(modelUsage={"m": {"description": "中" * 2500}}))
+                               for i in range(70)])
+    original = deepcopy(data)
+    cursor = None
+    seen = []
+    while True:
+        page = paginate_usage_report(data, page_size=100, cursor=cursor)
+        assert len(json.dumps(page, ensure_ascii=False).encode()) < 150 * 1024
+        assert page["totals"] == data["totals"]
+        assert page["pagination"]["totals_scope"] == "complete_query"
+        assert not any("detail_omitted" in row for row in page["runs"])
+        seen.extend(row["run_id"] for row in page["runs"])
+        cursor = page["pagination"]["next_cursor"]
+        if cursor is None:
+            break
+    assert seen == [row["run_id"] for row in data["runs"]]
+    assert data == original
+
+
+def test_single_oversized_native_detail_is_explicitly_omitted_and_cursor_advances():
+    data = build_usage_report([run(native=grok(modelUsage={"model": {"raw": "大" * 600000}})), run("other")])
+    page = paginate_usage_report(data, page_size=1)
+    first = page["runs"][0]
+    # run IDs are sorted, so select the large row on either page.
+    if first["run_id"] == "other":
+        page = paginate_usage_report(data, page_size=1, cursor=page["pagination"]["next_cursor"])
+        first = page["runs"][0]
+    assert first["detail_omitted"]["fields"] == ["native_usage"]
+    assert first["detail_omitted"]["full_detail_bytes"] > 1024 * 1024
+    assert first["tokens"]["total_tokens"] == 115
+    assert len(json.dumps(page, ensure_ascii=False).encode()) < 150 * 1024
+    assert page["totals"]["tokens"]["total_tokens"]["unknown_runs"] == 1
+
+
+def test_oversized_group_dimensions_are_bounded_without_changing_totals():
+    data = build_usage_report([run(native=grok(model="m" * 200000))])
+    page = paginate_usage_report(data)
+    assert page["groups"][0]["detail_omitted"]["fields"] == "all_except_returned_references"
+    assert page["totals"] == data["totals"]
+    assert len(json.dumps(page, ensure_ascii=False).encode()) < 150 * 1024
+
+
+def test_pagination_rejects_invalid_or_stale_cursors():
+    data = build_usage_report([run("1"), run("2")])
+    page = paginate_usage_report(data, page_size=1)
+    with pytest.raises(ValueError, match="cursor"):
+        paginate_usage_report(data, cursor="not a cursor")
+    changed = deepcopy(data)
+    changed["scope"] = {"workspace": "other"}
+    with pytest.raises(ValueError, match="快照或范围"):
+        paginate_usage_report(changed, cursor=page["pagination"]["next_cursor"])
