@@ -51,7 +51,7 @@ MCP 客户端使用 `asterun --state-dir /path/to/state --connect mcp`。观察�
 
 [用户手册](docs/user-manual.md)说明提交、观察、审批和恢复。[PR 审查](docs/pr-review.md)提供一套可选工作流示例，包括固定代码版本、读取结构化结论、关联复审和交付结果。
 
-当前工作区另有[外部主控维护候选](docs/caller-orchestration.md)：`task-get --compact`、`task-watch --compact --no-events`、只读 `usage-report`，以及固定目标上的外部验收报告与同任务有限修复。候选尚未部署到运行实例；外部报告不证明独立审查，同任务修复也不代表原生会话续接。既有调用默认行为保持不变。
+[外部主控工作流](docs/caller-orchestration.md)提供 `task-get --compact`、`task-watch --compact --no-events`、只读 `usage-report`，以及固定目标上的外部验收报告与同任务有限修复。外部报告不证明独立审查，同任务修复也不代表原生会话续接。既有调用默认行为保持不变。
 
 GrokBot 等调用方可以在云电脑中部署 Asterun，也可以通过已有授权通道调用本地进程。工作区、账户和原生会话随执行主机保存。普通任务由调用方跟踪任务和事件；[审查结果交付模块](docs/review-consumer.md)用于将审查收件箱接入宿主消息发送与定时调度。
 
