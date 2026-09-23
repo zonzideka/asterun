@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import tempfile
@@ -295,6 +296,19 @@ class GrokBackend:
     def execution_profile(self) -> str:
         return self.config.execution_profile or PROFILE
 
+    def _sync_native_session(self, session_id):
+        if not session_id or not self.config.session_sync_home:
+            return
+        from asterun.grok_sync import sync_sessions
+        try:
+            report = sync_sessions(self.config.home, self.config.session_sync_home,
+                                   session_id=session_id)
+            if report["skipped"] or report["conflicts"]:
+                logging.getLogger(__name__).warning("Grok session sync incomplete: %s", report)
+        except Exception as error:
+            # Export failures must never change dispatch/delivery/acceptance semantics.
+            logging.getLogger(__name__).warning("Grok session sync failed: %s", type(error).__name__)
+
     def close(self):
         with self._code_lock:
             self._closing = True
@@ -470,6 +484,7 @@ class GrokBackend:
                 finally:
                     with self._code_lock:
                         self._active_code_handles.discard(process_handle)
+            self._sync_native_session(session_id)
 
     def dispatch(self, task_id: TaskId, run_id: RunId, script: str, text: str, *, cwd: Path | None = None) -> dict[str, Any]:
         if self.execution_profile == CODE_PROFILE:
@@ -570,6 +585,7 @@ class GrokBackend:
                 pass  # Cleanup cannot change whether prompt was called or replace a received terminal result.
             finally:
                 self._active_transports.pop(run_id.value, None)
+                self._sync_native_session(session_id)
         reason = result.get("stopReason")
         if reason == "end_turn":
             status, error_code = RunStatus.SUCCEEDED, None

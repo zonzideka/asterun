@@ -251,6 +251,10 @@ def build_environment(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="准备并检查 Grok 专用执行环境")
     sub = parser.add_subparsers(dest="command", required=True)
+    sync = sub.add_parser("sync-sessions", help="将原生会话日志单向同步给本地用量工具")
+    sync.add_argument("--home", required=True)
+    sync.add_argument("--destination-home", required=True)
+    sync.add_argument("--session-id")
     for name in ("prepare", "inspect", "login"):
         command = sub.add_parser(name)
         command.add_argument("--home", required=True)
@@ -259,7 +263,12 @@ def main(argv: list[str] | None = None) -> int:
             command.add_argument("--bin", required=True)
     args = parser.parse_args(argv)
     try:
-        if args.command == "prepare":
+        if args.command == "sync-sessions":
+            from asterun.grok_sync import sync_sessions
+            result = sync_sessions(args.home, args.destination_home, session_id=args.session_id)
+            print(json.dumps(result, ensure_ascii=False))
+            return 1 if result["conflicts"] or result["skipped"] else 0
+        elif args.command == "prepare":
             result = prepare_home(args.home, execution_profile=args.execution_profile)
         else:
             target = validate_home(args.home, execution_profile=args.execution_profile)
@@ -277,6 +286,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     except AsterunError as exc:
         print(json.dumps({"error": exc.to_dict()}, ensure_ascii=False))
+        return 1
+    except (OSError, ValueError) as exc:
+        print(json.dumps({"error": {"code": "GROK_PROFILE_IO_ERROR", "type": type(exc).__name__}}))
         return 1
 
 
