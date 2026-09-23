@@ -11,7 +11,7 @@ from asterun.errors import AsterunError, INVALID_CONFIG, UNKNOWN_FIELD
 from tests.conftest import write_config
 
 
-FIELDS = ("execution_profile", "max_turns", "timeout_seconds")
+FIELDS = ("execution_profile", "max_turns", "timeout_seconds", "session_sync_home")
 
 
 def configured_path(isolated_env, workspace_root, version, options, kind="grok"):
@@ -30,6 +30,7 @@ def configured_path(isolated_env, workspace_root, version, options, kind="grok")
 
 @pytest.mark.parametrize("version", [1, 2])
 @pytest.mark.parametrize("options", [
+    {"session_sync_home": "/test-only/usage-home"},
     {}, {"execution_profile": "text-only-v1"}, {"max_turns": 1},
     {"timeout_seconds": 1}, {"timeout_seconds": 3600},
     {"execution_profile": "workspace-code-v1"},
@@ -60,6 +61,7 @@ def test_grok_execution_options_preserve_only_explicit_values(isolated_env, work
     {"timeout_seconds": value}
     for value in (None, True, False, 1.0, "1", 0, -1, 3601, [], {})
 ] + [
+    *[{"session_sync_home": value} for value in (None, True, "", "relative", "/foo/../bar", "/tmp/invalid\x00")],
     {"max_turns": 2}, {"execution_profile": "text-only-v1", "max_turns": 2},
 ])
 def test_grok_execution_limits_reject_invalid_or_implicitly_relaxed_options(isolated_env, workspace_root, version, options):
@@ -72,6 +74,7 @@ def test_grok_execution_limits_reject_invalid_or_implicitly_relaxed_options(isol
 @pytest.mark.parametrize("version", [1, 2])
 @pytest.mark.parametrize("kind", ["fake", "codex", "claude", "antigravity"])
 @pytest.mark.parametrize("field,value", [
+    ("session_sync_home", "/test-only/usage-home"),
     ("execution_profile", "workspace-code-v1"), ("max_turns", 1), ("timeout_seconds", 180),
 ])
 def test_grok_execution_options_do_not_expand_other_builtin_backends(isolated_env, workspace_root, version, kind, field, value):
@@ -82,6 +85,7 @@ def test_grok_execution_options_do_not_expand_other_builtin_backends(isolated_en
 
 
 @pytest.mark.parametrize("options", [
+    {"session_sync_home": "/test-only/usage-home"},
     {}, {"execution_profile": "text-only-v1", "max_turns": 1},
     {"execution_profile": "workspace-code-v1", "max_turns": 100, "timeout_seconds": 3600},
 ])
@@ -123,6 +127,7 @@ def test_legacy_grok_backend_projection_and_digest_do_not_gain_defaults(isolated
 
 @pytest.mark.parametrize("version", [1, 2])
 @pytest.mark.parametrize("field,value", [
+    ("session_sync_home", "/test-only/usage-home"),
     ("execution_profile", "text-only-v1"), ("max_turns", 2), ("timeout_seconds", 181),
 ])
 def test_explicit_grok_execution_settings_are_bound_to_config_digest(isolated_env, workspace_root, version, field, value):

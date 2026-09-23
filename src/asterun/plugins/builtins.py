@@ -1,6 +1,8 @@
 """随核心分发的兼容插件目录；构建目录不会导入供应商模块。"""
 from __future__ import annotations
 
+from pathlib import Path
+
 from asterun import __version__
 from asterun.errors import AsterunError, INVALID_CONFIG
 from asterun.plugins.registry import PluginRegistry
@@ -8,12 +10,12 @@ from asterun.plugins.registry import PluginRegistry
 BUILTINS = {
     "fake": {"plugin_id": "asterun.fake", "factory": "asterun.backends.fake:FakeBackend", "options": {"bin"}},
     "codex": {"plugin_id": "openai.codex", "factory": "asterun.backends.codex:CodexBackend", "options": {"bin", "desktop_projects"}},
-    "grok": {"plugin_id": "xai.grok", "factory": "asterun.backends.grok:GrokBackend", "options": {"bin", "home", "model", "execution_profile", "max_turns", "timeout_seconds"}},
+    "grok": {"plugin_id": "xai.grok", "factory": "asterun.backends.grok:GrokBackend", "options": {"bin", "home", "model", "execution_profile", "max_turns", "timeout_seconds", "session_sync_home"}},
     "claude": {"plugin_id": "anthropic.claude", "factory": "asterun.backends.claude:ClaudeBackend", "options": {"bin"}},
     "antigravity": {"plugin_id": "google.antigravity-cli", "factory": "asterun.backends.antigravity:AntigravityBackend", "options": {"bin", "home", "model"}},
 }
 
-GROK_EXECUTION_OPTIONS = ("execution_profile", "max_turns", "timeout_seconds")
+GROK_EXECUTION_OPTIONS = ("execution_profile", "max_turns", "timeout_seconds", "session_sync_home")
 
 
 def validate_grok_execution_options(options, where):
@@ -26,6 +28,11 @@ def validate_grok_execution_options(options, where):
             raise AsterunError(INVALID_CONFIG, f"{where}.{key} 必须为 1..{upper} 的整数")
     if profile == "text-only-v1" and "max_turns" in options and options["max_turns"] != 1:
         raise AsterunError(INVALID_CONFIG, f"{where}.max_turns 在 text-only-v1 下只能为 1")
+    if "session_sync_home" in options:
+        value = options["session_sync_home"]
+        if (not isinstance(value, str) or not value.strip() or value != value.strip()
+                or "\x00" in value or not Path(value).is_absolute() or ".." in Path(value).parts):
+            raise AsterunError(INVALID_CONFIG, f"{where}.session_sync_home 必须为显式绝对路径")
 
 
 def builtin_kind(plugin_id):

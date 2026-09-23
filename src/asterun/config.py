@@ -65,6 +65,7 @@ class BackendConfig:
     max_turns: int | None = None
     timeout_seconds: int | None = None
     desktop_projects: bool | None = None
+    session_sync_home: str | None = None
 
     @property
     def executable(self) -> bool:

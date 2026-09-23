@@ -235,3 +235,11 @@ python3 scripts/verify-installed-control.py --venv /absolute/venv \
 The script checks CLI/MCP, output and artifacts, events, idempotency, core restart, and backup and recovery. Run it with ordinary Python so assertions remain enabled.
 
 See the [Antigravity guide](antigravity.md) for its dedicated HOME, permission bindings, migration, and runtime commands. See the [plugin guide](plugins.md) for optional plugins and v2 configuration.
+
+## Grok native session log sync
+
+Grok logs stay under the isolated home. To backfill a local usage reader without changing its configuration, run `asterun-grok sync-sessions --home /absolute/isolated-home --destination-home /absolute/user-grok-home`. Only `summary.json` and `updates.jsonl` are copied; the latter contains conversation content. Credentials and native configuration are excluded. `--session-id ID` restricts the scan.
+
+Set `session_sync_home` on a v1 Grok backend, or in a v2 connection's `options`, to enable export after each Grok process is cleaned up. It is opt-in per instance, for both text and coding profiles, with no continuous mirroring during a run. Follow the configuration revision procedure when enabling it. Export failures are logged separately and never change task results or acceptance. Use the backfill command to recover missed exports after a crash or failure.
+
+Original IDs, timestamps and usage are preserved. Atomic writes and a destination lock protect readers and concurrent Asterun writers. Unchanged exports are skipped; conflicting native sessions, externally modified copies, source log rewinds, symlinks and incomplete JSONL are never overwritten. Results report copied/unchanged/conflicts/skipped, with nonzero exit for conflicts or skipped logs. Removing the option stops future exports without deleting history. Resume sessions in the original home, not in the exported copy.

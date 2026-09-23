@@ -158,6 +158,23 @@ v1 将该对象放入 `backends.grok-code`；v2 将 bin/home/model 和编码选�
 
 `run.native` 保存原生 `num_turns`、`usage` 和 `modelUsage`。runner-control/v1 的 turns 按 Asterun 派发次数统计，供应商报告和核心预算各自保留原口径。
 
+## Grok 原生日志同步
+
+Grok 使用独立的 `home/sessions` 保存原生记录。只读取用户默认 `.grok` 的用量工具（例如 Nowdex）不会自动发现这些记录。可以显式将 `summary.json` 和 `updates.jsonl` 单向复制到目标 Grok home；后者包含对话内容。凭据、配置、系统提示文件及其它原生文件不复制。
+
+```sh
+asterun-grok sync-sessions --home /absolute/isolated-grok-home \
+  --destination-home /absolute/user-grok-home
+```
+
+`--session-id ID` 只补齐指定会话。不传则扫描全部历史。命令返回 copied、unchanged、conflicts、skipped；有冲突或跳过时退出码为 1。会话 ID、时间戳、原生用量及目录层级保持不变，不累加或改写计量数据。新会话整目录发布，增量日志原子替换；并行 Asterun 同步使用目标目录锁。完整重复执行不修改日志。
+
+要在每次 Grok 进程清理结束后自动同步，在 v1 的对应后端中设置 `"session_sync_home": "/absolute/user-grok-home"`；v2 设置在对应连接的 `options`。目标是包含 `sessions` 的根目录。该项默认省略，只有显式配置才启用；多个临时实例需要各自配置，现有实例按下节修订流程加载。文本与编码入口都支持，成功、取消或失败后的可用日志均可同步。运行中不会持续镜像；新任务结束后由用量软件下次刷新导入。
+
+同步只更新带来源标记且内容未被外部修改的副本。首次碰到已有目录时，仅接受两个日志文件完全一致的手动同步副本；普通 Grok 会话、已在原生客户端续接的副本、源日志回退或不同来源同 ID 都报告冲突，不覆盖、不删除。不要在导出副本中继续对话，应继续使用原始隔离目录。未写完整的 JSONL、符号链接和缺失文件报告跳过，可再次执行补齐命令。自动同步失败只写宿主日志，不改变任务成功、取消、对账或验收状态；崩溃和失败遗漏通过补齐命令恢复，不声称自动重试已完成。
+
+移除该配置即可停止后续同步，已经复制的记录保留。此功能不更改 Grok 的 HOME、GROK_HOME、登录凭据或沙箱，也不向 Nowdex 数据库直接写入内容。
+
 ## 会话绑定与配置修订
 
 提交后保存返回的 `conversation_id`。`session-resume --conversation-id ID` 恢复本地索引，并核对账户、主机和工作区。Codex 的 `--native` 另核对原生线程；再次提交 `task-submit --conversation-id ID` 时，通过原生最新轮次校验后续接。未结束或未决运行、外部新增轮次和绑定变化会阻止继续。
