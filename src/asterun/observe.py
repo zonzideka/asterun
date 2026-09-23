@@ -170,12 +170,14 @@ def compact_task_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
             short_run["native"] = _fields(native, (
                 "session_id", "thread_id", "turn_id", "backend_session_id", "backend_turn_id",
                 "mode", "resume_supported", "claude_session_id",
-                "native_resumed", "native_checked", "execution_profile", "transport", "stop_reason",
+                "native_resumed", "native_checked", "execution_profile", "transport", "stop_reason", "provider_failure", "resume_requested",
                 "tool_calls_count", "num_turns", "summary_truncated", "events_truncated",
                 "total_cost_usd", "total_cost_usd_ticks", "usage_source",
                 "usage_is_incomplete", "cost_is_partial", "usage_scope", "cost_reported", "cost_source",
             ))
             short_run["native"].update(_compact_usage(native))
+            if isinstance(native.get("provider_failure"), dict):
+                short_run["native"]["provider_failure"] = _fields(native["provider_failure"], ("kind", "status_code", "source"))
         if "output" in run or "output_available" in run:
             short_run["output_available"] = (run["output_available"] if type(run.get("output_available")) is bool
                                              else run.get("output") is not None)

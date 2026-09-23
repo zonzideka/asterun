@@ -40,6 +40,7 @@ TOOL_METHODS = {
     "task_present": "task.present",
     "workflow_evaluate": "workflow.evaluate",
     "workflow_snapshot": "workflow.snapshot",
+    "workflow_check": "workflow.check",
     "workflow_repair": "workflow.repair",
     "workflow_start": "workflow.start",
     "scheduler_status": "scheduler.status",

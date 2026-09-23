@@ -80,6 +80,7 @@ from asterun.quality import repair_prompt
 from asterun.quality_runtime import QualityRuntime
 
 ENTRY_BLOCKED_WHEN_DISABLED = {
+    "workflow.check",
     "capability.prepare", "capability.submit", "capability.invoke", "plugin.register", "plugin.enable", "plugin.disable",
     "control.command",
     "control.upload",
@@ -288,7 +289,7 @@ class Application:
                                         native_session and native_session == session.get("backend_session_id")):
                             raise AsterunError(INVALID_REQUEST, "标准控制会话不能从旧入口派生未预算轮次")
             if self._control is not None and payload.get("task_id") and method in {
-                "task.cancel", "task.handoff", "workflow.repair", "workflow.start", "workflow.evaluate"
+                "task.cancel", "task.handoff", "workflow.repair", "workflow.start", "workflow.evaluate", "workflow.check"
             } and self.control.legacy_action(payload["task_id"]):
                 raise AsterunError(INVALID_REQUEST, "该执行由 runner-control 管理，请使用标准控制命令")
             if self._control is not None and payload.get("task_id"):
@@ -300,6 +301,8 @@ class Application:
                 return self.usage_report(payload)
             if method == "workflow.snapshot":
                 return self.workflow_snapshot(payload)
+            if method == "workflow.check":
+                return self.workflow_check(payload)
             if method == "task.present":
                 # 客户端展示重试不推进队列、模型轮次或质量流程。
                 return self.task_present(payload)
@@ -571,13 +574,16 @@ class Application:
             created_at=now,
         )
         existing = self.store.find_idempotent_operation(operation)
+        if existing is None:
+            from asterun.grok_quota import guard as guard_grok_quota
+            guard_grok_quota(self, backend_conf.name)
         if existing is None and session.task_id is not None:
             previous = self.store.get_task(session.task_id)
             previous_run = self.store.get_run(previous.current_run_id) if previous.current_run_id else None
             if previous_run and previous_run.status not in TERMINAL_RUN_STATUSES:
                 raise AsterunError(INVALID_REQUEST, "该会话还有未结束或未决运行，不能派发新轮次")
             if (session.backend_session_id and backend_conf.kind != "fake"
-                    and not (hasattr(backend, "resume_native") or getattr(backend, "supports_native_resume", False))):
+                    and not getattr(backend, "supports_native_resume", hasattr(backend, "resume_native"))):
                 raise AsterunError(CAPABILITY_UNSUPPORTED, "该适配器不支持原生续接，请使用新会话")
         decision = "start" if existing is not None else self.scheduler.admit(backend_conf.name, str(workspace.root.resolve()))
         session = replace(session, task_id=task.id, updated_at=now)
@@ -965,7 +971,7 @@ class Application:
         if payload.get("native"):
             if self.admission is not None:
                 self.admission.assert_session(session)
-            if not (hasattr(backend, "resume_native") or getattr(backend, "supports_native_resume", False)) or not session.backend_session_id:
+            if not getattr(backend, "supports_native_resume", hasattr(backend, "resume_native")) or not session.backend_session_id:
                 raise AsterunError(CAPABILITY_UNSUPPORTED, "该会话没有可续接的原生引用或适配能力")
             if session.task_id:
                 previous = self.store.get_task(session.task_id)
@@ -989,6 +995,7 @@ class Application:
                     self.config.get_workspace(session.workspace).root, previous.read_scope, backend)
             report = backend.resume_native({"backend_session_id": session.backend_session_id.value,
                                             "turn_id": session.latest_turn_id,
+                                            "asterun_identity": {"account": self.account_ref.value, "runtime": self.runtime_ref.value},
                                             **({"read_scope_binding": previous.read_scope} if scope_kwargs else {})},
                                            self.config.get_workspace(session.workspace).root, **scope_kwargs)
             return ok({"session": session.to_dict(), "index_found": True, "binding_ok": True,
@@ -1178,6 +1185,24 @@ class Application:
                                 payload["target_paths"], state_dir=self.state_dir)
         return ok(data, ids={"task_id": task.id.value, "run_id": run.id.value})
 
+    def workflow_check(self, payload):
+        from asterun.local_checks import execute_check
+        task = self._require_task(payload["task_id"])
+        for action in ("workflow.evaluate", "workspace.read", "process.execute"):
+            enforce(self.policy.authorize(self.principal, action, task.workspace))
+        self._require_grant(task.workspace)
+        self._require_applied_config()
+        self._assert_task_binding(task)
+        run = self.store.get_run(task.current_run_id) if task.current_run_id else None
+        bound = self._bound_external_target(task, run, payload, required=True)
+        spec = self.config.workflow.local_checks.get(payload["check_name"])
+        if spec is None:
+            raise AsterunError(INVALID_REQUEST, "检查名未登记在 workflow.local_checks")
+        root = self.config.get_workspace(task.workspace).root
+        data = execute_check(root, bound, spec, payload["check_name"], self.state_dir)
+        self._bound_external_target(task, run, payload, required=True)
+        return ok(data, ids={"task_id": task.id.value, "run_id": run.id.value})
+
     def _bound_external_target(self, task: Task, run: Run | None, payload: dict, *, required=False) -> dict | None:
         from asterun.external_evaluation import prepare_snapshot
 
@@ -1365,6 +1390,8 @@ class Application:
                     required="instructions" in payload or bool(task.external_evaluation))
         if not backend.can_dispatch():
             raise backend.unavailable_error()
+        from asterun.grok_quota import guard as guard_grok_quota
+        guard_grok_quota(self, task.backend.value)
         if task.repair_count >= limit:
             if task.current_run_id:
                 self._event(task.current_run_id, EventType.REPAIR_LIMIT, "core", {"repair_count": task.repair_count})
@@ -1562,14 +1589,22 @@ class Application:
             raise AsterunError(INVALID_REQUEST, "运行不再是可派发的排队意图")
         if not backend.can_dispatch():
             raise backend.unavailable_error()
+        from asterun.grok_quota import guard as guard_grok_quota, scopes as grok_quota_scopes
+        guard_grok_quota(self, backend_name)
+        if backend.config.kind == "grok":
+            run.native["grok_quota_scopes"] = grok_quota_scopes(self, backend_name)
         self.scheduler.start(backend_name, run.id, str(self.config.get_workspace(task.workspace).root.resolve()))
         self._set_run(run, RunStatus.DISPATCHING)
         self._event(run.id, EventType.RUN_DISPATCHING, "core", {"backend": backend_name})
         operation.status = OperationStatus.DISPATCHED
         self.store.save_operation(operation)
+        native = {"backend_session_id": session.backend_session_id.value if session and session.backend_session_id else None,
+                  "turn_id": session.latest_turn_id if session else None,
+                  "asterun_identity": {"account": self.account_ref.value, "runtime": self.runtime_ref.value}}
         if self.executor is not None and backend.config.kind != "fake":
             native = {"backend_session_id": session.backend_session_id.value if session and session.backend_session_id else None,
-                      "turn_id": session.latest_turn_id if session else None}
+                      "turn_id": session.latest_turn_id if session else None,
+                      "asterun_identity": {"account": self.account_ref.value, "runtime": self.runtime_ref.value}}
             if reader is not None:
                 native["read_scope_binding"] = task.read_scope
             cwd = self.config.get_workspace(task.workspace).root
@@ -1600,7 +1635,8 @@ class Application:
             else:
                 dispatch = backend.dispatch_review if run.role == "review" else backend.dispatch
                 result = dispatch(task.id, run.id, task.script, run.prompt or task.text,
-                                          cwd=self.config.get_workspace(task.workspace).root)
+                                          cwd=self.config.get_workspace(task.workspace).root,
+                                          **({"native": native} if getattr(backend, "accepts_native_context", False) and run.role != "review" else {}))
         except Exception as error:
             # 调用已经发生：即使是本地抛出的异常，也不能推断远端没有执行。
             self._set_run(run, RunStatus.PENDING_RECONCILE, error_code=REMOTE_STATE_UNKNOWN,

@@ -99,6 +99,8 @@ class AdmissionService:
     def prepare(self, workspace, backend_alias, input_sha256, role="implementation", *, capability="agent.execute"):
         store = self.persistent()
         binding = self._snapshot(workspace, backend_alias, input_sha256, role, capability=capability)
+        from asterun.grok_quota import guard
+        guard(self.app, backend_alias)
         reservations = []
         for ref, pool in binding["billing_pools"].items():
             mode = pool["billing_mode"]

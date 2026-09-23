@@ -2,6 +2,12 @@
 
 # Installation and configuration
 
+The coding Grok profile now accepts opt-in `session_policy: "resume"`. The first run creates a managed session; later submissions with its conversation ID and same-task repairs resume it after checking CLI capabilities, binary bytes, identity, profile, workspace, credential-file generation and native-log fingerprints. A cross-process lock prevents overlapping managed turns. Missing or changed bindings reject continuation instead of creating a replacement session. Native token refresh may conservatively invalidate the credential generation. `session-resume --native` only checks readiness; actual continuation remains separately verified. Real-model acceptance is pending.
+
+Structured `native.provider_failure` distinguishes quota, rate-limit, authentication, turn-limit, timeout and incomplete-protocol failures without retaining raw diagnostics. A persistent HTTP 402 observation blocks further dispatches sharing its billing-pool window (v2), or profile/account/runtime/`quota_epoch` (v1). It does not settle uncertain runs, refund reservations or prove an account balance. Change the window explicitly only after confirming quota recovery.
+
+`workflow-check` / MCP `workflow_check` runs only commands preconfigured in `workflow.local_checks`, against selected snapshot files copied into a temporary OS sandbox. The environment is clean, network access is denied, process groups have bounded lifetimes, and reports include source hashes, exit status, bounded diagnostics and optional test counts including loading errors. No available OS sandbox means no execution. This synchronous local check does not change acceptance or replace independent review; full-project tests and automatic diagnostic caching remain separate. See the [caller guide](../caller-orchestration.md) and [offline CLI example](../../examples/caller-workflow/README.md) for the configuration and report workflow.
+
 Use Python 3.11 or later. The wheel is the installation artifact; the sdist also includes user guides, examples, and operations scripts. Replace `/path/to` and `/absolute` with your actual paths throughout this guide.
 
 ## Install

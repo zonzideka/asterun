@@ -119,6 +119,8 @@ asterun --state-dir .asterun/state --connect workflow-evaluate \
 
 ## 在原任务中进行有限修复
 
+可先运行[完整离线 CLI 范例](../examples/caller-workflow/README.md)，核对同一任务、多次运行、报告失败、幂等修复及目标漂移失效。
+
 需要修复时，主控先根据具体失败准备 `.asterun/caller/repair-instructions.md`，写清改动范围、原失败与通过条件。修复指令不替换原任务目标、不授予额外权限；绑定必须来自要修复的当前运行及当前文件版本。若验收后目标已变，重新取得快照并核实缺陷，不能直接沿用旧摘要。
 
 以下片段将同一快照转成修复请求。示例的 `max_repairs=2` 表示整个任务的累计上限，不是本次再追加两轮；实际仍取请求与配置中较小的上限，并受每任务运行次数限制。主控应只为已确认的缺陷发起修复；已有运行必须确定结束，任务不能处于暂停或人工接管状态。达到上限后交接现有结果，不通过新建任务规避上限。
@@ -160,6 +162,39 @@ asterun --state-dir .asterun/state --connect workflow-repair \
 兼容旧版修复记录时，只有不含新增指令或版本绑定的旧式请求可以读回旧意图；旧记录未保存完整请求，无法追溯核对当时的 `max_repairs` 参数。该兼容路径也不会重新派发或增加预算。
 
 同一个 Asterun 任务不代表复用了 Grok 原生会话。原生续接取决于适配器能力与实际绑定，须检查原生引用和 `native_resumed` 的证据；不能把任务关系或相同 conversation ID 当成原生上下文已经复用。
+
+## 受控局部检查
+
+`workflow-check` / MCP `workflow_check` 只允许调用 `workflow.local_checks` 中预先配置的检查名，请求不能传入命令或环境变量。例如：
+
+```json
+{
+  "workflow": {
+    "local_checks": {
+      "compile": {
+        "argv": ["/absolute/python3", "check.py"],
+        "inputs": ["check.py", "src/example.py"],
+        "timeout_seconds": 30,
+        "runtime_roots": ["/absolute/python-runtime"],
+        "result_file": "counts.json"
+      }
+    }
+  }
+}
+```
+
+可执行文件使用绝对路径，参数数组固定，不经 shell 拼接；`runtime_roots` 仅允许只读工具链/依赖目录，不能覆盖原工作区，不能填用户凭据目录。检查在只包含 `inputs` 的临时副本中运行，全部输入必须列入快照 `target_paths`。文件限额沿用 64 个文件、总计 256 KiB。运行时清空继承环境，HOME/TMPDIR 指向临时目录，使用 macOS sandbox-exec 或 Linux bubblewrap 禁网；缺少隔离工具时拒绝执行。超时最多 60 秒，结束后清理进程组，输出摘要有界，前后源码摘要不一致则不返回可用报告。检查期间该请求同步等待，请为连接客户端配置足够的请求超时；常驻核心的异步检查调度属于后续工作。
+
+纯编译可省略 `result_file`，以退出码和超时判断；测试检查应配置结果文件。该文件必须由运行器新生成，含 `passed`、`failed`、`skipped`、`load_errors` 四个非负整数。文件缺失/损坏、有失败/加载错误或没有任何通过的测试均不能通过；未知数量返回 null，不猜测日志中的测试数。
+
+从 `workflow-snapshot` 构造与外部验收相同的完整版本绑定，再增加 `check_name`：
+
+```sh
+asterun --state-dir .asterun/state --connect workflow-check \
+  "$ASTERUN_TASK_ID" --request .asterun/caller/check-request.json
+```
+
+响应包含退出码、超时、测试数量、诊断和前后摘要，以及可交给既有 `external_report` 验收的 `report` 对象。由调用方保存报告并计算文件 SHA-256，再使用完整版本绑定调用 `workflow-evaluate`。失败详情会有界地进入同任务修复提示；自测不会自动更改验收、满足独立审查或启动修复。原项目的完整依赖构建仍由调用方在授权环境执行并导入报告；不要把局部输入检查说成完整项目测试。重复诊断复用目前由调用方根据源码和运行时证据决定，本入口尚未自动缓存。
 
 ## 汇总整个完成过程的用量
 

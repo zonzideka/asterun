@@ -29,7 +29,7 @@ CONFIG_KEYS = {
 }
 WORKSPACE_KEYS = {"root", "allow_non_git"}
 BACKEND_KEYS = {"kind", "enabled", "bin", "home", "model", "desktop_projects", *GROK_EXECUTION_OPTIONS}
-WORKFLOW_KEYS = {"preset", "require_review", "review_backend", "approved_substitute", "max_repairs"}
+WORKFLOW_KEYS = {"preset", "require_review", "review_backend", "approved_substitute", "max_repairs", "local_checks"}
 SCHEDULER_KEYS = {"max_queue", "per_backend_concurrency", "max_runs_per_task"}
 ENTRIES_KEYS = {"cli", "mcp"}
 KNOWN_BACKEND_KINDS = set(BUILTINS)
@@ -66,6 +66,8 @@ class BackendConfig:
     timeout_seconds: int | None = None
     desktop_projects: bool | None = None
     session_sync_home: str | None = None
+    session_policy: str | None = None
+    quota_epoch: str | None = None
 
     @property
     def executable(self) -> bool:
@@ -99,6 +101,7 @@ class WorkflowConfig:
     review_backend: str | None = None
     approved_substitute: str | None = None
     max_repairs: int = 2
+    local_checks: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -107,6 +110,7 @@ class WorkflowConfig:
             "review_backend": self.review_backend,
             "approved_substitute": self.approved_substitute,
             "max_repairs": self.max_repairs,
+            **({"local_checks": self.local_checks} if self.local_checks else {}),
         }
 
 
@@ -393,12 +397,15 @@ def _load_workflow(raw: object) -> WorkflowConfig:
     max_repairs = body.get("max_repairs", 2)
     if not isinstance(max_repairs, int) or isinstance(max_repairs, bool) or max_repairs < 0:
         raise AsterunError(INVALID_CONFIG, "workflow.max_repairs 必须是非负整数")
+    from asterun.local_checks import validate_checks
+    local_checks = validate_checks(body.get("local_checks", {}))
     return WorkflowConfig(
         preset=preset,
         require_review=require_review,
         review_backend=None if review_backend is None else str(review_backend),
         approved_substitute=None if substitute is None else str(substitute),
         max_repairs=max_repairs,
+        local_checks=local_checks,
     )
 
 

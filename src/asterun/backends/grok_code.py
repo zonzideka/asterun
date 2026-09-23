@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 from pathlib import Path
 from queue import Empty, Full, Queue
 import signal
@@ -34,6 +35,19 @@ _OUTPUT_FIELDS = frozenset({"output", "output_for_prompt", "stdout", "stderr", "
 
 class _StreamError(Exception):
     pass
+
+
+def classify_failure(value):
+    """只返回白名单分类；原始供应商诊断可能带凭据，绝不保存。"""
+    if not isinstance(value, str):
+        return None
+    # Match protocol diagnostics, not an arbitrary occurrence of a number.
+    match = re.search(r"(?:HTTP(?:/\d(?:\.\d)?)?\s+|status(?:\s+code)?[\s:=]+)(402|429|401|403)\b", value, re.I)
+    if match:
+        code = int(match.group(1))
+        return {"kind": {402: "quota_exhausted", 429: "rate_limited", 401: "authentication_failed", 403: "authentication_failed"}[code],
+                "status_code": code, "source": "native_cli_diagnostic"}
+    return None
 
 
 def _reference(value: Any) -> str | None:
@@ -196,7 +210,7 @@ class CodeProcessHandle:
 
 def run_code(*, command: list[str], env: dict, cwd: Path, session_id: str,
              task_id: str, run_id: str, timeout_seconds: int, publish, stopping: Event,
-             process_handle: CodeProcessHandle | None = None) -> dict[str, Any]:
+             process_handle: CodeProcessHandle | None = None, resumed: bool = False) -> dict[str, Any]:
     """Run one native invocation. An observer deadline never causes a new invocation."""
     proc = None
     process = process_handle if process_handle is not None else CodeProcessHandle()
@@ -216,9 +230,12 @@ def run_code(*, command: list[str], env: dict, cwd: Path, session_id: str,
     budget_reached = False
     event_count = 0
     stdout_bytes = stderr_bytes = 0
+    stderr_tail = ""
+    protocol_failure = None
 
     def native():
-        return {"session_id": session_id, "native_resumed": False,
+        return {"session_id": session_id, "native_resumed": bool(resumed and end),
+            "resume_requested": resumed,
             "execution_profile": "workspace-code-v1", "transport": "headless",
             "tool_calls_count": tool_count, "summary_truncated": text_truncated,
             "events_truncated": bool(dropped_events), **metadata,
@@ -256,8 +273,8 @@ def run_code(*, command: list[str], env: dict, cwd: Path, session_id: str,
                 if len(raw) > MAX_LINE_BYTES:
                     put(("failure", "oversized_line"))
                     return
-                # stderr may contain credentials or opaque diagnostics. Count only.
-                put((name, raw if name == "stdout" else len(raw)))
+                # Raw stderr stays only in a bounded transient classification buffer.
+                put((name, raw))
         except (OSError, ValueError):
             if not reads_stopped.is_set():
                 put(("failure", "stream_read_failed"))
@@ -319,7 +336,11 @@ def run_code(*, command: list[str], env: dict, cwd: Path, session_id: str,
             if name == "failure":
                 raise _StreamError(value)
             if name == "stderr":
-                stderr_bytes += value
+                stderr_bytes += len(value)
+                stderr_tail = (stderr_tail + value.decode("utf-8", errors="replace"))[-8192:]
+                failure = classify_failure(stderr_tail)
+                if failure:
+                    metadata["provider_failure"] = failure
                 if stderr_bytes > MAX_STREAM_BYTES:
                     raise _StreamError("stderr_limit")
                 continue
@@ -331,7 +352,14 @@ def run_code(*, command: list[str], env: dict, cwd: Path, session_id: str,
             try:
                 event = json.loads(value)
             except (ValueError, UnicodeError, RecursionError):
-                raise _StreamError("invalid_stdout_json") from None
+                failure = classify_failure(value[:8192].decode("utf-8", errors="replace"))
+                if failure:
+                    metadata["provider_failure"] = failure
+                # CLI failures can have a multi-line non-JSON tail. Drain it
+                # under the existing byte/time limits so later HTTP diagnostics
+                # survive, but never turn a malformed stream into success.
+                protocol_failure = "invalid_stdout_json"
+                continue
             if not isinstance(event, dict) or not isinstance(event.get("type"), str):
                 raise _StreamError("invalid_stdout_event")
             kind = event["type"]
@@ -368,7 +396,7 @@ def run_code(*, command: list[str], env: dict, cwd: Path, session_id: str,
                 if event.get("sessionId") != session_id or not _reference(event.get("stopReason")):
                     raise _StreamError("invalid_end_binding")
                 end = {"stopReason": event["stopReason"]}
-                metadata = _spend(event)
+                metadata.update(_spend(event))
                 request_id = _reference(event.get("requestId"))
                 if request_id:
                     metadata["request_id"] = request_id
@@ -376,18 +404,28 @@ def run_code(*, command: list[str], env: dict, cwd: Path, session_id: str,
             elif kind == "error":
                 stream_error = True
                 metadata.update(_spend(event))
+                failure = classify_failure(str(event.get("message", "")))
+                status_code = event.get("status_code", event.get("status"))
+                if type(status_code) is int:
+                    failure = classify_failure(f"HTTP {status_code}") or failure
+                if failure:
+                    metadata["provider_failure"] = failure
                 emit([{"type": "message", "kind": "error", "text": "Grok 报告原生运行错误"}])
             elif kind == "max_turns_reached":
                 budget_reached = True
+                metadata["provider_failure"] = {"kind": "turn_limit", "source": "native_event"}
                 emit([{"type": "message", "kind": kind, "text": "Grok 达到原生回合上限"}])
             # Plans, command catalogs and future event payloads are not persisted.
+        if protocol_failure:
+            raise _StreamError(protocol_failure)
         if exit_code != 0:
             raise _StreamError("nonzero_exit")
         if end is None:
             raise _StreamError("missing_end")
         reason = end["stopReason"]
-        if reason in {"max_tokens", "max_turn_requests", "refusal"} or budget_reached:
+        if reason in {"max_tokens", "max_turn_requests", "max_turns", "max_turns_reached", "refusal"} or budget_reached:
             status, code = "failed", "GROK_RUN_INCOMPLETE"
+            metadata.setdefault("provider_failure", {"kind": "turn_limit" if reason != "refusal" else "refusal", "source": "native_end"})
         elif stream_error:
             raise _StreamError("native_error")
         elif reason == "end_turn":
@@ -400,6 +438,10 @@ def run_code(*, command: list[str], env: dict, cwd: Path, session_id: str,
     except Exception as exc:
         # Do not disclose subprocess diagnostics or callback exception messages.
         error_kind = str(exc) if isinstance(exc, _StreamError) else type(exc).__name__
+        if error_kind == "runtime_timeout":
+            metadata.setdefault("provider_failure", {"kind": "timeout", "source": "local_runtime"})
+        elif error_kind in {"missing_end", "invalid_stdout_json", "stream_not_closed", "stream_read_failed"}:
+            metadata.setdefault("provider_failure", {"kind": "protocol_incomplete", "source": "local_runtime"})
         status, code = ("pending_reconcile", "REMOTE_STATE_UNKNOWN") if attempted else ("failed", "BACKEND_UNAVAILABLE")
     finally:
         reads_stopped.set()

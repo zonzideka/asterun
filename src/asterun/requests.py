@@ -105,6 +105,9 @@ REQUEST_SCHEMAS = {
     }, ["task_id"]),
     "workflow.snapshot": obj({**TASK, "target_paths": TARGET_BINDING["target_paths"],
                               "expected_run_id": IDENTIFIER}, ["task_id", "target_paths"]),
+    "workflow.check": obj({**TASK, **TARGET_BINDING, "expected_revision": REVISION,
+                           "expected_input_hash": IDENTIFIER, "check_name": IDENTIFIER},
+                          ["task_id", *TARGET_BINDING, "expected_revision", "expected_input_hash", "check_name"]),
     "workflow.start": obj({
         **TASK, "idempotency_key": IDENTIFIER,
         "target_paths": {"type": "array", "items": IDENTIFIER},

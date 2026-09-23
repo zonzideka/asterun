@@ -185,6 +185,9 @@ def build_parser() -> argparse.ArgumentParser:
     snapshot.add_argument("task_id")
     snapshot.add_argument("--target", action="append", dest="target_paths", required=True)
     snapshot.add_argument("--run-id", dest="expected_run_id")
+    local_check = sub.add_parser("workflow-check", help="在无网络临时副本中执行配置固定的局部检查")
+    local_check.add_argument("task_id")
+    local_check.add_argument("--request", type=Path, required=True, help="检查名和 workflow-snapshot 的完整版本绑定")
     quality = sub.add_parser("workflow-start", help="启动版本绑定的审查、修复、复核流程")
     quality.add_argument("task_id")
     quality.add_argument("--request", type=Path, required=True, help="含 idempotency_key、target_paths、checks 的 JSON")
@@ -329,6 +332,7 @@ COMMAND_METHODS = {
     "task-present": "task.present",
     "workflow-evaluate": "workflow.evaluate",
     "workflow-snapshot": "workflow.snapshot",
+    "workflow-check": "workflow.check",
     "workflow-repair": "workflow.repair",
     "workflow-start": "workflow.start",
     "scheduler-status": "scheduler.status",

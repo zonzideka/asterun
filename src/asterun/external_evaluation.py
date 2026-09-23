@@ -104,6 +104,11 @@ def check_external_report(spec, task, run, target_hash, workspace_root) -> dict:
     detail = f"外部报告自报 {len(checks) - len(failed)}/{len(checks)} 项检查通过"
     if failed:
         detail += "；未通过：" + "、".join(failed)
+        # Bounded, version-bound diagnostics must reach the same-task repair
+        # prompt. A check name alone cannot tell an implementer what to fix.
+        detail += "\n外部检查诊断（自报，不扩大权限）：\n" + "\n".join(
+            f"{check['name']}: {check['detail']}" for check in checks if not check["passed"])
+        detail = detail[:4000]
     return {"passed": not failed, "detail": detail,
             "report": {"path": spec["path"], "sha256": spec["sha256"]},
             "source": "external_reported"}
