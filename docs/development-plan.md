@@ -69,3 +69,5 @@
 默认入口为 `scripts/verify-offline.sh`。针对局部缺陷先运行相关回归，发行内容变更检查 wheel/sdist 成员、正文链接、从 sdist 重建和安装结果。插件来源使用 `python3 packages/asterun-plugin-antigravity/scripts/verify-source.py` 核对。
 
 新旧实例切换单独记录任务归属、未决操作、状态快照和回退步骤。调用方应用在各自仓库接线；涉及接口变化时，本仓先提供可复现的参数、返回和交接说明。
+
+2026-09-24 后续维护已实现异步受控检查、可选诊断缓存、选定文件私有检查点及分阶段证据汇总，范围与验收记录见[直调复盘](grokbuild-direct-retrospective-2026-09-24.md#2026-09-24-继续实施记录)。部署证据接入、跨阶段自动门禁、完整项目/真实后端验证及 A06—A08 保持待办；默认配置与现有 acceptance 规则兼容。

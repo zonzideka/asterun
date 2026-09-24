@@ -162,6 +162,14 @@ class SqliteStore:
     def close(self) -> None:
         self._conn.close()
 
+    def put_checkpoint_blob(self, content: bytes) -> str:
+        from asterun.control_store import ControlStore
+        return ControlStore(self._conn, initialize=False).put_blob("asterun_checkpoint_v1", content)
+
+    def get_checkpoint_blob(self, sha256: str) -> bytes:
+        from asterun.control_store import ControlStore
+        return ControlStore(self._conn, initialize=False).get_blob("asterun_checkpoint_v1", sha256)
+
     def save_task(self, task: Task) -> None:
         self._upsert("tasks", task.id.value, task.to_dict())
 

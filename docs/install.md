@@ -260,3 +260,5 @@ python3 scripts/verify-installed-control.py --venv /absolute/venv \
 脚本检查 CLI/MCP、输出与产物、事件、幂等、核心重启和备份恢复。使用普通 Python 运行，以保留断言。
 
 Antigravity 的专用 HOME、权限绑定、迁移和运行命令见[操作说明](antigravity.md)。可选插件与 v2 配置见[插件说明](plugins.md)。
+
+2026-09-24 维护接口新增后台局部检查、检查状态/取消、选定文件检查点及分阶段证据。异步检查需要常驻核心和幂等键；缓存与检查点默认关闭，启用方法、权限和恢复边界见[调用方工作流](caller-orchestration.md#后台检查检查点和分阶段证据)。配置了检查点后，状态备份会包含选定源码的私有副本；不再仅是任务元数据。部署仍使用独立实例切换流程。

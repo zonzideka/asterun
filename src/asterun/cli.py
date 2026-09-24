@@ -188,6 +188,18 @@ def build_parser() -> argparse.ArgumentParser:
     local_check = sub.add_parser("workflow-check", help="在无网络临时副本中执行配置固定的局部检查")
     local_check.add_argument("task_id")
     local_check.add_argument("--request", type=Path, required=True, help="检查名和 workflow-snapshot 的完整版本绑定")
+    for command in ("workflow-check-status", "workflow-check-cancel"):
+        check_job = sub.add_parser(command, help="查询或取消持久化的受控检查")
+        check_job.add_argument("task_id")
+        check_job.add_argument("--run-id", dest="expected_run_id", required=True)
+        check_job.add_argument("--job-id", required=True)
+    checkpoint = sub.add_parser("workflow-checkpoint", help="核对私有检查点与当前源树，不恢复或派发")
+    checkpoint.add_argument("task_id")
+    checkpoint.add_argument("--run-id", dest="expected_run_id", required=True)
+    checkpoint.add_argument("--include-artifact", action="store_true", default=None)
+    evidence = sub.add_parser("workflow-evidence", help="读取固定源码版本的分阶段证据，缺项保持未验")
+    evidence.add_argument("task_id")
+    evidence.add_argument("--request", type=Path, required=True)
     quality = sub.add_parser("workflow-start", help="启动版本绑定的审查、修复、复核流程")
     quality.add_argument("task_id")
     quality.add_argument("--request", type=Path, required=True, help="含 idempotency_key、target_paths、checks 的 JSON")
@@ -220,7 +232,7 @@ def _load_request(args: argparse.Namespace) -> dict[str, Any]:
     mapping = {
         "plugin_id": "plugin_id", "connection_ref": "connection_ref", "pool_ref": "pool_ref",
         "meter": "meter", "window_id": "window_id",
-        "workspace": "workspace",
+        "workspace": "workspace", "job_id": "job_id", "include_artifact": "include_artifact",
         "text": "text",
         "script": "script",
         "backend": "backend",
@@ -333,6 +345,10 @@ COMMAND_METHODS = {
     "workflow-evaluate": "workflow.evaluate",
     "workflow-snapshot": "workflow.snapshot",
     "workflow-check": "workflow.check",
+    "workflow-checkpoint": "workflow.checkpoint",
+    "workflow-evidence": "workflow.evidence",
+    "workflow-check-status": "workflow.check-status",
+    "workflow-check-cancel": "workflow.check-cancel",
     "workflow-repair": "workflow.repair",
     "workflow-start": "workflow.start",
     "scheduler-status": "scheduler.status",

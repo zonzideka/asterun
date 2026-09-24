@@ -176,6 +176,17 @@ def compact_task_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
                 "usage_is_incomplete", "cost_is_partial", "usage_scope", "cost_reported", "cost_source",
             ))
             short_run["native"].update(_compact_usage(native))
+            if isinstance(native.get("checkpoint"), dict):
+                short_run["native"]["checkpoint"] = _fields(native["checkpoint"], (
+                    "status", "baseline_sha256", "latest_sha256", "target_hash", "changed_files", "scope", "next_action"))
+            if isinstance(native.get("local_checks"), (dict, list)):
+                raw_jobs = native["local_checks"]
+                jobs = list(raw_jobs.values()) if isinstance(raw_jobs, dict) else raw_jobs[-4:]
+                count = native.get("local_checks_count")
+                short_run["native"]["local_checks_count"] = max(count, len(jobs)) if type(count) is int and 0 <= count <= 32 else len(jobs)
+                short_run["native"]["local_checks"] = [_fields(job, (
+                    "job_id", "status", "stage", "passed", "check_name", "created_at", "finished_at", "error_code"))
+                    for job in jobs[-4:] if isinstance(job, dict)]
             if isinstance(native.get("provider_failure"), dict):
                 short_run["native"]["provider_failure"] = _fields(native["provider_failure"], ("kind", "status_code", "source"))
         if "output" in run or "output_available" in run:

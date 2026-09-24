@@ -80,7 +80,7 @@ from asterun.quality import repair_prompt
 from asterun.quality_runtime import QualityRuntime
 
 ENTRY_BLOCKED_WHEN_DISABLED = {
-    "workflow.check",
+    "workflow.check", "workflow.check-status", "workflow.check-cancel", "workflow.checkpoint", "workflow.evidence",
     "capability.prepare", "capability.submit", "capability.invoke", "plugin.register", "plugin.enable", "plugin.disable",
     "control.command",
     "control.upload",
@@ -149,6 +149,8 @@ class Application:
         self.executor = Executor() if background else None
         self._polling = False
         self.quality = QualityRuntime(self)
+        from asterun.check_runtime import CheckRuntime
+        self.local_checks = CheckRuntime(self)
         self._control = None
         if restore_scheduler:
             self.store.bootstrap_applied_revision(config.revision)
@@ -160,6 +162,7 @@ class Application:
             sync_runtime_latches(self)
         if restore_scheduler:
             self._restore_scheduler()
+            self.local_checks.restore()
         if hasattr(self.store, "_conn"):
             self.control
 
@@ -225,23 +228,26 @@ class Application:
         if self._closed:
             return
         try:
-            if self.executor is not None:
-                self.executor.stopping.set()
-                try:
-                    for backend in self.backends.values():
-                        getattr(backend, "close", lambda: None)()
-                finally:
-                    self.executor.close()
-                self.executor.drain(self._record_result)
-                for task_id in self.store.list_task_ids():
-                    task = self.store.get_task(task_id)
-                    run = self.store.get_run(task.current_run_id) if task.current_run_id else None
-                    if run and run.status not in TERMINAL_RUN_STATUSES:
-                        operation = self.store.find_operation_for_run(run.id)
-                        if operation and operation.status != OperationStatus.INTENDED:
-                            self._set_run(run, RunStatus.PENDING_RECONCILE, error_code=REMOTE_STATE_UNKNOWN)
-                            operation.status = OperationStatus.UNKNOWN
-                            self.store.save_operation(operation)
+            try:
+                self.local_checks.close()
+            finally:
+                if self.executor is not None:
+                    self.executor.stopping.set()
+                    try:
+                        for backend in self.backends.values():
+                            getattr(backend, "close", lambda: None)()
+                    finally:
+                        self.executor.close()
+                    self.executor.drain(self._record_result)
+                    for task_id in self.store.list_task_ids():
+                        task = self.store.get_task(task_id)
+                        run = self.store.get_run(task.current_run_id) if task.current_run_id else None
+                        if run and run.status not in TERMINAL_RUN_STATUSES:
+                            operation = self.store.find_operation_for_run(run.id)
+                            if operation and operation.status != OperationStatus.INTENDED:
+                                self._set_run(run, RunStatus.PENDING_RECONCILE, error_code=REMOTE_STATE_UNKNOWN)
+                                operation.status = OperationStatus.UNKNOWN
+                                self.store.save_operation(operation)
         finally:
             self._closed = True
             try:
@@ -289,7 +295,7 @@ class Application:
                                         native_session and native_session == session.get("backend_session_id")):
                             raise AsterunError(INVALID_REQUEST, "标准控制会话不能从旧入口派生未预算轮次")
             if self._control is not None and payload.get("task_id") and method in {
-                "task.cancel", "task.handoff", "workflow.repair", "workflow.start", "workflow.evaluate", "workflow.check"
+                "task.cancel", "task.handoff", "workflow.repair", "workflow.start", "workflow.evaluate", "workflow.check", "workflow.check-status", "workflow.check-cancel", "workflow.checkpoint", "workflow.evidence"
             } and self.control.legacy_action(payload["task_id"]):
                 raise AsterunError(INVALID_REQUEST, "该执行由 runner-control 管理，请使用标准控制命令")
             if self._control is not None and payload.get("task_id"):
@@ -303,6 +309,12 @@ class Application:
                 return self.workflow_snapshot(payload)
             if method == "workflow.check":
                 return self.workflow_check(payload)
+            if method == "workflow.evidence":
+                return self.workflow_evidence(payload)
+            if method == "workflow.checkpoint":
+                return self.workflow_checkpoint(payload)
+            if method in {"workflow.check-status", "workflow.check-cancel"}:
+                return self.workflow_check_status(payload, cancel=method.endswith("cancel"))
             if method == "task.present":
                 # 客户端展示重试不推进队列、模型轮次或质量流程。
                 return self.task_present(payload)
@@ -1186,7 +1198,6 @@ class Application:
         return ok(data, ids={"task_id": task.id.value, "run_id": run.id.value})
 
     def workflow_check(self, payload):
-        from asterun.local_checks import execute_check
         task = self._require_task(payload["task_id"])
         for action in ("workflow.evaluate", "workspace.read", "process.execute"):
             enforce(self.policy.authorize(self.principal, action, task.workspace))
@@ -1198,10 +1209,42 @@ class Application:
         spec = self.config.workflow.local_checks.get(payload["check_name"])
         if spec is None:
             raise AsterunError(INVALID_REQUEST, "检查名未登记在 workflow.local_checks")
-        root = self.config.get_workspace(task.workspace).root
-        data = execute_check(root, bound, spec, payload["check_name"], self.state_dir)
-        self._bound_external_target(task, run, payload, required=True)
+        data = self.local_checks.submit(task, run, payload, bound, spec)
         return ok(data, ids={"task_id": task.id.value, "run_id": run.id.value})
+
+    def workflow_check_status(self, payload, *, cancel=False):
+        task = self._require_task(payload["task_id"])
+        for action in ("workspace.read", "workflow.evaluate", "process.execute"):
+            enforce(self.policy.authorize(self.principal, action, task.workspace))
+        self._require_grant(task.workspace)
+        self._require_applied_config()
+        self._assert_task_binding(task)
+        return ok(self.local_checks.get(task, payload, cancel=cancel),
+                  ids={"task_id": task.id.value, "run_id": payload["expected_run_id"]})
+
+    def workflow_evidence(self, payload):
+        from asterun.workflow_evidence import evidence
+        task = self._require_task(payload["task_id"])
+        enforce(self.policy.authorize(self.principal, "workspace.read", task.workspace))
+        enforce(self.policy.authorize(self.principal, "workflow.evaluate", task.workspace))
+        self._require_grant(task.workspace)
+        self._assert_task_binding(task)
+        self._require_applied_config()
+        run = self.store.get_run(task.current_run_id) if task.current_run_id else None
+        bound = self._bound_external_target(task, run, payload, required=True)
+        return ok(evidence(self, task, run, bound), ids={"task_id": task.id.value, "run_id": run.id.value})
+
+    def workflow_checkpoint(self, payload):
+        from asterun.checkpoints import inspect
+        task = self._require_task(payload["task_id"])
+        enforce(self.policy.authorize(self.principal, "workspace.read", task.workspace))
+        self._require_grant(task.workspace)
+        self._assert_task_binding(task)
+        run = self.store.get_run(RunId(payload["expected_run_id"]))
+        if run.task_id != task.id:
+            raise AsterunError(INVALID_REQUEST, "检查点运行不属于该任务")
+        return ok(inspect(self, task, run, include_artifact=payload.get("include_artifact", False)),
+                  ids={"task_id": task.id.value, "run_id": run.id.value})
 
     def _bound_external_target(self, task: Task, run: Run | None, payload: dict, *, required=False) -> dict | None:
         from asterun.external_evaluation import prepare_snapshot
@@ -1593,6 +1636,8 @@ class Application:
         guard_grok_quota(self, backend_name)
         if backend.config.kind == "grok":
             run.native["grok_quota_scopes"] = grok_quota_scopes(self, backend_name)
+        from asterun.checkpoints import before_dispatch
+        before_dispatch(self, task, run)
         self.scheduler.start(backend_name, run.id, str(self.config.get_workspace(task.workspace).root.resolve()))
         self._set_run(run, RunStatus.DISPATCHING)
         self._event(run.id, EventType.RUN_DISPATCHING, "core", {"backend": backend_name})
@@ -1764,6 +1809,7 @@ class Application:
             return
         self._polling = True
         try:
+            self.local_checks.drain()
             if self.executor:
                 self.executor.drain(self._record_result)
             if self._control is not None:
@@ -2114,11 +2160,13 @@ class Application:
             from asterun.plugins.core_integration import ingest_result
             ingest_result(self, run, result)
         if result.get("native"):
-            run.native.update(result["native"])
+            run.native.update({k: v for k, v in result["native"].items() if k not in {"checkpoint", "local_checks"}})
         for raw in result.get("events") or []:
             event_type = EventType(raw["type"]) if raw.get("type") in set(EventType) else EventType.MESSAGE
             self._event(run.id, event_type, source, {k: v for k, v in raw.items() if k != "type"})
         status = RunStatus(result["status"]) if result.get("status") else run.status
+        from asterun.checkpoints import after_result
+        after_result(self, run, str(status))
         terminated = bool(result.get("terminated"))
         if terminated and status == RunStatus.CANCELLED:
             self._event(run.id, EventType.RUN_TERMINATED, source, {"status": str(status)})

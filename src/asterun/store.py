@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 from typing import Protocol
 
@@ -16,6 +17,8 @@ from asterun.ids import ApprovalId, ConversationId, OperationId, RunId, TaskId
 
 
 class Store(Protocol):
+    def put_checkpoint_blob(self, content: bytes) -> str: ...
+    def get_checkpoint_blob(self, sha256: str) -> bytes: ...
     def save_task(self, task: Task) -> None: ...
     def get_task(self, task_id: TaskId) -> Task: ...
     def save_run(self, run: Run) -> None: ...
@@ -50,7 +53,19 @@ class MemoryStore:
         self.sessions: dict[str, SessionBinding] = {}
         self._ops_by_key: dict[tuple[str, str, str, str], Operation] = {}
         self.applied_config_revision: int | None = None
+        self.checkpoint_blobs = {}
         self.fail_next_intent = False
+
+    def put_checkpoint_blob(self, content: bytes) -> str:
+        sha = hashlib.sha256(content).hexdigest()
+        self.checkpoint_blobs[sha] = content
+        return sha
+
+    def get_checkpoint_blob(self, sha256: str) -> bytes:
+        content = self.checkpoint_blobs.get(sha256)
+        if content is None or hashlib.sha256(content).hexdigest() != sha256:
+            raise AsterunError(NOT_FOUND, "检查点内容缺失或摘要不匹配")
+        return content
 
     def save_task(self, task: Task) -> None:
         self.tasks[task.id.value] = task

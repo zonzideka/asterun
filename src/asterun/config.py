@@ -29,7 +29,7 @@ CONFIG_KEYS = {
 }
 WORKSPACE_KEYS = {"root", "allow_non_git"}
 BACKEND_KEYS = {"kind", "enabled", "bin", "home", "model", "desktop_projects", *GROK_EXECUTION_OPTIONS}
-WORKFLOW_KEYS = {"preset", "require_review", "review_backend", "approved_substitute", "max_repairs", "local_checks"}
+WORKFLOW_KEYS = {"preset", "require_review", "review_backend", "approved_substitute", "max_repairs", "local_checks", "checkpoint_paths"}
 SCHEDULER_KEYS = {"max_queue", "per_backend_concurrency", "max_runs_per_task"}
 ENTRIES_KEYS = {"cli", "mcp"}
 KNOWN_BACKEND_KINDS = set(BUILTINS)
@@ -102,6 +102,7 @@ class WorkflowConfig:
     approved_substitute: str | None = None
     max_repairs: int = 2
     local_checks: dict[str, Any] = field(default_factory=dict)
+    checkpoint_paths: dict[str, list[str]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -111,6 +112,7 @@ class WorkflowConfig:
             "approved_substitute": self.approved_substitute,
             "max_repairs": self.max_repairs,
             **({"local_checks": self.local_checks} if self.local_checks else {}),
+            **({"checkpoint_paths": self.checkpoint_paths} if self.checkpoint_paths else {}),
         }
 
 
@@ -354,6 +356,8 @@ def load_config(path: Path) -> AsterunConfig:
             raise AsterunError(INVALID_CONFIG, f"default_backend 指向未知后端：{default_backend}")
 
     workflow = _load_workflow(raw.get("workflow"))
+    if set(workflow.checkpoint_paths) - set(workspaces):
+        raise AsterunError(INVALID_CONFIG, "checkpoint_paths 指向未登记的工作区")
     scheduler = _load_scheduler(raw.get("scheduler"))
     entries = _load_entries(raw.get("entries"))
     if workflow.review_backend and workflow.review_backend not in backends:
@@ -399,6 +403,11 @@ def _load_workflow(raw: object) -> WorkflowConfig:
         raise AsterunError(INVALID_CONFIG, "workflow.max_repairs 必须是非负整数")
     from asterun.local_checks import validate_checks
     local_checks = validate_checks(body.get("local_checks", {}))
+    checkpoint_paths = body.get("checkpoint_paths", {})
+    if not isinstance(checkpoint_paths, dict):
+        raise AsterunError(INVALID_CONFIG, "checkpoint_paths 必须按工作区指定文件列表")
+    for paths in checkpoint_paths.values():
+        validate_checks({"checkpoint": {"argv": ["/unused"], "inputs": paths}})
     return WorkflowConfig(
         preset=preset,
         require_review=require_review,
@@ -406,6 +415,7 @@ def _load_workflow(raw: object) -> WorkflowConfig:
         approved_substitute=None if substitute is None else str(substitute),
         max_repairs=max_repairs,
         local_checks=local_checks,
+        checkpoint_paths=checkpoint_paths,
     )
 
 

@@ -183,7 +183,7 @@ asterun --state-dir .asterun/state --connect workflow-repair \
 }
 ```
 
-可执行文件使用绝对路径，参数数组固定，不经 shell 拼接；`runtime_roots` 仅允许只读工具链/依赖目录，不能覆盖原工作区，不能填用户凭据目录。检查在只包含 `inputs` 的临时副本中运行，全部输入必须列入快照 `target_paths`。文件限额沿用 64 个文件、总计 256 KiB。运行时清空继承环境，HOME/TMPDIR 指向临时目录，使用 macOS sandbox-exec 或 Linux bubblewrap 禁网；缺少隔离工具时拒绝执行。超时最多 60 秒，结束后清理进程组，输出摘要有界，前后源码摘要不一致则不返回可用报告。检查期间该请求同步等待，请为连接客户端配置足够的请求超时；常驻核心的异步检查调度属于后续工作。
+可执行文件使用绝对路径，参数数组固定，不经 shell 拼接；`runtime_roots` 仅允许只读工具链/依赖目录，不能覆盖原工作区，不能填用户凭据目录。检查在只包含 `inputs` 的临时副本中运行，全部输入必须列入快照 `target_paths`。文件限额沿用 64 个文件、总计 256 KiB。运行时清空继承环境，HOME/TMPDIR 指向临时目录，使用 macOS sandbox-exec 或 Linux bubblewrap 禁网；缺少隔离工具时拒绝执行。超时最多 60 秒，结束后清理进程组，输出摘要有界，前后源码摘要不一致则不返回可用报告。默认保持同步调用；常驻核心可使用下面的异步入口，避免检查占用请求线程。
 
 纯编译可省略 `result_file`，以退出码和超时判断；测试检查应配置结果文件。该文件必须由运行器新生成，含 `passed`、`failed`、`skipped`、`load_errors` 四个非负整数。文件缺失/损坏、有失败/加载错误或没有任何通过的测试均不能通过；未知数量返回 null，不猜测日志中的测试数。
 
@@ -194,7 +194,33 @@ asterun --state-dir .asterun/state --connect workflow-check \
   "$ASTERUN_TASK_ID" --request .asterun/caller/check-request.json
 ```
 
-响应包含退出码、超时、测试数量、诊断和前后摘要，以及可交给既有 `external_report` 验收的 `report` 对象。由调用方保存报告并计算文件 SHA-256，再使用完整版本绑定调用 `workflow-evaluate`。失败详情会有界地进入同任务修复提示；自测不会自动更改验收、满足独立审查或启动修复。原项目的完整依赖构建仍由调用方在授权环境执行并导入报告；不要把局部输入检查说成完整项目测试。重复诊断复用目前由调用方根据源码和运行时证据决定，本入口尚未自动缓存。
+响应包含退出码、超时、测试数量、诊断和前后摘要，以及可交给既有 `external_report` 验收的 `report` 对象。由调用方保存报告并计算文件 SHA-256，再使用完整版本绑定调用 `workflow-evaluate`。失败详情会有界地进入同任务修复提示；自测不会自动更改验收、满足独立审查或启动修复。原项目的完整依赖构建仍由调用方在授权环境执行并导入报告；不要把局部输入检查说成完整项目测试。诊断缓存默认关闭，可为固定检查显式配置 `cache: true`。
+
+## 后台检查、检查点和分阶段证据
+
+常驻核心收到完整检查绑定及 `"async": true, "idempotency_key": "compile-round-1"` 后立即返回 `job_id` 和状态。同一运行中，相同幂等键复用原意图；异输入拒绝。调用客户端退出后，常驻核心继续检查并主动保存结果。每个实例最多同时执行两个局部检查；占满时返回 `RATE_LIMITED`，不隐式排队。每次运行最多保存 32 个检查意图，重复请求应复用幂等键。同步入口继续返回原来的报告字段，异步结果位于查询响应的 `result`。
+
+```sh
+asterun --state-dir .asterun/state --connect workflow-check-status \
+  "$ASTERUN_TASK_ID" --run-id "$ASTERUN_RUN_ID" --job-id "$ASTERUN_CHECK_ID"
+asterun --state-dir .asterun/state --connect workflow-check-cancel \
+  "$ASTERUN_TASK_ID" --run-id "$ASTERUN_RUN_ID" --job-id "$ASTERUN_CHECK_ID"
+```
+
+MCP 对应 `workflow_check_status`、`workflow_check_cancel`。检查状态与实现运行状态分离。`completed` 表示检查执行结束，仍须读取 `result.passed`、加载错误和超时；`stale`、`failed`、`unknown` 或 `cancelled` 均不能用作通过证据。取消先保存意图，再终止检查进程组，与成功竞争时不公布成功报告。核心重启后未确认意图变为 `unknown`；重复键不重跑，确认旧执行方已退出后才可显式新建检查。检查在临时副本内执行，即便检查进程异常遗留也不会写回项目。
+
+`cache: true` 仅在同任务、同运行、完整目标摘要、输入、配置及固定命令相同时复用已完成的诊断，成功和失败均可复用，超时、取消和未知结果不缓存。运行时指纹覆盖沙箱允许读取的目录与符号链接目标的设备、inode、mode、size、mtime、ctime，并加入执行文件、检查实现字节、Python 与系统版本；不是只比较文件时间戳。运行前后指纹改变会使结果失效。枚举上限为 100,000 个节点、每次两秒；无法完整枚举、不可读或特殊文件导致自动关闭缓存，不猜测命中。该优化适用于元数据可靠的本地文件系统；网络文件系统或不可靠元数据环境保持关闭。响应明确返回 `cache_hit`、`cache_available` 和来源检查 ID；复用结果依然不修改 acceptance。保存过的报告表示当时环境，更新工具链后须重新请求检查，不能把旧查询当成刚执行。
+
+自动检查点需按工作区显式配置文件范围，例如 `workflow.checkpoint_paths: {"demo": ["src/main.py", "tests/test_main.py"]}`。派发前保存选定文件的实际内容、模式、HEAD 和该范围的 dirty 清单，以用户当前脏内容为基线。结束时保存新内容、缺失状态、新增/删除文件清单和文本差异；完整内容与模式是恢复依据，文本差异只供比较。最多 64 个 UTF-8 文件、256 KiB，未选文件不在恢复范围。私有产物复用数据库的内容摘要存储，随 `state-backup` 一并保存，普通任务和 compact 响应仅带引用与下一动作；配置启用后，备份包含这些选定源码，应按私有项目数据保存。
+
+```sh
+asterun --state-dir .asterun/state --connect workflow-checkpoint \
+  "$ASTERUN_TASK_ID" --run-id "$ASTERUN_RUN_ID"
+```
+
+MCP 为 `workflow_checkpoint`。加 `--include-artifact` 可读取不超过 512 KiB 的当前产物；更大原件仍保留在状态库备份中。查询核对当前源树和身份，返回 `source_matches`、`recovery_ready`、最近检查引用和下一动作。这里的 ready 只表示所选文件产物与当前树一致且运行已确定结束，不表示已核对原生续接能力。基线或终态产物落盘失败不会触发重复派发；崩溃后的未决运行仍须对账。查询不会覆盖文件、写 Git 索引、提交、派发或自动恢复原生会话。需新建会话或续接时，继续使用既有绑定与权限检查。任意进程硬崩溃期间的实时编辑尚无连续保存保证；只能使用最后成功写入的检查点。
+
+局部检查还可配置 `stage: "coding"`（默认）、`"consumer"` 或 `"integration"`。分别配置真正覆盖消费者与组合行为的命令；改阶段名称不能替代对应测试。以 `workflow-snapshot` 的完整绑定调用 `workflow-evidence TASK --request binding.json`，MCP 为 `workflow_evidence`。它分别呈现编码、消费者、独立审查、组合和部署状态，汇总同阶段的全部已配置检查；未跑、旧版本或缺项保持未验，失败按文件和错误类别压缩。独立审查仅取既有核心质量流程的绑定证据，fake 审查明确为 simulated；外部自报不会升级。部署证据尚未接入，该阶段保持 unverified，不能因本地通过宣称已部署。此入口只汇总证据，不代替 `workflow-evaluate` 或改变 acceptance；若要把消费者或组合检查作为现有验收门禁，仍须将对应绑定报告纳入 evaluate。
 
 ## 汇总整个完成过程的用量
 
