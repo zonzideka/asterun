@@ -48,3 +48,31 @@ R3：复用 Task/Run/事件/审批、snapshot 和 checkpoint blob，增加带 ch
 日志范围读取只能取回既有保留尾部，完整大日志未持久保存。脱敏仅覆盖既有匹配规则，不保证识别所有秘密；原诊断仍需原权限取回。交接仅覆盖显式选择文件及权威状态，不证明未选择文件、环境或外部副作用安全。SQLite 提供持久事务；内存存储仅作离线替身，旧 JSON 文件存储拒绝原子交接。沿用已有 blob 保留/备份，没有新增 TTL 清理，活动引用不会因本策略被删除。
 
 回滚新变换只需按既有 revision 流程将 input_optimization.mode 改回 off；不删除已保存证据，不撤销外部动作。第一轮到此交付；R4/R5 需另行确认安装版本、任务/模型/权限、验收与真实调用预算，再决定是否开展原生会话能力和小预算真实 A/B。当前代码未 push、合并、发布或部署。
+
+## 2026-09-24 后续 R4：显式原生上下文控制
+
+后续“继续完成后续工作”推进了 R4 的离线实施。基于 28f31d1 建立 codex/input-token-optimization-r4，继续使用独立工作树；原主工作区与生产实例未更改。下面是本轮增量，前文 R0—R3 的“尚未实现”保留为当时记录。
+
+复用 workflow.repair 增加 native_compact 和 handoff_fresh 两个显式策略。默认关闭，仅核心 v1 常驻执行器的普通 Codex 任务开放；同步兼容入口拒绝，fake 验证核心事务。交接包、源任务/运行/事件、权限、所选文件及旧验收证据在准备和派发边界核对，原 Task 的 run/repair 计数与后继意图同事务提交。并发后继 CAS、重复幂等键和重启保持同一派发身份，不创建另一任务绕过上限。新验收从 pending 开始。
+
+native_compact 使用原线程，先确认源终态；原生 ACK、产物完成事件、轮次完成事件和持久历史分别核对。只有全部一致才发送工作提示。handoff_fresh 创建新线程并携带完整重建材料，明确不是 resume，不删除原线程。每个副作用前持久保存阶段；未知结果、失败或取消阻止后续提示，不自动补发。prompt_started 后对账只读保存的新轮次；此前的未确认阶段不能拿旧轮次/压缩完成作成功证据。
+
+本机只读核验 codex-cli 0.155.0-alpha.16，使用独立 HOME/CODEX_HOME 导出 schema；没有登录或模型请求。二进制 SHA256 为 2f76d9cb0acab786dbb1cbf1020e8001d0e6d4de7b3c87a5d5769a4d03480f13。ClientRequest schema SHA256 为 8e5a1b6a7103fea63a53ef96d7ab1062decbd6571701542f5a969953e23a64f5，ServerNotification 为 df70f8f8ded90d8da63c744ccfef7018223d99e918e5e0aefa0d90856a7f67cc。导出的 compact response 是空对象 ACK，完成靠 contextCompaction 产物和 turn/completed。完整四份摘要在 /tmp/asterun-context-r4-capabilities.json；记录为 installed_schema_only、live_compaction_verified=false。实际使用前重复核对当前安装/schema，变动拒绝派发，不把该摘要永久视为能力证明。
+
+本轮仍不提供逐请求 Token 账本、精确 Token/费用硬上限、多任务共享 Token 预留结算或全局外部写者锁。v2 共享准入、typed、固定只读、质量流程及其他真实后端切换拒绝；这些属于 R4 未支持范围。只核对核心可见的活动任务/检查和原生最新轮次，外部并发操作仍有竞态，不能宣称分布式 exactly once。现有会话累计观察保持未知增量，不把压缩成本算成零。
+
+[R5 待确认清单](R5-EXPERIMENT.md)已准备单对实验：4 个工作轮次和 1 次压缩，固定任务/验收，记录失败与缓存条件。尚缺用户选定的模型、effort、账户/profile 与明确次数预算授权；真实模型、真实权限/profile 一致性、压缩质量及 Token 净收益均未测。没有 push、合并、发布或部署。
+
+## R4 本轮验证记录
+
+第一次完整隔离验证 `ASTERUN_VERIFY_TMP=/tmp/asterun-context-r4-full bash scripts/verify-offline.sh` 为 2512 通过、4 跳过。补齐排队证据复核、常驻入口限制及故障窗口后，在同一 clean-env venv 完整复测为 2523 通过、4 跳过，耗时 276.29 秒；日志 /tmp/asterun-context-r4-full-final.log，JUnit /tmp/asterun-context-r4-full-final.xml。跳过项均为真实后端，Antigravity 三份固定源码核验通过。
+
+全量收集后又补了源原生 thread_id/backend_session_id 必须完整且一致的拒绝条件和两项回归。最终源码与独立 wheel 均运行上下文切换、原生生命周期、交接、输入载荷、累计用量和紧凑观察八个文件，分别 141 项通过。新增 R4 测试共 46 项。日志 /tmp/asterun-context-r4-targeted-final.log、/tmp/asterun-context-r4-wheel-final.log。wheel 测试复制到临时目录，清空环境、不附带 src/pythonpath，模块实际来自独立 venv 的 site-packages。
+
+故障覆盖包括压缩 ACK-only、错误线程/旧轮次、缺失产物或持久历史、断连、失败、取消、压缩前/ACK 后/完成后的持久失败；新线程创建前、绑定后、提示发出前和受理后的故障，再启动只对账不重发。另覆盖意图写入前后中断、双 SQLite 连接竞争后继、重复键、已占用次数保留、原审批保留、源码/事件/策略/报告漂移、权限撤销、同工作区未决本地检查、同步入口和源线程引用冲突。旧验收不升级到新运行。测试先后暴露过外部绑定字段名写错、把被关闭的协议进程当作已完成和 fixture 的审批关键词误命中；修正夹具/断言后复测，没有把未决运行放宽为成功。
+
+发行检查通过，固定 wheel/sdist 内运行文件逐字节匹配当前源码，文档链接和禁入内容检查通过。最终 wheel SHA256 为 414d8086636a891c8c519ff3c8c88b82106ab50a2f934cfc8d3276cf9fb6435e，sdist 为 0e0d7e2832d69e695dd8c009d25b0d05686ed9206458e32213e5f26837ee4a63；位置 /tmp/asterun-context-r4-dist-final，构建日志 /tmp/asterun-context-r4-build-final.log。测试、状态报告和 R5 实验材料不在发行包中。
+
+R5 固定起点的九项 unittest 已离线执行：1 通过、6 失败、2 错误，符合故意保留缺陷的预期，不计入产品测试通过数。记录 /tmp/asterun-context-r4-r5-fixture/baseline.log；任务、验收和提示的 SHA 已固定。没有通过“把基线修好”或挑选成功样本来预设优化收益。
+
+最终安装包另经 scripts/verify-installed-control.py 验证：fake 的 CLI/MCP 两任务成功，94 条 schema 记录通过，重启幂等重放和备份恢复通过，SQLite schema 仍为 6。记录 /tmp/asterun-context-r4-control-release.json。原生模型、账户和真实客户端交付字段仍是未验证，不能用本项代替 R5。

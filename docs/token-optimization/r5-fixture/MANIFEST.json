@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "files": {
+    "PROMPTS.md": "a15edd173887e492db4a6c70c4ceda9cdeffa1b2afe126e913ae7c0adf7adb38",
+    "settings.py": "d894a67b10696f7549635fbbd452ae13e15f6166efe3825c933708b7a7fe408c",
+    "test_settings.py": "eed16658364fc1963e0e9396b6ab61e79f141b76a1a5efb58ec0c1fb77792c58"
+  },
+  "baseline_expected": "consumer_tests_fail",
+  "model_calls": 0
+}

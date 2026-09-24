@@ -316,7 +316,7 @@ commit 必须替换为源仓库中已存在的完整提交 SHA。操作使用本
 
 ## 实验性输入优化与离线交接
 
-`workflow.input_optimization` 默认省略（等价于 off）。先在隔离配置选择 `{"mode":"observe","scopes":["dispatch_prompt","caller_result"],"max_dispatch_bytes":16000}`。observe 保存字节数、SHA 和候选估算，实际投递与 task.get 返回正文不变，不保存另一份原始载荷。`enforce` 才对投递材料去重并自动使用既有 compact 返回。`dispatch_prompt` 的 enforce 必须显式指定 `max_dispatch_bytes`（1—1048576）；它是文本字节限制，不是模型上下文容量或严格原生 Token 预算。unsupported scope、压缩、轮换和严格 Token 配置拒绝解析。
+`workflow.input_optimization` 默认省略（等价于 off）。先在隔离配置选择 `{"mode":"observe","scopes":["dispatch_prompt","caller_result"],"max_dispatch_bytes":16000}`。observe 保存字节数、SHA 和候选估算，实际投递与 task.get 返回正文不变，不保存另一份原始载荷。`enforce` 才对投递材料去重并自动使用既有 compact 返回。`dispatch_prompt` 的 enforce 必须显式指定 `max_dispatch_bytes`（1—1048576）；它是文本字节限制，不是模型上下文容量或严格原生 Token 预算。unsupported scope、旧式压缩/轮换布尔开关和严格 Token 配置拒绝解析；下文的显式上下文策略单独配置。
 
 `task-submit --request request.json` 可显式附加 `dispatch_materials`，每项为 `{"path":"src/parser.py","sha256":"<当前文件的64位小写SHA256>","start_line":1,"end_line":20}`，最多 16 项。以完整原目标/限制为 Mandatory，再附加当前文件的选定行；同包中路径、范围、版本全部相同的材料才允许去重。不同路径即使内容相同也保留，原 Task.text 不被摘要覆盖。off/observe 会按显式请求附加全部材料；enforce 移除重复项。每次派发重新检查权限、路径和内容，不缓存“模型已读过”的假设。所选文件读取复用 snapshot 的文本、大小、符号链接限制；材料变化、保存失败或 Mandatory 超限会阻塞。修复继续绑定原材料版本，不能静默拿过期材料重派。
 
@@ -335,3 +335,17 @@ commit 必须替换为源仓库中已存在的完整提交 SHA。操作使用本
 读取请求：`{"task_id":"task-id","expected_run_id":"run-id","expected_handoff_revision":1,"reconstruct":true}`。复核原 Task/Run/事件/审批、策略、源文件和验收证据；漂移、引用缺失或 schema 不支持时失败，不回退旧通过结论。原目标和限制从权威 Task 完整加载，所选文件重新读取，保留审查与修复/运行上限、未决动作。未知运行或待审批可生成离线材料，但不会标成已准备接管。快照只存引用、哈希与必要状态，不复制完整聊天或源码，也不创建、恢复或派发原生会话。
 
 回滚实验策略时，将 mode 改回 off 并按既有配置 revision 流程应用；关闭新投递/返回变换，不删除旧 manifest、交接或验收证据，不撤销外部动作。默认配置和生产实例不会由这些接口自动变更。
+
+## 实验性原生上下文切换
+
+仅核心 v1 常驻执行器的普通 Codex 文本任务开放显式策略，默认关闭；同步兼容入口明确拒绝。隔离配置可设 `workflow.input_optimization` 为 `{"mode":"enforce","context_strategies":["native_compact","handoff_fresh"]}`。这不启用自动阈值轮换，也不改变原生工具权限。v2 共享准入、typed capability、固定只读、质量流程持有的任务和其他真实后端尚未验证，明确拒绝，不更换后端。fake 只用于核心状态机验证。
+
+在原任务的当前运行已确认终止、操作已结束、审批及本地检查均无未决项后，先创建上述离线交接包，再调用既有 `workflow-repair TASK --request repair.json`（MCP 为 `workflow_repair`）。请求示例为 `{"task_id":"task-id","expected_run_id":"source-run-id","expected_handoff_revision":1,"context_strategy":"native_compact","idempotency_key":"fixed-successor-key"}`。存在外部验收或附加修复指令时，仍须提交既有 snapshot 的完整运行、配置、输入和目标绑定。重复相同键只返回原意图；相同键更改内容拒绝。
+
+`native_compact` 续接原线程，核对安装二进制和导出 schema 后请求原生压缩。RPC ACK 只表示受理；必须观察同线程、同新轮次的 contextCompaction 产物与完成事件，再核对原生持久历史，才发送工作提示。`handoff_fresh` 创建新线程，完整携带原目标、约束、审查要求、全部 finding、选定文件和预算材料；它明确不是原生 resume。完整材料超过原修复提示限额时拒绝，不截断必需信息。
+
+两条路径都在原 Task 上原子提交修复意图、后继 Run 和计数。派发前复核源运行、事件、策略、交接引用、所选源码及旧验收证据，派发后不把旧验收复制为新运行通过。相同任务的竞争后继由事务内 CAS 拒绝；原 run/repair 上限保留，已占用次数不因断连或未知结果而退还。没有新建预算账本，不提供原生逐请求 Token 硬上限。
+
+断连、压缩失败、超时、存储失败或取消留下未确认阶段时，停止后继工作提示，保留原线程和交接证据，进入 pending_reconcile。对账不会把旧工作轮次或压缩完成当作新任务成功；prompt_started 之前不自动补发，之后只核对保存的新轮次。可能已经发生的远端动作需要人工核验，不能换幂等键重试来绕过未决状态。停止观察也不代表远端动作已取消。
+
+原生累计用量仍按会话观察保存，不从压缩前后计数猜测新 run 消耗。能力记录的 installed_schema_only 只证明该安装导出了所需协议，不证明真实模型成功压缩、权限/profile 一致或订阅节省。当前验证为离线协议进程；真实账户、外部原生写者与模型效果须另行验收。关闭 context_strategies 或 mode=off 可阻止新的切换，不删除旧证据或撤销已发出的原生动作。

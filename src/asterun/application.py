@@ -1527,6 +1527,8 @@ class Application:
             if not payload["instructions"].strip():
                 raise AsterunError(INVALID_REQUEST, "修复指令不能为空白")
             prompt = bounded_prompt(prompt + "\n本轮调用方修复指令（不扩大权限或预算）：\n" + payload["instructions"])
+        from asterun.context_transition import prepare
+        transition, prompt = prepare(self, task, previous_run, payload, prompt)
         run = Run(
             id=new_run_id(),
             task_id=task.id,
@@ -1539,6 +1541,8 @@ class Application:
             native={"external_repair_target": {"target_paths": target["target_paths"],
                                               "target_hash": target["target_hash"]}} if target else {},
         )
+        if transition:
+            run.native["context_transition"] = transition
         workspace_root = str(self.config.get_workspace(task.workspace).root.resolve())
         decision = self.scheduler.admit(task.backend.value, workspace_root)
         # 新 run、当前 run 指针及预算计数必须与意图一起提交。
@@ -1683,6 +1687,8 @@ class Application:
         if self.admission is not None and (task.dispatch_materials or self.config.workflow.input_optimization.get("mode") == "enforce"
                                            and "dispatch_prompt" in self.config.workflow.input_optimization.get("scopes", [])):
             raise AsterunError(CAPABILITY_UNSUPPORTED, "v2 固定执行计划尚未绑定变换后投递，不能启用实验投递变换")
+        from asterun.context_transition import guard as guard_context
+        guard_context(self, task, run)
         dispatch_text = build_dispatch(self, task, run)
         if run.native.get("external_repair_target"):
             from asterun.quality import snapshot
@@ -1725,10 +1731,11 @@ class Application:
         native = {"backend_session_id": session.backend_session_id.value if session and session.backend_session_id else None,
                   "turn_id": session.latest_turn_id if session else None,
                   "asterun_identity": {"account": self.account_ref.value, "runtime": self.runtime_ref.value}}
+        if run.native.get("context_transition"):
+            transition = run.native["context_transition"]
+            native.update(transition["source_native"])
+            native["context_transition"] = transition
         if self.executor is not None and backend.config.kind != "fake":
-            native = {"backend_session_id": session.backend_session_id.value if session and session.backend_session_id else None,
-                      "turn_id": session.latest_turn_id if session else None,
-                      "asterun_identity": {"account": self.account_ref.value, "runtime": self.runtime_ref.value}}
             if reader is not None:
                 native["read_scope_binding"] = task.read_scope
             cwd = self.config.get_workspace(task.workspace).root

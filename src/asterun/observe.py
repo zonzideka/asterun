@@ -191,6 +191,9 @@ def compact_task_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
                 "usage_is_incomplete", "cost_is_partial", "usage_scope", "cost_reported", "cost_source",
             ))
             short_run["native"].update(_compact_usage(native))
+            if isinstance(native.get("context_transition"), dict):
+                short_run['native']['context_transition'] = _fields(native['context_transition'], (
+                    'strategy', 'phase', 'source_run_id', 'successor_thread_id', 'compaction_turn_id', 'usage_attribution', 'new_session_is_native_resume'))
             if isinstance(native.get("checkpoint"), dict):
                 short_run["native"]["checkpoint"] = _fields(native["checkpoint"], (
                     "status", "baseline_sha256", "latest_sha256", "target_hash", "changed_files", "scope", "next_action"))

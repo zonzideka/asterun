@@ -14,8 +14,8 @@ SCOPES = {'dispatch_prompt', 'caller_result'}
 
 
 def validate(value):
-    if not isinstance(value, dict) or set(value) - {'mode', 'scopes', 'max_dispatch_bytes'}:
-        raise AsterunError('INVALID_CONFIG', '输入优化只支持 mode/scopes/max_dispatch_bytes；原生压缩、轮换和严格 Token 上限尚未支持')
+    if not isinstance(value, dict) or set(value) - {'mode', 'scopes', 'max_dispatch_bytes', 'context_strategies'}:
+        raise AsterunError('INVALID_CONFIG', '输入优化只支持 mode/scopes/max_dispatch_bytes/context_strategies；严格 Token 上限尚未支持')
     if not isinstance(value.get('mode', 'off'), str) or value.get('mode', 'off') not in {'off', 'observe', 'enforce'}:
         raise AsterunError('INVALID_CONFIG', '输入优化 mode 必须为 off/observe/enforce')
     scopes = value.get('scopes', [])
@@ -26,6 +26,9 @@ def validate(value):
         raise AsterunError('INVALID_CONFIG', 'max_dispatch_bytes 必须为 1 到 1048576 的明确字节上限')
     if value.get('mode') == 'enforce' and 'dispatch_prompt' in scopes and limit is None:
         raise AsterunError('INVALID_CONFIG', '启用投递限制必须显式配置字节上限；不能从模型名称猜测容量')
+    strategies = value.get('context_strategies', [])
+    if not isinstance(strategies, list) or any(not isinstance(s, str) or s not in {'native_compact', 'handoff_fresh'} for s in strategies) or len(set(strategies)) != len(strategies):
+        raise AsterunError('INVALID_CONFIG', 'context_strategies 仅支持 native_compact/handoff_fresh')
     return value
 
 
@@ -49,7 +52,7 @@ def manifest(value, scope):
 def _adapter_revision(kind):
     from pathlib import Path
     modules = {'fake': ['fake'], 'grok': ['grok', 'grok_code', 'grok_session'],
-               'codex': ['codex', 'codex_runtime'], 'claude': ['claude']}.get(kind, [])
+               'codex': ['codex', 'codex_runtime', 'codex_context'], 'claude': ['claude']}.get(kind, [])
     root = Path(__file__).parent / 'backends'
     return {name: hashlib.sha256((root / (name + '.py')).read_bytes()).hexdigest() for name in modules}
 
@@ -66,7 +69,7 @@ def capabilities(config):
                 'caller_result_control': 'verified', 'native_tool_selection': 'unknown',
                 'native_max_turns_control': 'unknown', 'per_model_request_visibility': 'unknown',
                 'per_model_request_rewrite': 'unsupported', 'native_tool_result_pre_send_hook': 'unsupported',
-                'native_compaction': 'unsupported', 'fresh_session': 'unknown',
+                'native_compaction': 'unknown' if config.kind == 'codex' else 'unsupported', 'fresh_session': 'unknown',
                 'resume_existing_session': 'unknown', 'cancellation_confirmation': 'unknown'},
             'existing_capability_declarations': rows,
             'usage_granularity': 'run' if config.kind == 'grok' and config.execution_profile == 'workspace-code-v1'

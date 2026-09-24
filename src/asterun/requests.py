@@ -113,6 +113,8 @@ REQUEST_SCHEMAS = {
         **TASK, "max_repairs": {"type": "integer", "minimum": 0}, "idempotency_key": IDENTIFIER,
         **TARGET_BINDING, "expected_revision": REVISION, "expected_input_hash": IDENTIFIER,
         "instructions": {"type": "string", "minLength": 1, "maxLength": 32000},
+        "context_strategy": {"type": "string", "enum": ["native_compact", "handoff_fresh"]},
+        "expected_handoff_revision": {"type": "integer", "minimum": 1},
     }, ["task_id"]),
     "workflow.snapshot": obj({**TASK, "target_paths": TARGET_BINDING["target_paths"],
                               "expected_run_id": IDENTIFIER}, ["task_id", "target_paths"]),

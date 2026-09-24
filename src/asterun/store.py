@@ -145,6 +145,10 @@ class MemoryStore:
         return (operation.principal, operation.action, operation.target, operation.idempotency_key)
 
     def commit_intent(self, operation: Operation, task: Task, run: Run, *, session: SessionBinding | None = None) -> tuple[Operation, Task, Run, bool]:
+        with self._handoff_lock:
+            return self._commit_intent(operation, task, run, session=session)
+
+    def _commit_intent(self, operation, task, run, *, session=None):
         if self.fail_next_intent:
             self.fail_next_intent = False
             raise AsterunError(
@@ -165,6 +169,8 @@ class MemoryStore:
             if existing.task_id is None or existing.run_id is None:
                 raise AsterunError(NOT_FOUND, "已有意图缺少任务引用")
             return existing, self.get_task(existing.task_id), self.get_run(existing.run_id), True
+        from asterun.context_transition import cas
+        cas(self, task, run)
         operation.task_id = task.id
         operation.run_id = run.id
         operation.status = OperationStatus.INTENDED

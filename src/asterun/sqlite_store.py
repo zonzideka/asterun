@@ -268,6 +268,8 @@ class SqliteStore:
                     if found.task_id is None or found.run_id is None:
                         raise AsterunError(NOT_FOUND, "已有意图缺少任务引用")
                     return found, self.get_task(found.task_id), self.get_run(found.run_id), True
+                from asterun.context_transition import cas
+                cas(self, task, run)
                 operation.task_id = task.id
                 operation.run_id = run.id
                 operation.status = OperationStatus.INTENDED
