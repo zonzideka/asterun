@@ -252,7 +252,7 @@ def build_usage_report(runs: Iterable[Run], *, tasks: Iterable[Task] = ()) -> di
             "groups": [{"dimensions": dict(zip(DIMENSIONS, key)), **_aggregate(group)}
                        for key, group in groups.items()],
             "notes": ["known_sum 仅汇总可归属到所选运行的已知计数，未知不按零处理。",
-                      "input_tokens 包含缓存读取和写入；reasoning_output_tokens 已包含在 output_tokens。",
+                      "仅已识别 Grok/Codex schema 按缓存/推理包含关系归一化；其它来源保持未知。",
                       "modelUsage 是原生分解，不与运行总量重复相加。",
                       "会话累计用量保留为观察值；没有运行起点基线时不计入运行总量。",
                       "USD 与 native_usd_ticks 分开保留，不相加、不换算，不代表实际扣款。"]}
@@ -295,9 +295,10 @@ def paginate_usage_report(data: dict, *, page_size: int = 20, cursor: str | None
     if type(page_size) is not int or not 1 <= page_size <= 100:
         raise ValueError("page_size 必须在 1 到 100 之间")
     snapshot = hashlib.sha256(_json_bytes(data)).hexdigest()
-    collections = [data.get(key, []) for key in _DETAIL_COLLECTIONS]
+    detail_collections = (*_DETAIL_COLLECTIONS, *(("observations",) if "observations" in data else ()))
+    collections = [data.get(key, []) for key in detail_collections]
     counts = [len(rows) for rows in collections]
-    offsets = [0, 0, 0]
+    offsets = [0] * len(collections)
     if cursor is not None:
         try:
             if not isinstance(cursor, str) or not 1 <= len(cursor) <= 256:
@@ -305,7 +306,7 @@ def paginate_usage_report(data: dict, *, page_size: int = 20, cursor: str | None
             decoded = json.loads(base64.b64decode(cursor.encode("ascii"), altchars=b"-_", validate=True))
             offsets = decoded["offsets"]
             if (set(decoded) != {"snapshot", "offsets"} or not isinstance(offsets, list)
-                    or len(offsets) != 3 or any(type(value) is not int or value < 0 or value > count
+                    or len(offsets) != len(collections) or any(type(value) is not int or value < 0 or value > count
                                               for value, count in zip(offsets, counts))):
                 raise ValueError
         except (ValueError, KeyError, TypeError, UnicodeError) as exc:
@@ -313,7 +314,7 @@ def paginate_usage_report(data: dict, *, page_size: int = 20, cursor: str | None
         if decoded["snapshot"] != snapshot:
             raise ValueError("用量报告快照或范围已变化，请省略 cursor 从第一页重新查询")
     starts = offsets.copy()
-    pages: list[list[dict]] = [[], [], []]
+    pages: list[list[dict]] = [[] for _ in collections]
     byte_count, budget_full = 0, False
     while not budget_full:
         advanced = False
@@ -334,14 +335,14 @@ def paginate_usage_report(data: dict, *, page_size: int = 20, cursor: str | None
     has_more = offsets != counts
     next_cursor = (base64.urlsafe_b64encode(_json_bytes({"snapshot": snapshot, "offsets": offsets})).decode("ascii")
                    if has_more else None)
-    result = {key: value for key, value in data.items() if key not in _DETAIL_COLLECTIONS}
-    result.update({key: rows for key, rows in zip(_DETAIL_COLLECTIONS, pages) if key in data})
+    result = {key: value for key, value in data.items() if key not in detail_collections}
+    result.update({key: rows for key, rows in zip(detail_collections, pages) if key in data})
     result["pagination"] = {
         "page_size": page_size, "snapshot": snapshot, "next_cursor": next_cursor,
         "has_more": has_more, "totals_scope": "complete_query",
         "detail_budget_bytes": DETAIL_BUDGET_BYTES,
         "collections": {key: {"total_items": count, "offset": offset, "returned_items": len(rows),
                               "omitted_items": sum("detail_omitted" in row for row in rows)}
-                        for key, count, offset, rows in zip(_DETAIL_COLLECTIONS, counts, starts, pages)
+                        for key, count, offset, rows in zip(detail_collections, counts, starts, pages)
                         if key in data}}
     return result

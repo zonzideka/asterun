@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
+
 import json
 import os
 import shutil
@@ -78,6 +80,7 @@ class CodexPromptResult:
     turn: dict[str, Any] = field(default_factory=dict)
     method_counts: dict[str, int] = field(default_factory=dict)
     token_usage: dict[str, Any] = field(default_factory=dict)
+    usage_observation: dict[str, Any] = field(default_factory=dict)
     pending_requests: list[dict[str, Any]] = field(default_factory=list)
     recent_events: list[dict[str, Any]] = field(default_factory=list)
     item_completed_count: int = 0
@@ -117,6 +120,7 @@ class CodexSession:
     turns: list[dict[str, Any]] = field(default_factory=list)
     method_counts: dict[str, int] = field(default_factory=dict)
     token_usage: dict[str, Any] = field(default_factory=dict)
+    usage_observation: dict[str, Any] = field(default_factory=dict)
     pending_requests: dict[str, dict[str, Any]] = field(default_factory=dict)
     recent_events: list[dict[str, Any]] = field(default_factory=list)
     item_completed_count: int = 0
@@ -157,6 +161,8 @@ class CodexSession:
                 self.message_chunks.append(params.get("delta", ""))
             elif method == "thread/tokenUsage/updated":
                 self.token_usage = params
+                from asterun.usage.observations import capture
+                self.usage_observation = capture(self.usage_observation, params)
             elif method == "item/completed":
                 self.item_completed_count += 1
             elif method == "turn/completed":
@@ -209,6 +215,7 @@ class CodexSession:
                 "message_preview": self.message_text[:500],
                 "method_counts": dict(self.method_counts),
                 "token_usage": dict(self.token_usage),
+                "usage_observation": deepcopy(self.usage_observation),
                 "pending_requests": list(self.pending_requests.values()),
                 "recent_events": list(self.recent_events),
                 "item_completed_count": self.item_completed_count,
@@ -551,11 +558,12 @@ class CodexAppServerTransport:
         output = MessageOutput()
         pending_requests: list[dict[str, Any]] = []
         token_usage: dict[str, Any] = {}
+        usage_observation: dict[str, Any] = {}
         item_completed_count = 0
         completed_turn: dict[str, Any] = {}
 
         def on_msg(msg: dict[str, Any]) -> None:
-            nonlocal item_completed_count, token_usage, completed_turn
+            nonlocal item_completed_count, token_usage, completed_turn, usage_observation
             messages.append(msg)
             method = msg.get("method", "")
             params = msg.get("params", {})
@@ -567,6 +575,8 @@ class CodexAppServerTransport:
                 chunks.append(params.get("delta", ""))
             elif method == "thread/tokenUsage/updated":
                 token_usage = params
+                from asterun.usage.observations import capture
+                usage_observation = capture(usage_observation, params)
             elif method == "item/completed":
                 item_completed_count += 1
             elif method == "turn/completed":
@@ -614,6 +624,7 @@ class CodexAppServerTransport:
             turn={"turn": completed_turn} if completed_turn else turn,
             method_counts=method_counts,
             token_usage=token_usage,
+            usage_observation=usage_observation,
             pending_requests=pending_requests,
             recent_events=[
                 {

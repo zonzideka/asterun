@@ -196,6 +196,8 @@ class Task:
     dependencies: list[str] = field(default_factory=list)
     dependency_state: dict[str, Any] = field(default_factory=dict)
     external_observations: dict[str, Any] = field(default_factory=dict)
+    dispatch_materials: list[dict[str, Any]] = field(default_factory=list)
+    handoff_snapshot: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         require_type(self.id, TaskId)
@@ -249,6 +251,8 @@ class Task:
             **({"dependencies": list(self.dependencies)} if self.dependencies else {}),
             **({"dependency_state": deepcopy(self.dependency_state)} if self.dependency_state else {}),
             **({"external_observations": deepcopy(self.external_observations)} if self.external_observations else {}),
+            **({"dispatch_materials": deepcopy(self.dispatch_materials)} if self.dispatch_materials else {}),
+            **({"handoff_snapshot": deepcopy(self.handoff_snapshot)} if self.handoff_snapshot else {}),
         }
 
     @classmethod
@@ -291,6 +295,8 @@ class Task:
             dependencies=list(data.get("dependencies") or []),
             dependency_state=deepcopy(data.get("dependency_state") or {}),
             external_observations=deepcopy(data.get("external_observations") or {}),
+            dispatch_materials=deepcopy(data.get("dispatch_materials") or []),
+            handoff_snapshot=deepcopy(data.get("handoff_snapshot") or {}),
         )
 
 

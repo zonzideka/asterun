@@ -161,7 +161,8 @@ class CodexRuntime:
                 }
                 if snapshot.get("token_usage"):
                     result["native"].update(token_usage=deepcopy(snapshot["token_usage"]),
-                                            usage_scope="thread_cumulative", usage_source="codex_app_server")
+                                            usage_scope="thread_cumulative", usage_source="codex_app_server",
+                                            usage_observation=deepcopy(snapshot.get("usage_observation", {})))
                 if scope_errors:
                     result["native"]["read_scope_violation"] = True
                     result["summary"] = "原生请求超出固定只读工具协议，本轮停止"

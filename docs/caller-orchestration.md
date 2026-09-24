@@ -313,3 +313,25 @@ commit 必须替换为源仓库中已存在的完整提交 SHA。操作使用本
 每个文件最多 16 MiB，updates 每行最多 256 KiB。导入前后核对指定摘要，拒绝符号链接、重复 JSON 字段、不完整行和内容漂移。每个任务最多 16 份观察；同会话重复请求幂等，跨任务重复附加拒绝。只保存日志 SHA、完成回合事件数量和白名单用量字段，不存原始消息或隐藏推理，不写原生目录，也不生成受管会话 marker。
 
 结果标记 external_observed、usage_scope=unknown、ownership_verified=false、resume_supported=false。最后一次可识别的用量报告作为观察保留，不假设它是单轮或累计值，不加入 usage-report 总计，因此不重复计量；未知值不写成零。导入不把历史 exit0 变为 acceptance passed，也不调用模型。原生接管尚未开放：现有受管 resume 仍要求自己的身份、CLI、凭据代际和日志绑定。读取历史不授予执行权，不能用导入绕过活动 PID 或单一执行权核对。
+
+## 实验性输入优化与离线交接
+
+`workflow.input_optimization` 默认省略（等价于 off）。先在隔离配置选择 `{"mode":"observe","scopes":["dispatch_prompt","caller_result"],"max_dispatch_bytes":16000}`。observe 保存字节数、SHA 和候选估算，实际投递与 task.get 返回正文不变，不保存另一份原始载荷。`enforce` 才对投递材料去重并自动使用既有 compact 返回。`dispatch_prompt` 的 enforce 必须显式指定 `max_dispatch_bytes`（1—1048576）；它是文本字节限制，不是模型上下文容量或严格原生 Token 预算。unsupported scope、压缩、轮换和严格 Token 配置拒绝解析。
+
+`task-submit --request request.json` 可显式附加 `dispatch_materials`，每项为 `{"path":"src/parser.py","sha256":"<当前文件的64位小写SHA256>","start_line":1,"end_line":20}`，最多 16 项。以完整原目标/限制为 Mandatory，再附加当前文件的选定行；同包中路径、范围、版本全部相同的材料才允许去重。不同路径即使内容相同也保留，原 Task.text 不被摘要覆盖。off/observe 会按显式请求附加全部材料；enforce 移除重复项。每次派发重新检查权限、路径和内容，不缓存“模型已读过”的假设。所选文件读取复用 snapshot 的文本、大小、符号链接限制；材料变化、保存失败或 Mandatory 超限会阻塞。修复继续绑定原材料版本，不能静默拿过期材料重派。
+
+这条实验投递路径仅用于核心 v1 文本任务；v2 固定执行计划、typed capability、固定读取和独立审查的变换拒绝启用。它没有接管原生内部工具循环。原生客户端版本、逐模型请求与订阅扣量仍可能未知。
+
+新增 CLI `workflow-payload`、`workflow-check-detail`、`workflow-handoff-create`、`workflow-handoff-read` 均使用 `--request request.json`；MCP 对应 `workflow_payload`、`workflow_check_detail`、`workflow_handoff_create`、`workflow_handoff_read`。共同字段为 `task_id` 和 `expected_run_id`，必须指向当前运行，每次重新检查权限和工作区绑定。查询不会推进队列或派发；runner-control 管理的任务不走这些 legacy 接口。
+
+`workflow-payload` 读取保存的 manifest 与适配器能力证据。`dispatch_prompt` 只覆盖原生入口文本；`caller_result` 只覆盖 task.get 的 data 正文，以 UTF-8 紧凑 JSON 排序序列化（不包含外层 Envelope、传输包装或原生工具 schema）。`estimated_tokens=ceil(serialized_bytes/4)` 是粗略估算，没有 tokenizer 精度承诺。`candidate_omissions` 表示候选删除数，observe 并未实际删除。策略和适配器文件摘要用于辨别采集版本；元数据不在普通 task.get 中递归回显。
+
+`workflow-check-detail` 增加 `job_id`、可选 `offset`（从 0 开始的 Unicode 字符位置）和 `limit`（1—2000，默认 1000）。只切片已经保留、版本匹配的诊断；另返回确定性错误分组、exit code、counts、截断与长度。摘要复用已有脱敏器，是派生件；`summary_sha256` 指向摘要，`sha256_of_retained_diagnostic` 指向原保留诊断。原诊断仍需当前任务、workspace.read、workflow.evaluate 和 process.execute 授权。原始日志仅沿用既有有界尾部，`full_log_retained=false`，不能通过分页取回未保存的完整日志；不自动访问日志中的路径或 URI。脱敏匹配不构成完整秘密识别保证。
+
+`usage-report --include-observations` 可查看未归属会话观察。Codex 累计计数保留已观测最大值和重置/乱序疑点，不求不可信的差值，不分摊给 run；身份不完整时不跨任务合并。同一 session 的导入与实时观察均不额外加入运行总量；没有发生时间的观察归入 unknown_occurrence，采集时间不是消费发生时间。旧记录不补造采集时间，真实失败/重试的已知原生运行费用继续保留。旧用量分页/总计保持原口径，覆盖 controller/not_observed、native_requests/unknown、subscription_quota_effect/unknown。
+
+创建离线交接请求：`{"task_id":"task-id","expected_run_id":"run-id","expected_handoff_revision":0,"target_paths":["src/parser.py"]}`。创建结果返回 blob SHA、revision 和离线准备状态；后续更新须提交当前 revision。SQLite 在同一事务内写 blob 和 CAS 指针，已存在有效版本不会被失败写入替换。内存替身有 CAS，旧 JSON 文件存储不支持原子交接，明确拒绝。复用已有 blob 保留与备份策略，没有新增 TTL 删除路径。
+
+读取请求：`{"task_id":"task-id","expected_run_id":"run-id","expected_handoff_revision":1,"reconstruct":true}`。复核原 Task/Run/事件/审批、策略、源文件和验收证据；漂移、引用缺失或 schema 不支持时失败，不回退旧通过结论。原目标和限制从权威 Task 完整加载，所选文件重新读取，保留审查与修复/运行上限、未决动作。未知运行或待审批可生成离线材料，但不会标成已准备接管。快照只存引用、哈希与必要状态，不复制完整聊天或源码，也不创建、恢复或派发原生会话。
+
+回滚实验策略时，将 mode 改回 off 并按既有配置 revision 流程应用；关闭新投递/返回变换，不删除旧 manifest、交接或验收证据，不撤销外部动作。默认配置和生产实例不会由这些接口自动变更。

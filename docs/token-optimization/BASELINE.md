@@ -25,7 +25,7 @@
 | claude | 适配器单次入口/核心返回 | 只认现有构造，不扩权限 | 一次性会话；原生恢复未支持，现场 unknown | 原生一次性费用；Token 语义未知 | 当前适配器未实现 |
 | antigravity / 其它插件 | 按 manifest 与固定插件入口，不推断通用文本控制 | 插件自身边界 | 按既有 capability 声明，现场 unknown | 未知口径不加总 | 未验证，不启用 |
 
-证据：src/asterun/plugins/builtin_capabilities.py、backends/{grok,grok_code,grok_session,codex,codex_runtime,claude}.py、usage/report.py、observe.py，以及 tests/test_grok_native_resume.py（如名称变化以仓库测试索引为准）、test_grok_failures.py、test_codex_runtime.py、test_usage_report.py。逐项最终测试结果记在 STATUS.md，不把本表当成已运行的测试记录。
+证据：src/asterun/plugins/builtin_capabilities.py、backends/{grok,grok_code,grok_session,codex,codex_runtime,claude}.py、usage/report.py、observe.py，以及 tests/test_grok_resume.py、test_grok_failures.py、test_codex_backend.py、test_usage_report.py。逐项最终测试结果记在 STATUS.md，不把本表当成已运行的测试记录。
 
 ## 最小设计决策
 

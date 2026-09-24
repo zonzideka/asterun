@@ -42,6 +42,7 @@ TOOL_METHODS = {
     "workflow_evaluate": "workflow.evaluate",
     "workflow_snapshot": "workflow.snapshot",
     "workflow_check": "workflow.check",
+    **{name.replace(".", "_").replace("-", "_"): name for name in ("workflow.payload", "workflow.check-detail", "workflow.handoff-create", "workflow.handoff-read")},
     "workflow_checkpoint": "workflow.checkpoint",
     "workflow_evidence": "workflow.evidence",
     "workflow_attest": "workflow.attest",

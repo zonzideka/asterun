@@ -80,6 +80,7 @@ from asterun.quality import repair_prompt
 from asterun.quality_runtime import QualityRuntime
 
 ENTRY_BLOCKED_WHEN_DISABLED = {
+    "workflow.payload", "workflow.check-detail", "workflow.handoff-create", "workflow.handoff-read",
     "session.import",
     "workflow.check", "workflow.check-status", "workflow.check-cancel", "workflow.checkpoint", "workflow.evidence", "workflow.attest", "workspace.materialize",
     "capability.prepare", "capability.submit", "capability.invoke", "plugin.register", "plugin.enable", "plugin.disable",
@@ -296,7 +297,7 @@ class Application:
                                         native_session and native_session == session.get("backend_session_id")):
                             raise AsterunError(INVALID_REQUEST, "标准控制会话不能从旧入口派生未预算轮次")
             if self._control is not None and payload.get("task_id") and method in {
-                "task.cancel", "task.handoff", "workflow.repair", "workflow.start", "workflow.evaluate", "workflow.check", "workflow.check-status", "workflow.check-cancel", "workflow.checkpoint", "workflow.evidence", "workflow.attest", "session.import"
+                "task.cancel", "task.handoff", "workflow.repair", "workflow.start", "workflow.evaluate", "workflow.check", "workflow.check-status", "workflow.check-cancel", "workflow.checkpoint", "workflow.evidence", "workflow.attest", "session.import", "workflow.handoff-create", "workflow.handoff-read", "workflow.check-detail", "workflow.payload"
             } and self.control.legacy_action(payload["task_id"]):
                 raise AsterunError(INVALID_REQUEST, "该执行由 runner-control 管理，请使用标准控制命令")
             if self._control is not None and payload.get("task_id"):
@@ -310,6 +311,9 @@ class Application:
                 return self.workflow_snapshot(payload)
             if method == "workflow.check":
                 return self.workflow_check(payload)
+            if method in {"workflow.payload", "workflow.check-detail", "workflow.handoff-create", "workflow.handoff-read"}:
+                from asterun.input_optimization import handle
+                return ok(handle(self, method, payload))
             if method == "session.import":
                 from asterun.session_import import observe
                 return ok(observe(self, payload))
@@ -548,6 +552,9 @@ class Application:
             str(payload.get("conversation_id") or ""),
             read_scope=read_scope,
         )
+        if payload.get("dispatch_materials"):
+            from asterun.quality import digest as digest_materials
+            digest = digest_materials({"input": digest, "dispatch_materials": payload["dispatch_materials"]})
         if dependencies or payload.get("required_stages"):
             from asterun.quality import digest as digest_options
             digest = digest_options({"input": digest, "depends_on": sorted(dependencies),
@@ -582,6 +589,7 @@ class Application:
             capability_input=_capability_input or {},
             read_scope=None if read_scope is None else dict(read_scope),
             dependencies=dependencies,
+            dispatch_materials=payload.get("dispatch_materials", []),
         )
         run = Run(
             id=new_run_id(),
@@ -686,9 +694,8 @@ class Application:
         if task.dependencies:
             self.store.save_task(task)
         data = self._task_view(task, run, extra={"session": self._session_for_task(task)})
-        if compact:
-            from asterun.observe import compact_task_snapshot
-            data = compact_task_snapshot(data)
+        from asterun.input_optimization import caller_result
+        data = caller_result(self, task, run, data, compact=compact)
         return ok(
             data,
             ids={"task_id": task.id.value, **_conversation_ids(task)},
@@ -721,6 +728,12 @@ class Application:
         if payload.get("task_id") and not tasks:
             raise AsterunError(INVALID_REQUEST, "任务与请求的工作区或会话不匹配")
         data = build_usage_report(runs, tasks=tasks)
+        if payload.get("include_observations", False):
+            from asterun.usage.observations import session_observations
+            data["observations"] = session_observations(runs, tasks)
+            data["coverage"] = {"controller": "not_observed", "native_requests": "unknown",
+                                "runs": "persisted_only", "subscription_quota_effect": "unknown",
+                                "session_observations_added_to_totals": False}
         if not payload.get("include_runs", False):
             data.pop("runs", None)
         data["scope"] = {key: payload[key] for key in ("task_id", "workspace", "conversation_id") if key in payload}
@@ -1666,6 +1679,11 @@ class Application:
         reader = (self._fixed_reader(self.config.get_workspace(task.workspace).root, task.read_scope, backend)
                   if task.read_scope is not None and run.role != "review" else None)
         self.quality.before_dispatch(task, run)
+        from asterun.input_optimization import dispatch as build_dispatch
+        if self.admission is not None and (task.dispatch_materials or self.config.workflow.input_optimization.get("mode") == "enforce"
+                                           and "dispatch_prompt" in self.config.workflow.input_optimization.get("scopes", [])):
+            raise AsterunError(CAPABILITY_UNSUPPORTED, "v2 固定执行计划尚未绑定变换后投递，不能启用实验投递变换")
+        dispatch_text = build_dispatch(self, task, run)
         if run.native.get("external_repair_target"):
             from asterun.quality import snapshot
             bound = run.native["external_repair_target"]
@@ -1717,7 +1735,7 @@ class Application:
 
             def execute(publish, stopping):
                 if reader is not None:
-                    return backend.dispatch_stream(task.id, run.id, task.script, run.prompt or task.text, cwd=cwd,
+                    return backend.dispatch_stream(task.id, run.id, task.script, dispatch_text, cwd=cwd,
                                                    native=native, publish=publish, stopping=stopping, read_scope=reader)
                 if task.capability:
                     return backend.dispatch_capability_stream(task.id, run.id, task.capability, task.capability_input,
@@ -1725,9 +1743,9 @@ class Application:
                 if run.role == "review":
                     return backend.dispatch_review(task.id, run.id, task.script, run.prompt, cwd=cwd)
                 if hasattr(backend, "dispatch_stream"):
-                    return backend.dispatch_stream(task.id, run.id, task.script, run.prompt or task.text, cwd=cwd,
+                    return backend.dispatch_stream(task.id, run.id, task.script, dispatch_text, cwd=cwd,
                                                    native=native, publish=publish, stopping=stopping)
-                return backend.dispatch(task.id, run.id, task.script, run.prompt or task.text, cwd=cwd)
+                return backend.dispatch(task.id, run.id, task.script, dispatch_text, cwd=cwd)
 
             self.executor.start(run.id, execute)
             return ok(self._task_view(task, run, extra={"dispatched": True, "background": True,
@@ -1740,7 +1758,7 @@ class Application:
                                                       cwd=self.config.get_workspace(task.workspace).root)
             else:
                 dispatch = backend.dispatch_review if run.role == "review" else backend.dispatch
-                result = dispatch(task.id, run.id, task.script, run.prompt or task.text,
+                result = dispatch(task.id, run.id, task.script, dispatch_text,
                                           cwd=self.config.get_workspace(task.workspace).root,
                                           **({"native": native} if getattr(backend, "accepts_native_context", False) and run.role != "review" else {}))
         except Exception as error:
@@ -2228,7 +2246,7 @@ class Application:
             from asterun.plugins.core_integration import ingest_result
             ingest_result(self, run, result)
         if result.get("native"):
-            run.native.update({k: v for k, v in result["native"].items() if k not in {"checkpoint", "local_checks", "stage_attestations", "dependency_bindings"}})
+            run.native.update({k: v for k, v in result["native"].items() if k not in {"checkpoint", "local_checks", "stage_attestations", "dependency_bindings", "payload_manifests"}})
         for raw in result.get("events") or []:
             event_type = EventType(raw["type"]) if raw.get("type") in set(EventType) else EventType.MESSAGE
             self._event(run.id, event_type, source, {k: v for k, v in raw.items() if k != "type"})
@@ -2257,6 +2275,8 @@ class Application:
                 and self.config.backends[task.backend.value].kind == "fake",
             },
         }
+        if run:
+            view["run"]["native"] = {k: v for k, v in run.native.items() if k != "payload_manifests"}
         if extra:
             view.update(extra)
         if run:

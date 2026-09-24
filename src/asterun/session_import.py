@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import replace
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -105,7 +106,7 @@ def observe(app, payload):
     # 处理后再按请求哈希重读，变化的日志不能写成稳定历史快照。
     for name, path in paths.items():
         _read(path, hashes[name])
-    record = {'source': 'external_observed', 'session_id': sid, 'backend': payload['backend'],
+    record = {'source': 'external_observed', 'observed_at': datetime.now(timezone.utc).isoformat(), 'occurred_at': None, 'session_id': sid, 'backend': payload['backend'],
               'log_hashes': hashes, 'completed_turn_events': turns, 'last_reported_usage': usage,
               'usage_scope': 'unknown', 'usage_included_in_totals': False, 'ownership_verified': False,
               'resume_supported': False, 'acceptance_unchanged': True, 'model_dispatched': False}

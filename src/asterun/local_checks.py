@@ -177,7 +177,9 @@ def execute_check(root, bound, spec, name, state_dir=None, *, stopping=None):
     detail = f"exit={exit_code}, timeout={timed_out}, cancelled={cancelled}, counts={counts}, counts_valid={counts_valid}\n{diagnostic}"
     return {"source": "isolated_local_check", "check_name": name, "passed": passed,
             "exit_code": exit_code, "timed_out": timed_out, "cancelled": cancelled, "counts": counts,
-            "output_truncated": total > 8000, "diagnostic": diagnostic,
+            "output_truncated": total > len(diagnostic.encode("utf-8")), "diagnostic": diagnostic,
+            "output_bytes": total, "retained_diagnostic_bytes": len(diagnostic.encode("utf-8")),
+            "diagnostic_sha256": hashlib.sha256(diagnostic.encode("utf-8")).hexdigest(),
             "before_hash": target["hash"], "after_hash": after["hash"], "check_sha256": digest(spec),
             "report": {"task_id": bound["task_id"], "run_id": bound["run_id"],
                        "input_hash": bound["input_hash"], "target_hash": bound["target_hash"],

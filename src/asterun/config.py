@@ -29,7 +29,7 @@ CONFIG_KEYS = {
 }
 WORKSPACE_KEYS = {"root", "allow_non_git"}
 BACKEND_KEYS = {"kind", "enabled", "bin", "home", "model", "desktop_projects", *GROK_EXECUTION_OPTIONS}
-WORKFLOW_KEYS = {"preset", "require_review", "review_backend", "approved_substitute", "max_repairs", "local_checks", "checkpoint_paths", "stage_gates"}
+WORKFLOW_KEYS = {"preset", "require_review", "review_backend", "approved_substitute", "max_repairs", "local_checks", "checkpoint_paths", "stage_gates", "input_optimization"}
 SCHEDULER_KEYS = {"max_queue", "per_backend_concurrency", "max_runs_per_task", "max_concurrency", "local_check_concurrency"}
 ENTRIES_KEYS = {"cli", "mcp"}
 KNOWN_BACKEND_KINDS = set(BUILTINS)
@@ -104,6 +104,7 @@ class WorkflowConfig:
     local_checks: dict[str, Any] = field(default_factory=dict)
     checkpoint_paths: dict[str, list[str]] = field(default_factory=dict)
     stage_gates: dict[str, str] = field(default_factory=dict)
+    input_optimization: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -115,6 +116,7 @@ class WorkflowConfig:
             **({"local_checks": self.local_checks} if self.local_checks else {}),
             **({"checkpoint_paths": self.checkpoint_paths} if self.checkpoint_paths else {}),
             **({"stage_gates": self.stage_gates} if self.stage_gates else {}),
+            **({"input_optimization": self.input_optimization} if self.input_optimization else {}),
         }
 
 
@@ -411,6 +413,8 @@ def _load_workflow(raw: object) -> WorkflowConfig:
     local_checks = validate_checks(body.get("local_checks", {}))
     from asterun.stage_gates import validate_policy
     stage_gates = validate_policy(body.get("stage_gates", {}))
+    from asterun.input_optimization import validate as validate_optimization
+    optimization = validate_optimization(body.get("input_optimization", {}))
     checkpoint_paths = body.get("checkpoint_paths", {})
     if not isinstance(checkpoint_paths, dict):
         raise AsterunError(INVALID_CONFIG, "checkpoint_paths 必须按工作区指定文件列表")
@@ -425,6 +429,7 @@ def _load_workflow(raw: object) -> WorkflowConfig:
         local_checks=local_checks,
         checkpoint_paths=checkpoint_paths,
         stage_gates=stage_gates,
+        input_optimization=optimization,
     )
 
 

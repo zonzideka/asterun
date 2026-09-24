@@ -55,6 +55,7 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("--workspace")
     report.add_argument("--task-id")
     report.add_argument("--conversation-id")
+    report.add_argument("--include-observations", action="store_true", help="附不计入运行总计的原生会话观察")
     report.add_argument("--include-runs", action="store_true", help="附各运行的原生用量明细")
     report.add_argument("--page-size", type=int, help="每类明细每页最多 1–100 条，默认 20；总计覆盖完整查询")
     report.add_argument("--cursor", help="沿用上页 pagination.next_cursor 和相同查询范围")
@@ -193,6 +194,9 @@ def build_parser() -> argparse.ArgumentParser:
         check_job.add_argument("task_id")
         check_job.add_argument("--run-id", dest="expected_run_id", required=True)
         check_job.add_argument("--job-id", required=True)
+    for name in ("workflow-payload", "workflow-check-detail", "workflow-handoff-create", "workflow-handoff-read"):
+        command = sub.add_parser(name, help="载荷元数据、已有诊断范围读取或离线交接")
+        command.add_argument("--request", type=Path, required=True)
     checkpoint = sub.add_parser("workflow-checkpoint", help="核对私有检查点与当前源树，不恢复或派发")
     checkpoint.add_argument("task_id")
     checkpoint.add_argument("--run-id", dest="expected_run_id", required=True)
@@ -283,6 +287,8 @@ def _load_request(args: argparse.Namespace) -> dict[str, Any]:
         payload["compact"] = True
     if getattr(args, "include_runs", False):
         payload["include_runs"] = True
+    if getattr(args, "include_observations", False):
+        payload["include_observations"] = True
     checks = getattr(args, "checks", None)
     if checks:
         parsed = json.loads(checks)
@@ -352,6 +358,7 @@ COMMAND_METHODS = {
     "workflow-evaluate": "workflow.evaluate",
     "workflow-snapshot": "workflow.snapshot",
     "workflow-check": "workflow.check",
+    **{name.replace(".", "-", 1): name for name in ("workflow.payload", "workflow.check-detail", "workflow.handoff-create", "workflow.handoff-read")},
     "workflow-checkpoint": "workflow.checkpoint",
     "workflow-evidence": "workflow.evidence",
     "workflow-attest": "workflow.attest",
