@@ -114,7 +114,8 @@ def _copy_session(source, destination, source_root):
                 return "conflict"
         if all((destination / name).is_file() and _sha(_read(destination / name)) == hashes[name]
                for name in FILES):
-            if not previous:
+            # A prior export may have published the data but failed to write its marker.
+            if previous.get("hashes") != hashes:
                 _write(marker, (json.dumps(identity | {"hashes": hashes}) + "\n").encode())
             return "unchanged"
     if not existed:

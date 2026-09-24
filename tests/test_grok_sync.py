@@ -40,6 +40,44 @@ def test_full_incremental_sync_and_existing_identical_trial(tmp_path):
     assert (target / "updates.jsonl").read_bytes() == (session / "updates.jsonl").read_bytes()
 
 
+def test_retry_after_marker_write_failure_allows_later_incremental_sync(tmp_path, monkeypatch):
+    from asterun import grok_sync
+
+    src, dst = tmp_path / "src", tmp_path / "dst"
+    session = native(src)
+    assert sync_sessions(src, dst)["copied"] == 1
+    target = dst / session.relative_to(src)
+    old_marker = (target / MARKER).read_bytes()
+    (session / "summary.json").write_text(json.dumps({"current_model_id": "grok-test-2"}))
+    with (session / "updates.jsonl").open("a") as handle:
+        handle.write(json.dumps({"params": {"sessionId": session.name}, "timestamp": 124}) + "\n")
+
+    original_write = grok_sync._write
+
+    def fail_marker(path, data):
+        if path.name == MARKER:
+            raise OSError("simulated marker write failure")
+        return original_write(path, data)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(grok_sync, "_write", fail_marker)
+        assert sync_sessions(src, dst)["skipped"] == 1
+    assert (target / MARKER).read_bytes() == old_marker
+    assert all((target / name).read_bytes() == (session / name).read_bytes() for name in FILES)
+    data_stats = {name: (target / name).stat() for name in FILES}
+
+    assert sync_sessions(src, dst)["unchanged"] == 1
+    for name in FILES:
+        current = (target / name).stat()
+        assert (current.st_ino, current.st_mtime_ns) == (data_stats[name].st_ino, data_stats[name].st_mtime_ns)
+
+    with (session / "updates.jsonl").open("a") as handle:
+        handle.write(json.dumps({"params": {"sessionId": session.name}, "timestamp": 125}) + "\n")
+    result = sync_sessions(src, dst)
+    assert result["copied"] == 1 and result["conflicts"] == 0
+    assert all((target / name).read_bytes() == (session / name).read_bytes() for name in FILES)
+
+
 @pytest.mark.parametrize("change", ["content", "native_file", "other_source"])
 def test_never_overwrite_native_or_modified_destination(tmp_path, change):
     src, dst = tmp_path / "src", tmp_path / "dst"
