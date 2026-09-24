@@ -329,3 +329,17 @@ def test_implicit_runtime_read_roots_cannot_include_source(isolated_env, workspa
         assert not result.ok and result.error['code'] == 'INVALID_REQUEST'
     finally:
         app.close()
+
+
+def test_configured_single_check_slot_is_enforced(isolated_env, workspace_root):
+    app, bound = setup(isolated_env, workspace_root, 'import time\ntime.sleep(30)', timeout=30)
+    app.config.scheduler.local_check_concurrency = 1
+    background(app)
+    try:
+        first = submit(app, bound)
+        denied = app.handle('workflow.check', {**bound, 'check_name': 'compile', 'async': True, 'idempotency_key': 'second'})
+        assert not denied.ok and denied.error['code'] == 'RATE_LIMITED'
+        get(app, bound, first, cancel=True)
+        assert finish(app, bound, first)['status'] == 'cancelled'
+    finally:
+        app.close()

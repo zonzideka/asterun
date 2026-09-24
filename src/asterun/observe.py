@@ -152,6 +152,21 @@ def compact_task_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
             result["task"]["external_evaluation"] = _fields(task["external_evaluation"], (
                 "source", "expected_run_id", "expected_revision", "expected_input_hash", "target_hash",
             ))
+        if isinstance(task.get("dependencies"), list):
+            result["task"]["dependencies"] = [id for id in task["dependencies"][:16] if isinstance(id, str) and _small_scalar(id)]
+        if isinstance(task.get("external_observations"), dict):
+            result["task"]["external_observations_count"] = len(task["external_observations"])
+        elif type(task.get("external_observations_count")) is int:
+            result["task"]["external_observations_count"] = task["external_observations_count"]
+        if isinstance(task.get("dependency_state"), dict):
+            result["task"]["dependency_state"] = _fields(task["dependency_state"], ("ready", "stale", "blocked_count"))
+        if isinstance(task.get("stage_gate"), dict):
+            gate = task["stage_gate"]
+            short = _fields(gate, ("satisfied", "status"))
+            if isinstance(gate.get("states"), dict):
+                short["states"] = {key: _fields(row, ("status", "source", "satisfied"))
+                    for key, row in gate["states"].items() if key in {"coding", "consumer", "independent_review", "integration", "deployment"} and isinstance(row, dict)}
+            result["task"]["stage_gate"] = short
         if isinstance(task.get("findings"), list):
             result["task"]["findings_count"] = len(task["findings"])
         elif type(task.get("findings_count")) is int and _small_scalar(task["findings_count"]) and task["findings_count"] >= 0:

@@ -80,7 +80,8 @@ from asterun.quality import repair_prompt
 from asterun.quality_runtime import QualityRuntime
 
 ENTRY_BLOCKED_WHEN_DISABLED = {
-    "workflow.check", "workflow.check-status", "workflow.check-cancel", "workflow.checkpoint", "workflow.evidence",
+    "session.import",
+    "workflow.check", "workflow.check-status", "workflow.check-cancel", "workflow.checkpoint", "workflow.evidence", "workflow.attest", "workspace.materialize",
     "capability.prepare", "capability.submit", "capability.invoke", "plugin.register", "plugin.enable", "plugin.disable",
     "control.command",
     "control.upload",
@@ -295,7 +296,7 @@ class Application:
                                         native_session and native_session == session.get("backend_session_id")):
                             raise AsterunError(INVALID_REQUEST, "标准控制会话不能从旧入口派生未预算轮次")
             if self._control is not None and payload.get("task_id") and method in {
-                "task.cancel", "task.handoff", "workflow.repair", "workflow.start", "workflow.evaluate", "workflow.check", "workflow.check-status", "workflow.check-cancel", "workflow.checkpoint", "workflow.evidence"
+                "task.cancel", "task.handoff", "workflow.repair", "workflow.start", "workflow.evaluate", "workflow.check", "workflow.check-status", "workflow.check-cancel", "workflow.checkpoint", "workflow.evidence", "workflow.attest", "session.import"
             } and self.control.legacy_action(payload["task_id"]):
                 raise AsterunError(INVALID_REQUEST, "该执行由 runner-control 管理，请使用标准控制命令")
             if self._control is not None and payload.get("task_id"):
@@ -309,6 +310,14 @@ class Application:
                 return self.workflow_snapshot(payload)
             if method == "workflow.check":
                 return self.workflow_check(payload)
+            if method == "session.import":
+                from asterun.session_import import observe
+                return ok(observe(self, payload))
+            if method == "workspace.materialize":
+                from asterun.worktrees import materialize
+                return ok(materialize(self, payload))
+            if method == "workflow.attest":
+                return self.workflow_attest(payload)
             if method == "workflow.evidence":
                 return self.workflow_evidence(payload)
             if method == "workflow.checkpoint":
@@ -527,6 +536,8 @@ class Application:
                 raise AsterunError(INVALID_REQUEST, "未知 fake 脚本")
             if script == "unsupported":
                 raise AsterunError(CAPABILITY_UNSUPPORTED, "fake 脚本 unsupported：该能力被显式拒绝")
+        from asterun.dependencies import validate as validate_dependencies
+        dependencies = validate_dependencies(self, workspace_alias, payload.get("depends_on", []))
         now = utc_now()
         digest = _input_hash(
             workspace_alias,
@@ -537,6 +548,10 @@ class Application:
             str(payload.get("conversation_id") or ""),
             read_scope=read_scope,
         )
+        if dependencies or payload.get("required_stages"):
+            from asterun.quality import digest as digest_options
+            digest = digest_options({"input": digest, "depends_on": sorted(dependencies),
+                                     "required_stages": sorted(payload.get("required_stages", []))})
         if _capability is not None:
             from asterun.control_protocol import digest as typed_digest
             digest = typed_digest({"submission_sha256": digest, "capability": _capability, "input": _capability_input})
@@ -566,6 +581,7 @@ class Application:
             capability=_capability,
             capability_input=_capability_input or {},
             read_scope=None if read_scope is None else dict(read_scope),
+            dependencies=dependencies,
         )
         run = Run(
             id=new_run_id(),
@@ -575,6 +591,13 @@ class Application:
             created_at=now,
         )
         task.current_run_id = run.id
+        from asterun.stage_gates import seed
+        seed(self, task)
+        for stage in payload.get("required_stages", []):
+            policy = task.stage_gate.setdefault("policy", {})
+            policy[stage] = {"source": "core", "checks": sorted(name for name, spec in self.config.workflow.local_checks.items()
+                                                               if spec.get("stage", "coding") == stage)}
+            task.stage_gate.update(satisfied=False, status="unverified")
         operation = Operation(
             id=new_operation_id(),
             idempotency_key=str(payload.get("idempotency_key") or new_id("idem")),
@@ -597,7 +620,12 @@ class Application:
             if (session.backend_session_id and backend_conf.kind != "fake"
                     and not getattr(backend, "supports_native_resume", hasattr(backend, "resume_native"))):
                 raise AsterunError(CAPABILITY_UNSUPPORTED, "该适配器不支持原生续接，请使用新会话")
-        decision = "start" if existing is not None else self.scheduler.admit(backend_conf.name, str(workspace.root.resolve()))
+        from asterun.dependencies import inspect as inspect_dependencies
+        dependencies_ready = not dependencies or inspect_dependencies(self, task)["ready"]
+        if existing is None and not dependencies_ready and not self.scheduler.can_enqueue():
+            raise AsterunError("RATE_LIMITED", "依赖等待队列已满，未创建任务")
+        decision = ("start" if existing is not None else "queue" if not dependencies_ready else
+                    self.scheduler.admit(backend_conf.name, str(workspace.root.resolve())))
         session = replace(session, task_id=task.id, updated_at=now)
         operation, task, run, reused = self.store.commit_intent(operation, task, run, session=session)
         if reused:
@@ -651,6 +679,12 @@ class Application:
         task = self.quality.validate_evidence(task)
         run = self.store.get_run(task.current_run_id) if task.current_run_id else None
         task = self._validate_external_evidence(task, run)
+        from asterun.stage_gates import revalidate
+        task = revalidate(self, task, run)
+        from asterun.dependencies import gate as dependency_gate
+        dependency_gate(self, task, run)
+        if task.dependencies:
+            self.store.save_task(task)
         data = self._task_view(task, run, extra={"session": self._session_for_task(task)})
         if compact:
             from asterun.observe import compact_task_snapshot
@@ -1222,6 +1256,18 @@ class Application:
         return ok(self.local_checks.get(task, payload, cancel=cancel),
                   ids={"task_id": task.id.value, "run_id": payload["expected_run_id"]})
 
+    def workflow_attest(self, payload):
+        from asterun.stage_attestations import record
+        task = self._require_task(payload["task_id"])
+        for action in ("workspace.read", "workflow.evaluate"):
+            enforce(self.policy.authorize(self.principal, action, task.workspace))
+        self._require_grant(task.workspace)
+        self._require_applied_config()
+        self._assert_task_binding(task)
+        run = self.store.get_run(task.current_run_id) if task.current_run_id else None
+        bound = self._bound_external_target(task, run, payload, required=True)
+        return ok(record(self, task, run, payload, bound), ids={"task_id": task.id.value, "run_id": run.id.value})
+
     def workflow_evidence(self, payload):
         from asterun.workflow_evidence import evidence
         task = self._require_task(payload["task_id"])
@@ -1301,12 +1347,18 @@ class Application:
                 raise AsterunError(INVALID_REQUEST, "请求与已绑定的质量流程不一致")
             task = self.quality.validate_evidence(task)
             run = self.store.get_run(task.current_run_id)
+            from asterun.stage_gates import revalidate
+            task = revalidate(self, task, run)
+            from asterun.dependencies import gate as dependency_gate
+            dependency_gate(self, task, run)
+            self.store.save_task(task)
             return ok({**self._task_view(task, run), "acceptance": str(task.acceptance),
                        "review_status": task.review_status, "quality": task.quality,
                        "run_success_is_not_acceptance": True}, ids={"task_id": task.id.value})
         run = self.store.get_run(task.current_run_id) if task.current_run_id else None
         reports = [item for item in payload.get("checks", []) if item.get("kind") == "external_report"]
-        target = self._bound_external_target(task, run, payload, required=bool(reports))
+        from asterun.stage_gates import policy_for, apply_gate
+        target = self._bound_external_target(task, run, payload, required=bool(reports) or bool(policy_for(self, task)))
         if task.external_evaluation and target is None:
             raise AsterunError(INVALID_REQUEST, "已有版本绑定验收，请为当前版本重新提供完整绑定")
         if target is not None:
@@ -1352,6 +1404,13 @@ class Application:
             task.evidence_input_hash = evaluation.bound_input_hash
         else:
             task.evidence_input_hash = ""
+        apply_gate(self, task, run, target)
+        from asterun.dependencies import gate as dependency_gate
+        dependency_gate(self, task, run)
+        evaluation.acceptance = task.acceptance
+        evaluation.findings = task.findings
+        if task.stage_gate and not task.stage_gate["satisfied"]:
+            evaluation.message = "阶段证据尚未满足，详情见 task.stage_gate；不会通过省略 checks 绕过。"
         self.store.save_task(task)
         if run is not None:
             self._event(
@@ -1636,6 +1695,8 @@ class Application:
         guard_grok_quota(self, backend_name)
         if backend.config.kind == "grok":
             run.native["grok_quota_scopes"] = grok_quota_scopes(self, backend_name)
+        from asterun.dependencies import bind as bind_dependencies
+        bind_dependencies(self, task, run)
         from asterun.checkpoints import before_dispatch
         before_dispatch(self, task, run)
         self.scheduler.start(backend_name, run.id, str(self.config.get_workspace(task.workspace).root.resolve()))
@@ -1779,6 +1840,13 @@ class Application:
                     continue
                 if operation is None or operation.status != OperationStatus.INTENDED:
                     continue
+                from asterun.dependencies import inspect as inspect_dependencies
+                if task.dependencies:
+                    try:
+                        if not inspect_dependencies(self, task)["ready"]:
+                            continue
+                    except (AsterunError, OSError, UnicodeError):
+                        continue
                 self.scheduler.remove(run.id)
                 try:
                     backend = self._backend(item.backend)
@@ -2160,7 +2228,7 @@ class Application:
             from asterun.plugins.core_integration import ingest_result
             ingest_result(self, run, result)
         if result.get("native"):
-            run.native.update({k: v for k, v in result["native"].items() if k not in {"checkpoint", "local_checks"}})
+            run.native.update({k: v for k, v in result["native"].items() if k not in {"checkpoint", "local_checks", "stage_attestations", "dependency_bindings"}})
         for raw in result.get("events") or []:
             event_type = EventType(raw["type"]) if raw.get("type") in set(EventType) else EventType.MESSAGE
             self._event(run.id, event_type, source, {k: v for k, v in raw.items() if k != "type"})

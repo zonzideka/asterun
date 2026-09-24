@@ -192,6 +192,10 @@ class Task:
     read_scope: dict[str, str] | None = None
     external_evaluation: dict[str, Any] = field(default_factory=dict)
     external_require_review: bool = False
+    stage_gate: dict[str, Any] = field(default_factory=dict)
+    dependencies: list[str] = field(default_factory=list)
+    dependency_state: dict[str, Any] = field(default_factory=dict)
+    external_observations: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         require_type(self.id, TaskId)
@@ -241,6 +245,10 @@ class Task:
             **({"read_scope": dict(self.read_scope)} if self.read_scope is not None else {}),
             **({"external_evaluation": deepcopy(self.external_evaluation)} if self.external_evaluation else {}),
             **({"external_require_review": True} if self.external_require_review else {}),
+            **({"stage_gate": deepcopy(self.stage_gate)} if self.stage_gate else {}),
+            **({"dependencies": list(self.dependencies)} if self.dependencies else {}),
+            **({"dependency_state": deepcopy(self.dependency_state)} if self.dependency_state else {}),
+            **({"external_observations": deepcopy(self.external_observations)} if self.external_observations else {}),
         }
 
     @classmethod
@@ -279,6 +287,10 @@ class Task:
             read_scope=None if data.get("read_scope") is None else dict(data["read_scope"]),
             external_evaluation=deepcopy(data.get("external_evaluation") or {}),
             external_require_review=bool(data.get("external_require_review", False)),
+            stage_gate=deepcopy(data.get("stage_gate") or {}),
+            dependencies=list(data.get("dependencies") or []),
+            dependency_state=deepcopy(data.get("dependency_state") or {}),
+            external_observations=deepcopy(data.get("external_observations") or {}),
         )
 
 

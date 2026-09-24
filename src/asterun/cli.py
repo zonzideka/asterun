@@ -200,9 +200,16 @@ def build_parser() -> argparse.ArgumentParser:
     evidence = sub.add_parser("workflow-evidence", help="读取固定源码版本的分阶段证据，缺项保持未验")
     evidence.add_argument("task_id")
     evidence.add_argument("--request", type=Path, required=True)
+    attest = sub.add_parser("workflow-attest", help="导入固定版本的阶段回执，保留外部自报来源")
+    attest.add_argument("task_id")
+    attest.add_argument("--request", type=Path, required=True)
     quality = sub.add_parser("workflow-start", help="启动版本绑定的审查、修复、复核流程")
     quality.add_argument("task_id")
     quality.add_argument("--request", type=Path, required=True, help="含 idempotency_key、target_paths、checks 的 JSON")
+    imported = sub.add_parser("session-import", help="只读附加直调会话日志索引，不接管、不计入运行用量")
+    imported.add_argument("--request", type=Path, required=True)
+    materialize = sub.add_parser("workspace-materialize", help="将已配置的空槽位创建为固定提交的独立工作树")
+    materialize.add_argument("--request", type=Path, required=True)
     sub.add_parser("scheduler-status", help="查看有界队列快照；数值是候选默认值，不是已测容量")
     sub.add_parser("diagnose", help="脱敏诊断，不导出凭据或启动后端")
     backup = sub.add_parser("state-backup", help="用 SQLite backup API 导出状态库")
@@ -347,6 +354,9 @@ COMMAND_METHODS = {
     "workflow-check": "workflow.check",
     "workflow-checkpoint": "workflow.checkpoint",
     "workflow-evidence": "workflow.evidence",
+    "workflow-attest": "workflow.attest",
+    "session-import": "session.import",
+    "workspace-materialize": "workspace.materialize",
     "workflow-check-status": "workflow.check-status",
     "workflow-check-cancel": "workflow.check-cancel",
     "workflow-repair": "workflow.repair",

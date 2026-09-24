@@ -220,7 +220,7 @@ asterun --state-dir .asterun/state --connect workflow-checkpoint \
 
 MCP 为 `workflow_checkpoint`。加 `--include-artifact` 可读取不超过 512 KiB 的当前产物；更大原件仍保留在状态库备份中。查询核对当前源树和身份，返回 `source_matches`、`recovery_ready`、最近检查引用和下一动作。这里的 ready 只表示所选文件产物与当前树一致且运行已确定结束，不表示已核对原生续接能力。基线或终态产物落盘失败不会触发重复派发；崩溃后的未决运行仍须对账。查询不会覆盖文件、写 Git 索引、提交、派发或自动恢复原生会话。需新建会话或续接时，继续使用既有绑定与权限检查。任意进程硬崩溃期间的实时编辑尚无连续保存保证；只能使用最后成功写入的检查点。
 
-局部检查还可配置 `stage: "coding"`（默认）、`"consumer"` 或 `"integration"`。分别配置真正覆盖消费者与组合行为的命令；改阶段名称不能替代对应测试。以 `workflow-snapshot` 的完整绑定调用 `workflow-evidence TASK --request binding.json`，MCP 为 `workflow_evidence`。它分别呈现编码、消费者、独立审查、组合和部署状态，汇总同阶段的全部已配置检查；未跑、旧版本或缺项保持未验，失败按文件和错误类别压缩。独立审查仅取既有核心质量流程的绑定证据，fake 审查明确为 simulated；外部自报不会升级。部署证据尚未接入，该阶段保持 unverified，不能因本地通过宣称已部署。此入口只汇总证据，不代替 `workflow-evaluate` 或改变 acceptance；若要把消费者或组合检查作为现有验收门禁，仍须将对应绑定报告纳入 evaluate。
+局部检查还可配置 `stage: "coding"`（默认）、`"consumer"` 或 `"integration"`。分别配置真正覆盖消费者与组合行为的命令；改阶段名称不能替代对应测试。以 `workflow-snapshot` 的完整绑定调用 `workflow-evidence TASK --request binding.json`，MCP 为 `workflow_evidence`。它分别呈现编码、消费者、独立审查、组合和部署状态，汇总同阶段的全部已配置检查；未跑、旧版本或缺项保持未验，失败按文件和错误类别压缩。独立审查仅取既有核心质量流程的绑定证据，fake 审查明确为 simulated；外部自报不会升级。部署可导入固定外部回执，但来源始终为 external_reported，不能因本地通过宣称已部署。此入口只汇总证据，不改变 acceptance；通过下文 stage_gates 将必需阶段接入 evaluate 和核心质量流程。
 
 ## 汇总整个完成过程的用量
 
@@ -244,3 +244,72 @@ asterun --state-dir .asterun/state --connect usage-report \
 Claude 单次调用的美元费用独立于 token 来源计入运行汇总，依据原生一次性快照及费用上报标记识别，不能只凭后端名称推断。新快照用 `cost_reported`、`cost_source` 区分原生确报零费用与未报告费用；旧快照中的正数仍可计入，旧版默认零值无法证明免费，保留原始值但在规范统计中记为未知。累计会话或线程费用不会作为单次费用重复相加。
 
 衡量搭配效果时，另行记录主控模型的用量、等待、验收与返工，按相同任务范围和质量门比较整个完成过程。Asterun 的输出变短、Grok 承担编码或缓存命中增加，都不能单独证明 Astra 节省了某个百分比；没有可比较的实测对照时，节省率应保持未测量。
+
+
+## 固定阶段门禁与外部回执
+
+可在配置中加入以下字段；未配置 stage_gates 的既有流程保持原行为。阶段策略随任务持久保存，只能加强；删除配置、检查名或省略 evaluate 的 checks 不能取消已有要求。配置 revision 改变后仍遵守原有任务绑定规则，不能把旧任务无声迁到新配置。
+
+```json
+{
+  "workflow": {
+    "stage_gates": {"coding": "core", "consumer": "core", "independent_review": "core"}
+  },
+  "scheduler": {"max_concurrency": 3, "per_backend_concurrency": 3, "local_check_concurrency": 2}
+}
+```
+
+这里的 3 路运行、2 路本地检查只是实验配置，未证明最优。全局运行上限可选 1—32，未指定时保持原先每后端限制；本地检查上限为 1—8，默认 2。后台实施/审查运行共用全局限额，并继续服从账户池、工作区单写者和额度熔断。后台检查达到上限时返回繁忙，不创建无界线程。
+
+coding、consumer、integration 使用对应 stage 的已配置局部检查；缺检查名不能凭空通过。independent_review 只能取核心质量流程的真实审查记录，fake 审查保持 simulated，不能满足该门禁。consumer、integration 可显式允许 external_reported；已知本地失败仍优先，外部成功不能盖住失败。deployment 目前只接受显式允许的 external_reported，不提供核心自动部署证明。
+
+核心质量流程审查完成后，缺阶段证据时进入 awaiting_stages；可继续提交同版本检查或回执，再轮询推进。等待期间不自动反复调用模型。已完成的审查目标仍有效时，补齐被删除的同版本回执也不必重新审查。源码变化、上游依赖变化或报告篡改仍使验收失效。外部主控流程在导入后显式重新 evaluate。
+
+`workflow-attest TASK --request request.json` / MCP `workflow_attest` 接收与 workflow-check 相同的完整目标绑定，额外提供 `stage`（consumer/integration/deployment）、`idempotency_key` 和 `report: {path, sha256}`。路径为当前任务工作区内的相对普通文件，最多 256 KiB，不允许符号链接。回执正文严格使用以下字段：
+
+```json
+{
+  "task_id": "task-reference",
+  "run_id": "run-reference",
+  "input_hash": "snapshot-input-hash",
+  "target_hash": "snapshot-target-hash",
+  "revision": 1,
+  "stage": "deployment",
+  "environment": "staging",
+  "artifact_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "release_id": "release-reference",
+  "checks": [{"name": "product-probe", "passed": true, "detail": "调用方现场检查说明"}]
+}
+```
+
+示例中的引用和哈希须替换为实际快照值与产物摘要。checks 每项可附 `counts: {passed, failed, skipped, load_errors}`；加载错误非零或没有通过项不能验收为绿。导入绑定运行、输入、源码版本和配置 revision；每次汇总会重新读取文件核对 SHA。环境、release_id 和产物摘要来自调用方自报，并不证明核心连接了该环境或检查了产物。返回始终保留 `independently_verified: false`、`deployment_executed: false`。策略允许回执满足门禁也不会将 `all_stages_verified` 改成 true。
+
+## 工作树槽位与依赖任务
+
+先在配置中登记源仓库与独立的空目标目录，目标使用 `allow_non_git: true`。调用 `workspace-materialize --request request.json` / MCP `workspace_materialize`：
+
+```json
+{"source_workspace": "source", "workspace": "worker-a", "commit": "0123456789012345678901234567890123456789"}
+```
+
+commit 必须替换为源仓库中已存在的完整提交 SHA。操作使用本地 `git worktree add --detach`，不取远端、不复制源工作区脏文件、不提交或合并。已有槽位只有仓库、提交和干净状态全部一致才幂等复用；非空目录、脏工作树、相关活动/排队/未决任务或自定义 checkout 过滤器均拒绝。操作超时会保留目录要求核对，不自动删除或重建；这是受控槽位物化，不是任意路径创建或跨主机隔离。
+
+`task-submit --request request.json` 可增加：
+
+```json
+{"workspace": "combined", "text": "组合两个工作任务的产物并执行集成检查",
+ "depends_on": ["task-worker-a", "task-worker-b"], "required_stages": ["integration"],
+ "idempotency_key": "combine-once"}
+```
+
+最多 16 个直接依赖、128 个祖先，必须引用既有任务，各下游工作区与上游独立且不嵌套。依赖与 required_stages 参与幂等输入摘要；required_stages 只能增加核心门禁。下游沿用既有持久队列，等待上游固定版本验收通过；单有 run succeeded 不足以放行。排队项不阻塞后面可运行的独立任务。派发时固定每个上游的 run/input/target/revision，后续上游修复、源码漂移或权限撤销使下游验收不能保持 passed。
+
+依赖声明不会自动合并文件。组合任务仍须在独立槽位中按授权范围整合产物，并完成 integration 检查；两个 worker 都通过不代表组合通过。额度熔断继续阻止新依赖任务启动；既有未决运行仍需对账。
+
+## 只读附加直调历史
+
+`session-import --request request.json` / MCP `session_import` 向已确认终态的既有任务附加日志观察。请求字段为 `task_id`、已配置 Grok `backend`、规范 UUID `session_id`、`summary_sha256` 和 `updates_sha256`。后端必须配置显式 home，输入不能指定其它源路径。读取其 sessions 下与任务工作区对应的 summary.json / updates.jsonl，要求 summary.info.id/cwd 精确匹配；绑定不明的旧日志拒绝导入。
+
+每个文件最多 16 MiB，updates 每行最多 256 KiB。导入前后核对指定摘要，拒绝符号链接、重复 JSON 字段、不完整行和内容漂移。每个任务最多 16 份观察；同会话重复请求幂等，跨任务重复附加拒绝。只保存日志 SHA、完成回合事件数量和白名单用量字段，不存原始消息或隐藏推理，不写原生目录，也不生成受管会话 marker。
+
+结果标记 external_observed、usage_scope=unknown、ownership_verified=false、resume_supported=false。最后一次可识别的用量报告作为观察保留，不假设它是单轮或累计值，不加入 usage-report 总计，因此不重复计量；未知值不写成零。导入不把历史 exit0 变为 acceptance passed，也不调用模型。原生接管尚未开放：现有受管 resume 仍要求自己的身份、CLI、凭据代际和日志绑定。读取历史不授予执行权，不能用导入绕过活动 PID 或单一执行权核对。

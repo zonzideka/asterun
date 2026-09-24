@@ -173,6 +173,19 @@ class QualityRuntime:
         if self._capture(task)[0] != target:
             self.invalidate(task)
             return
+        if quality["phase"] == "awaiting_stages":
+            from asterun.stage_gates import apply_gate, quality_bound
+            task.acceptance = evaluation.acceptance
+            apply_gate(app, task, run, quality_bound(task, run))
+            from asterun.dependencies import gate as dependency_gate
+            dependency_gate(app, task, run)
+            if task.stage_gate.get("satisfied", True) and task.acceptance == AcceptanceStatus.PASSED:
+                quality["phase"] = "completed"
+                task.evidence_input_hash = task.input_hash
+            else:
+                task.evidence_input_hash = ""
+            app.store.save_task(task)
+            return
         if quality["phase"] == "checking":
             quality["check_results"] = evaluation.to_dict()["checks"]
             if evaluation.acceptance != AcceptanceStatus.PASSED:
@@ -216,6 +229,15 @@ class QualityRuntime:
                 quality.pop("blocked_reason", None)
                 task.acceptance = AcceptanceStatus.PASSED
                 task.evidence_input_hash = task.input_hash
+                from asterun.stage_gates import apply_gate, quality_bound
+                apply_gate(app, task, run, quality_bound(task, run))
+                from asterun.dependencies import gate as dependency_gate
+                # 审查运行复用实现运行的上游绑定，不重写已经执行过的依赖版本。
+                run.native["dependency_bindings"] = implementation.native.get("dependency_bindings", {})
+                app.store.save_run(run)
+                dependency_gate(app, task, run)
+                if (task.stage_gate and not task.stage_gate["satisfied"]) or task.acceptance != AcceptanceStatus.PASSED:
+                    quality["phase"] = "awaiting_stages"
             app.store.save_task(task)
             app._event(run.id, EventType.ACCEPTANCE_EVALUATED, "core", {
                 "acceptance": str(task.acceptance), "target_hash": target["hash"], "review_run_id": run.id.value})

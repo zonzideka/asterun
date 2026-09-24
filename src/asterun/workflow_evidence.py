@@ -26,10 +26,14 @@ def evidence(app, task, run, bound):
     stages = {stage: {"status": "unverified", "source": None} for stage in STAGES}
     implementation_id = task.quality.get("implementation_run_id") if run.role == "review" else run.id.value
     implementations = [item for item in app.store.list_runs(task.id) if item.id.value == implementation_id]
-    jobs = implementations[0].native.get("local_checks", {}) if implementations else {}
+    relevant = implementations + ([run] if run.role == "review" and all(item.id != run.id for item in implementations) else [])
+    jobs = {key: job for item in relevant for key, job in item.native.get("local_checks", {}).items()}
+    from asterun.stage_gates import policy_for
+    policy = policy_for(app, task)
     checks = app.config.workflow.local_checks
     for stage in ("coding", "consumer", "integration"):
-        names = [name for name, spec in checks.items() if spec.get("stage", "coding") == stage]
+        names = sorted({name for name, spec in checks.items() if spec.get("stage", "coding") == stage}
+                       | set(policy.get(stage, {}).get("checks", [])))
         rows = []
         for name in names:
             matches = [job for job in jobs.values() if job["check_name"] == name]
@@ -39,6 +43,7 @@ def evidence(app, task, run, bound):
             valid = (job and job["bound"]["expected_target_hash"] == bound["target_hash"]
                      and job["bound"]["expected_input_hash"] == bound["input_hash"]
                      and job["bound"]["expected_revision"] == bound["revision"]
+                     and name in checks and checks[name].get("stage", "coding") == stage
                      and job["check_sha256"] == digest(checks[name]))
             if job and not valid:
                 status = "stale"
@@ -64,9 +69,15 @@ def evidence(app, task, run, bound):
                                             "independence": review.get("independence"),
                                             "provider_identity_verified": review.get("provider_identity_verified", False)}
             break
-    # 外部自报不推导成独立审查，也不推导成部署。独立审查和现场交付仍需各自证据。
+    from asterun.stage_attestations import latest
+    for stage in ("consumer", "integration", "deployment"):
+        reported = latest(app, task, relevant, bound, stage)
+        if reported and stages[stage]["status"] != "failed" and (stage == "deployment" or policy.get(stage, {}).get("source") == "external_reported"
+                         or stages[stage]["source"] is None):
+            stages[stage] = reported
+    # 自报通过和核心验证分开；策略可以明确允许自报满足指定阶段，但不升级来源。
     return {"task_id": task.id.value, "run_id": run.id.value, "input_hash": bound["input_hash"],
             "target_hash": bound["target_hash"], "revision": bound["revision"], "target_paths": bound["target_paths"],
             "stages": stages, "external_source": task.external_evaluation.get("source") if task.external_evaluation else None,
-            "all_stages_verified": all(row["status"] == "passed" for row in stages.values()),
+            "all_stages_verified": all(row["status"] == "passed" and row.get("source") != "external_reported" for row in stages.values()),
             "acceptance_unchanged": True, "scope": "selected_files_only"}

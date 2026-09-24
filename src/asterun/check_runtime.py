@@ -13,7 +13,6 @@ from asterun.quality import digest
 from asterun import local_checks
 
 MAX_JOBS = 32
-MAX_WORKERS = 2
 
 
 def utc_now():
@@ -64,8 +63,8 @@ class CheckRuntime:
                 return view
         if len(jobs) >= MAX_JOBS:
             raise AsterunError("RATE_LIMITED", "单次运行最多保存 32 个检查意图；请复用已有检查或推进任务")
-        if len(self.active) >= MAX_WORKERS:
-            raise AsterunError("RATE_LIMITED", "两个检查槽位均在执行，请在完成后重试")
+        if len(self.active) >= self.app.config.scheduler.local_check_concurrency:
+            raise AsterunError("RATE_LIMITED", "检查槽位均在执行，请在完成后重试")
         job_id = new_id("chk")
         job = {"job_id": job_id, "status": "running", "check_name": payload["check_name"],
                "key": key, "request_hash": request_hash,
