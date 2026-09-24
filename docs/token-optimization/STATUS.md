@@ -76,3 +76,11 @@ native_compact 使用原线程，先确认源终态；原生 ACK、产物完成�
 R5 固定起点的九项 unittest 已离线执行：1 通过、6 失败、2 错误，符合故意保留缺陷的预期，不计入产品测试通过数。记录 /tmp/asterun-context-r4-r5-fixture/baseline.log；任务、验收和提示的 SHA 已固定。没有通过“把基线修好”或挑选成功样本来预设优化收益。
 
 最终安装包另经 scripts/verify-installed-control.py 验证：fake 的 CLI/MCP 两任务成功，94 条 schema 记录通过，重启幂等重放和备份恢复通过，SQLite schema 仍为 6。记录 /tmp/asterun-context-r4-control-release.json。原生模型、账户和真实客户端交付字段仍是未验证，不能用本项代替 R5。
+
+## 2026-09-24 R5 单对真实实验完成
+
+用户确认沿用原生当前模型，并在首轮审批中止后追加一个工作轮次及主控逐项审批授权。实际使用 codex-cli 0.155.0-alpha.16.4、ChatGPT Pro、gpt-6-astra/high，累计 5 个工作轮次（含一个已取消轮次）和 1 次压缩。普通续接和压缩后续接均在原 Task 内完成，独立九项消费者测试全部通过，最终代码 SHA 一致；验收回写为 external_reported/passed，未决审批、队列和在途均为空。真实历史回读确认压缩轮次 completed 且有 contextCompaction，再接 completed 工作轮次。
+
+普通续接的末次会话累计输入 138,462 Token，压缩组 158,908，多约 14.8%；缓存输入分别 130,432 和 121,856。短任务未显示输入节省，保留默认关闭。失败会话 10,871 总 Token 也纳入已知观察，三个独立会话已知总计 310,264，不含未完整观测的主控开销，不代表账单或周额度。工具循环与缓存条件有差异，不能把全部差值归因于压缩。完整口径、授权、故障和未验证项见 [R5 结果](R5-RESULTS-2026-09-24.md)。
+
+本轮无需修改核心运行代码。私有证据和 SQLite 一致备份保存在本工作树 .local/token-optimization-r5-20260924，SHA 清单与数据库完整性均已核对；未复制凭据或原始推理。没有继续调用模型，也没有 push、合并或部署。
