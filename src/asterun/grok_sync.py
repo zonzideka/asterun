@@ -61,6 +61,11 @@ def _write(path, data):
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
     finally:
         Path(temporary).unlink(missing_ok=True)
 
@@ -92,6 +97,7 @@ def _copy_session(source, destination, source_root):
     if existed and not destination.is_dir():
         raise ValueError("not_directory")
     previous = {}
+    current_hashes = {}
     if existed:
         marker = destination / MARKER
         if marker.exists() or marker.is_symlink():
@@ -106,15 +112,18 @@ def _copy_session(source, destination, source_root):
             if path.exists() or path.is_symlink():
                 existing = _read(path)
                 current = _sha(existing)
-                if current not in {hashes[name], previous.get("hashes", {}).get(name)}:
+                if current not in {hashes[name], previous.get("hashes", {}).get(name),
+                                   previous.get("pending_hashes", {}).get(name)}:
                     return "conflict"
+                current_hashes[name] = current
                 if name == "updates.jsonl" and not data[name].startswith(existing):
                     return "conflict"
             elif not previous:
                 return "conflict"
         if all((destination / name).is_file() and _sha(_read(destination / name)) == hashes[name]
                for name in FILES):
-            if not previous:
+            # A prior export may have published the data but failed to write its marker.
+            if previous.get("hashes") != hashes or "pending_hashes" in previous:
                 _write(marker, (json.dumps(identity | {"hashes": hashes}) + "\n").encode())
             return "unchanged"
     if not existed:
@@ -127,6 +136,11 @@ def _copy_session(source, destination, source_root):
             _write(stage / MARKER, (json.dumps(identity | {"hashes": hashes}) + "\n").encode())
             os.rename(stage, destination)
     else:
+        # Persist both verified current bytes and intended replacements before
+        # overwriting data. A retry can then recognize partial writes even if
+        # the source has advanced again, including after an interrupted retry.
+        _write(destination / MARKER, (json.dumps(identity | {
+            "hashes": current_hashes, "pending_hashes": hashes}) + "\n").encode())
         # Summary first, authoritative usage log last. No deletion or truncation
         # of unrelated native files; modified destination copies fail closed.
         for name, content in data.items():
