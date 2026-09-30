@@ -6,6 +6,8 @@ The current version is `0.1.0a13`, licensed under Apache-2.0. The first release'
 
 2026-09-30 的标准 skill 实施与验收以[当前中文状态](STATUS.md)及[本轮计划与结果](docs/standard-skill-plan-2026-09-30.md)为准。通用技能已完成源码、固定清单打包与本机文件安装；没有切换生产核心或调用真实模型。客户端触发与真实 Token 收益仍未验证。使用说明见[标准 skill 入口](docs/en/standard-skill.md)。
 
+2026-10-01 推送验收将依赖门禁测试改为合成检查结果，覆盖检查失败和沙箱不支持时不能验收通过；核心隔离逻辑未变。本机相关专项 48 项通过。GitHub runner 缺少 bubblewrap 时，真实沙箱用例依旧跳过，Linux 现场隔离仍未验证；当前提交的 CI 与合并状态见 [PR #5](https://github.com/zonzideka/asterun/pull/5)。
+
 The core provides CLI/MCP access, resident execution, task and native session references, permissions and approvals, idempotency, cancellation and reconciliation, scheduling, backup and restore, and optional code-quality workflows. Configuration v1/v2, SQLite schema 6, runner-control/v1, and the capability profile retain compatibility. Each Agent exposes its configured capabilities; callers organize their own task flows.
 
 2026-09-24 后续状态以[当前中文状态](STATUS.md)和[阶段门禁验证记录](docs/validation/stage-gates-dependencies-2026-09-24.md)为准；下方保留此前批次的历史范围。

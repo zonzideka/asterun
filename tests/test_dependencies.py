@@ -1,8 +1,12 @@
 import json
 from pathlib import Path
 
+import pytest
+
+from asterun import local_checks
 from asterun.application import Application
 from asterun.config import load_config
+from asterun.errors import AsterunError
 from asterun.sqlite_store import SqliteStore
 from tests.conftest import write_config
 
@@ -117,10 +121,24 @@ def test_ready_dependency_still_obeys_persistent_quota_stop(isolated_env, worksp
         app.close()
 
 
-def test_failed_combination_is_not_accepted_after_both_workers_pass(isolated_env, workspace_root):
+@pytest.mark.parametrize('check_outcome', ['failed', 'unsupported'])
+def test_failed_combination_is_not_accepted_after_both_workers_pass(isolated_env, workspace_root, monkeypatch, check_outcome):
     app = make(isolated_env, workspace_root)
     app.config.workflow.local_checks['combined'] = {'argv': ['/usr/bin/false'], 'inputs': ['note.txt'],
         'timeout_seconds': 5, 'runtime_roots': [], 'stage': 'integration'}
+    calls = []
+
+    def execute(root, bound, spec, name, *args, **kwargs):
+        # 本例验证依赖门禁，不依赖宿主沙箱；真实隔离另由 local_checks 专项验证。
+        assert root == app.config.get_workspace('combined').root
+        assert spec['stage'] == 'integration' and name == 'combined'
+        calls.append(bound['task_id'])
+        if check_outcome == 'unsupported':
+            raise AsterunError('CAPABILITY_UNSUPPORTED', '合成夹具：缺少 OS 沙箱')
+        return {'passed': False, 'diagnostic': '合成夹具：组合检查失败',
+                'acceptance_unchanged': True, 'independent_review': False}
+
+    monkeypatch.setattr(local_checks, 'execute_check', execute)
     try:
         parents = [app.handle('task.submit', {'workspace': alias}).ids['task_id'] for alias in ('demo', 'second')]
         for parent in parents:
@@ -130,7 +148,15 @@ def test_failed_combination_is_not_accepted_after_both_workers_pass(isolated_env
         snap = app.handle('workflow.snapshot', {'task_id': id, 'target_paths': ['note.txt']}).data
         bound = {'task_id': id, 'target_paths': ['note.txt'], **{'expected_' + k: snap[k] for k in ('run_id', 'revision', 'input_hash', 'target_hash')}}
         checked = app.handle('workflow.check', {**bound, 'check_name': 'combined'})
-        assert checked.ok and not checked.data['passed'], checked.error
+        if check_outcome == 'failed':
+            assert checked.ok and not checked.data['passed'], checked.error
+        else:
+            assert not checked.ok and checked.error['code'] == 'CAPABILITY_UNSUPPORTED'
+            run = app.store.get_run(app._require_task(id).current_run_id)
+            job = next(iter(run.native['local_checks'].values()))
+            assert job['status'] == 'failed' and job['error_code'] == 'CAPABILITY_UNSUPPORTED'
+            assert 'result' not in job
         assert accept(app, id)['acceptance'] == 'failed'
+        assert calls == [id]
     finally:
         app.close()
