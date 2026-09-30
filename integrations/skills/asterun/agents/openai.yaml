@@ -1,0 +1,4 @@
+interface:
+  display_name: "Asterun"
+  short_description: "委托 Agent 执行、紧凑观察、固定验收与有限修复"
+  default_prompt: "使用 $asterun 按既有授权提交或继续任务，核对实际执行与验收证据。"
