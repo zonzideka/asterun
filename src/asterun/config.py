@@ -29,8 +29,8 @@ CONFIG_KEYS = {
 }
 WORKSPACE_KEYS = {"root", "allow_non_git"}
 BACKEND_KEYS = {"kind", "enabled", "bin", "home", "model", "desktop_projects", *GROK_EXECUTION_OPTIONS}
-WORKFLOW_KEYS = {"preset", "require_review", "review_backend", "approved_substitute", "max_repairs"}
-SCHEDULER_KEYS = {"max_queue", "per_backend_concurrency", "max_runs_per_task"}
+WORKFLOW_KEYS = {"preset", "require_review", "review_backend", "approved_substitute", "max_repairs", "local_checks", "checkpoint_paths", "stage_gates", "input_optimization"}
+SCHEDULER_KEYS = {"max_queue", "per_backend_concurrency", "max_runs_per_task", "max_concurrency", "local_check_concurrency"}
 ENTRIES_KEYS = {"cli", "mcp"}
 KNOWN_BACKEND_KINDS = set(BUILTINS)
 
@@ -66,6 +66,8 @@ class BackendConfig:
     timeout_seconds: int | None = None
     desktop_projects: bool | None = None
     session_sync_home: str | None = None
+    session_policy: str | None = None
+    quota_epoch: str | None = None
 
     @property
     def executable(self) -> bool:
@@ -99,6 +101,10 @@ class WorkflowConfig:
     review_backend: str | None = None
     approved_substitute: str | None = None
     max_repairs: int = 2
+    local_checks: dict[str, Any] = field(default_factory=dict)
+    checkpoint_paths: dict[str, list[str]] = field(default_factory=dict)
+    stage_gates: dict[str, str] = field(default_factory=dict)
+    input_optimization: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -107,6 +113,10 @@ class WorkflowConfig:
             "review_backend": self.review_backend,
             "approved_substitute": self.approved_substitute,
             "max_repairs": self.max_repairs,
+            **({"local_checks": self.local_checks} if self.local_checks else {}),
+            **({"checkpoint_paths": self.checkpoint_paths} if self.checkpoint_paths else {}),
+            **({"stage_gates": self.stage_gates} if self.stage_gates else {}),
+            **({"input_optimization": self.input_optimization} if self.input_optimization else {}),
         }
 
 
@@ -115,12 +125,16 @@ class SchedulerConfig:
     max_queue: int = 32
     per_backend_concurrency: int = 1
     max_runs_per_task: int = 4
+    max_concurrency: int | None = None
+    local_check_concurrency: int = 2
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "max_queue": self.max_queue,
             "per_backend_concurrency": self.per_backend_concurrency,
             "max_runs_per_task": self.max_runs_per_task,
+            **({"max_concurrency": self.max_concurrency} if self.max_concurrency is not None else {}),
+            **({"local_check_concurrency": self.local_check_concurrency} if self.local_check_concurrency != 2 else {}),
         }
 
 
@@ -350,6 +364,8 @@ def load_config(path: Path) -> AsterunConfig:
             raise AsterunError(INVALID_CONFIG, f"default_backend 指向未知后端：{default_backend}")
 
     workflow = _load_workflow(raw.get("workflow"))
+    if set(workflow.checkpoint_paths) - set(workspaces):
+        raise AsterunError(INVALID_CONFIG, "checkpoint_paths 指向未登记的工作区")
     scheduler = _load_scheduler(raw.get("scheduler"))
     entries = _load_entries(raw.get("entries"))
     if workflow.review_backend and workflow.review_backend not in backends:
@@ -393,12 +409,27 @@ def _load_workflow(raw: object) -> WorkflowConfig:
     max_repairs = body.get("max_repairs", 2)
     if not isinstance(max_repairs, int) or isinstance(max_repairs, bool) or max_repairs < 0:
         raise AsterunError(INVALID_CONFIG, "workflow.max_repairs 必须是非负整数")
+    from asterun.local_checks import validate_checks
+    local_checks = validate_checks(body.get("local_checks", {}))
+    from asterun.stage_gates import validate_policy
+    stage_gates = validate_policy(body.get("stage_gates", {}))
+    from asterun.input_optimization import validate as validate_optimization
+    optimization = validate_optimization(body.get("input_optimization", {}))
+    checkpoint_paths = body.get("checkpoint_paths", {})
+    if not isinstance(checkpoint_paths, dict):
+        raise AsterunError(INVALID_CONFIG, "checkpoint_paths 必须按工作区指定文件列表")
+    for paths in checkpoint_paths.values():
+        validate_checks({"checkpoint": {"argv": ["/unused"], "inputs": paths}})
     return WorkflowConfig(
         preset=preset,
         require_review=require_review,
         review_backend=None if review_backend is None else str(review_backend),
         approved_substitute=None if substitute is None else str(substitute),
         max_repairs=max_repairs,
+        local_checks=local_checks,
+        checkpoint_paths=checkpoint_paths,
+        stage_gates=stage_gates,
+        input_optimization=optimization,
     )
 
 
@@ -417,7 +448,14 @@ def _load_scheduler(raw: object) -> SchedulerConfig:
     ):
         if not isinstance(value, int) or isinstance(value, bool) or value < 1:
             raise AsterunError(INVALID_CONFIG, f"scheduler.{name} 必须是正整数")
+    total = body.get("max_concurrency")
+    checks = body.get("local_check_concurrency", 2)
+    if total is not None and (type(total) is not int or not 1 <= total <= 32):
+        raise AsterunError(INVALID_CONFIG, "max_concurrency 需要 1 到 32")
+    if type(checks) is not int or not 1 <= checks <= 8:
+        raise AsterunError(INVALID_CONFIG, "local_check_concurrency 需要 1 到 8")
     return SchedulerConfig(
+        max_concurrency=total, local_check_concurrency=checks,
         max_queue=int(max_queue),
         per_backend_concurrency=int(concurrency),
         max_runs_per_task=int(max_runs),

@@ -29,7 +29,8 @@ class Scheduler:
         return self.inflight.get(backend, 0)
 
     def can_start(self, backend: str, workspace: str | None = None) -> bool:
-        return (self.inflight_for(backend) < self.config.per_backend_concurrency
+        return ((self.config.max_concurrency is None or sum(self.inflight.values()) < self.config.max_concurrency)
+                and self.inflight_for(backend) < self.config.per_backend_concurrency
                 and (workspace is None or workspace not in self.workspaces.values()))
 
     def can_enqueue(self) -> bool:
@@ -89,6 +90,8 @@ class Scheduler:
         return {
             "max_queue": self.config.max_queue,
             "per_backend_concurrency": self.config.per_backend_concurrency,
+            "max_concurrency": self.config.max_concurrency,
+            "local_check_concurrency": self.config.local_check_concurrency,
             "queued": len(self.queue),
             "inflight": dict(self.inflight),
             "queue": [

@@ -152,6 +152,21 @@ def compact_task_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
             result["task"]["external_evaluation"] = _fields(task["external_evaluation"], (
                 "source", "expected_run_id", "expected_revision", "expected_input_hash", "target_hash",
             ))
+        if isinstance(task.get("dependencies"), list):
+            result["task"]["dependencies"] = [id for id in task["dependencies"][:16] if isinstance(id, str) and _small_scalar(id)]
+        if isinstance(task.get("external_observations"), dict):
+            result["task"]["external_observations_count"] = len(task["external_observations"])
+        elif type(task.get("external_observations_count")) is int:
+            result["task"]["external_observations_count"] = task["external_observations_count"]
+        if isinstance(task.get("dependency_state"), dict):
+            result["task"]["dependency_state"] = _fields(task["dependency_state"], ("ready", "stale", "blocked_count"))
+        if isinstance(task.get("stage_gate"), dict):
+            gate = task["stage_gate"]
+            short = _fields(gate, ("satisfied", "status"))
+            if isinstance(gate.get("states"), dict):
+                short["states"] = {key: _fields(row, ("status", "source", "satisfied"))
+                    for key, row in gate["states"].items() if key in {"coding", "consumer", "independent_review", "integration", "deployment"} and isinstance(row, dict)}
+            result["task"]["stage_gate"] = short
         if isinstance(task.get("findings"), list):
             result["task"]["findings_count"] = len(task["findings"])
         elif type(task.get("findings_count")) is int and _small_scalar(task["findings_count"]) and task["findings_count"] >= 0:
@@ -170,12 +185,28 @@ def compact_task_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
             short_run["native"] = _fields(native, (
                 "session_id", "thread_id", "turn_id", "backend_session_id", "backend_turn_id",
                 "mode", "resume_supported", "claude_session_id",
-                "native_resumed", "native_checked", "execution_profile", "transport", "stop_reason",
+                "native_resumed", "native_checked", "execution_profile", "transport", "stop_reason", "provider_failure", "resume_requested",
                 "tool_calls_count", "num_turns", "summary_truncated", "events_truncated",
                 "total_cost_usd", "total_cost_usd_ticks", "usage_source",
                 "usage_is_incomplete", "cost_is_partial", "usage_scope", "cost_reported", "cost_source",
             ))
             short_run["native"].update(_compact_usage(native))
+            if isinstance(native.get("context_transition"), dict):
+                short_run['native']['context_transition'] = _fields(native['context_transition'], (
+                    'strategy', 'phase', 'source_run_id', 'successor_thread_id', 'compaction_turn_id', 'usage_attribution', 'new_session_is_native_resume'))
+            if isinstance(native.get("checkpoint"), dict):
+                short_run["native"]["checkpoint"] = _fields(native["checkpoint"], (
+                    "status", "baseline_sha256", "latest_sha256", "target_hash", "changed_files", "scope", "next_action"))
+            if isinstance(native.get("local_checks"), (dict, list)):
+                raw_jobs = native["local_checks"]
+                jobs = list(raw_jobs.values()) if isinstance(raw_jobs, dict) else raw_jobs[-4:]
+                count = native.get("local_checks_count")
+                short_run["native"]["local_checks_count"] = max(count, len(jobs)) if type(count) is int and 0 <= count <= 32 else len(jobs)
+                short_run["native"]["local_checks"] = [_fields(job, (
+                    "job_id", "status", "stage", "passed", "check_name", "created_at", "finished_at", "error_code"))
+                    for job in jobs[-4:] if isinstance(job, dict)]
+            if isinstance(native.get("provider_failure"), dict):
+                short_run["native"]["provider_failure"] = _fields(native["provider_failure"], ("kind", "status_code", "source"))
         if "output" in run or "output_available" in run:
             short_run["output_available"] = (run["output_available"] if type(run.get("output_available")) is bool
                                              else run.get("output") is not None)

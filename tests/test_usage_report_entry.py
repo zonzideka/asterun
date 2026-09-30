@@ -152,7 +152,7 @@ def test_mcp_schema_invocation_and_invalid_scope_are_consistent(config_path, iso
         tool = next(tool for tool in listed["result"]["tools"] if tool["name"] == "usage_report")
         schema = tool["inputSchema"]
         assert set(schema["properties"]) == {"task_id", "workspace", "conversation_id", "include_runs",
-                                             "page_size", "cursor"}
+                                             "page_size", "cursor", "include_observations"}
         assert schema["additionalProperties"] is False
         request = {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
             "name": "usage_report", "arguments": {"task_id": task.id.value, "include_runs": True}}}

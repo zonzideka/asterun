@@ -18,6 +18,7 @@ include docs/plugins.md
 include docs/capability-profile.md
 include docs/review-consumer.md
 include docs/caller-orchestration.md
+include docs/standard-skill.md
 include docs/release-v0.1.md
 include docs/en/user-manual.md
 include docs/en/install.md
@@ -29,6 +30,7 @@ include docs/en/codex-projects.md
 include docs/en/plugins.md
 include docs/en/capability-profile.md
 include docs/en/review-consumer.md
+include docs/en/standard-skill.md
 include docs/en/release-v0.1.md
 include docs/en/protocol/IMPLEMENTATION.md
 recursive-include docs/adr *.md
@@ -47,6 +49,12 @@ include scripts/backup-state.sh
 include scripts/restore-state.sh
 include scripts/check-release-package.py
 include scripts/verify-installed-control.py
+include scripts/package-standard-skill.py
+include integrations/skills/asterun/SKILL.md
+include integrations/skills/asterun/LICENSE
+include integrations/skills/asterun/scripts/run.py
+include integrations/skills/asterun/references/workflow.md
+include integrations/skills/asterun/agents/openai.yaml
 exclude scripts/verify-offline.sh
 prune references
 prune tests

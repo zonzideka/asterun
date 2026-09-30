@@ -162,6 +162,30 @@ class SqliteStore:
     def close(self) -> None:
         self._conn.close()
 
+    def save_payload_manifest(self, run_id, scope, manifest):
+        from asterun.control_store import ControlStore
+        with ControlStore(self._conn, initialize=False).transaction():
+            run = self.get_run(run_id)
+            run.native.setdefault('payload_manifests', {})[scope] = manifest
+            self.save_run(run)
+
+    def last_event_sequence(self, run_id):
+        return int(self._conn.execute("SELECT COALESCE(MAX(seq),0) FROM events WHERE run_id=?", (run_id.value,)).fetchone()[0])
+
+    def commit_handoff(self, task, run, expected, revision, content):
+        from asterun.control_store import ControlStore
+        from asterun.handoff import commit
+        with ControlStore(self._conn, initialize=False).transaction():
+            return commit(self, task, run, expected, revision, content)
+
+    def put_checkpoint_blob(self, content: bytes) -> str:
+        from asterun.control_store import ControlStore
+        return ControlStore(self._conn, initialize=False).put_blob("asterun_checkpoint_v1", content)
+
+    def get_checkpoint_blob(self, sha256: str) -> bytes:
+        from asterun.control_store import ControlStore
+        return ControlStore(self._conn, initialize=False).get_blob("asterun_checkpoint_v1", sha256)
+
     def save_task(self, task: Task) -> None:
         self._upsert("tasks", task.id.value, task.to_dict())
 
@@ -244,6 +268,8 @@ class SqliteStore:
                     if found.task_id is None or found.run_id is None:
                         raise AsterunError(NOT_FOUND, "已有意图缺少任务引用")
                     return found, self.get_task(found.task_id), self.get_run(found.run_id), True
+                from asterun.context_transition import cas
+                cas(self, task, run)
                 operation.task_id = task.id
                 operation.run_id = run.id
                 operation.status = OperationStatus.INTENDED

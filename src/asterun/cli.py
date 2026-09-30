@@ -55,6 +55,7 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("--workspace")
     report.add_argument("--task-id")
     report.add_argument("--conversation-id")
+    report.add_argument("--include-observations", action="store_true", help="附不计入运行总计的原生会话观察")
     report.add_argument("--include-runs", action="store_true", help="附各运行的原生用量明细")
     report.add_argument("--page-size", type=int, help="每类明细每页最多 1–100 条，默认 20；总计覆盖完整查询")
     report.add_argument("--cursor", help="沿用上页 pagination.next_cursor 和相同查询范围")
@@ -185,9 +186,34 @@ def build_parser() -> argparse.ArgumentParser:
     snapshot.add_argument("task_id")
     snapshot.add_argument("--target", action="append", dest="target_paths", required=True)
     snapshot.add_argument("--run-id", dest="expected_run_id")
+    local_check = sub.add_parser("workflow-check", help="在无网络临时副本中执行配置固定的局部检查")
+    local_check.add_argument("task_id")
+    local_check.add_argument("--request", type=Path, required=True, help="检查名和 workflow-snapshot 的完整版本绑定")
+    for command in ("workflow-check-status", "workflow-check-cancel"):
+        check_job = sub.add_parser(command, help="查询或取消持久化的受控检查")
+        check_job.add_argument("task_id")
+        check_job.add_argument("--run-id", dest="expected_run_id", required=True)
+        check_job.add_argument("--job-id", required=True)
+    for name in ("workflow-payload", "workflow-check-detail", "workflow-handoff-create", "workflow-handoff-read"):
+        command = sub.add_parser(name, help="载荷元数据、已有诊断范围读取或离线交接")
+        command.add_argument("--request", type=Path, required=True)
+    checkpoint = sub.add_parser("workflow-checkpoint", help="核对私有检查点与当前源树，不恢复或派发")
+    checkpoint.add_argument("task_id")
+    checkpoint.add_argument("--run-id", dest="expected_run_id", required=True)
+    checkpoint.add_argument("--include-artifact", action="store_true", default=None)
+    evidence = sub.add_parser("workflow-evidence", help="读取固定源码版本的分阶段证据，缺项保持未验")
+    evidence.add_argument("task_id")
+    evidence.add_argument("--request", type=Path, required=True)
+    attest = sub.add_parser("workflow-attest", help="导入固定版本的阶段回执，保留外部自报来源")
+    attest.add_argument("task_id")
+    attest.add_argument("--request", type=Path, required=True)
     quality = sub.add_parser("workflow-start", help="启动版本绑定的审查、修复、复核流程")
     quality.add_argument("task_id")
     quality.add_argument("--request", type=Path, required=True, help="含 idempotency_key、target_paths、checks 的 JSON")
+    imported = sub.add_parser("session-import", help="只读附加直调会话日志索引，不接管、不计入运行用量")
+    imported.add_argument("--request", type=Path, required=True)
+    materialize = sub.add_parser("workspace-materialize", help="将已配置的空槽位创建为固定提交的独立工作树")
+    materialize.add_argument("--request", type=Path, required=True)
     sub.add_parser("scheduler-status", help="查看有界队列快照；数值是候选默认值，不是已测容量")
     sub.add_parser("diagnose", help="脱敏诊断，不导出凭据或启动后端")
     backup = sub.add_parser("state-backup", help="用 SQLite backup API 导出状态库")
@@ -217,7 +243,7 @@ def _load_request(args: argparse.Namespace) -> dict[str, Any]:
     mapping = {
         "plugin_id": "plugin_id", "connection_ref": "connection_ref", "pool_ref": "pool_ref",
         "meter": "meter", "window_id": "window_id",
-        "workspace": "workspace",
+        "workspace": "workspace", "job_id": "job_id", "include_artifact": "include_artifact",
         "text": "text",
         "script": "script",
         "backend": "backend",
@@ -261,6 +287,8 @@ def _load_request(args: argparse.Namespace) -> dict[str, Any]:
         payload["compact"] = True
     if getattr(args, "include_runs", False):
         payload["include_runs"] = True
+    if getattr(args, "include_observations", False):
+        payload["include_observations"] = True
     checks = getattr(args, "checks", None)
     if checks:
         parsed = json.loads(checks)
@@ -329,6 +357,15 @@ COMMAND_METHODS = {
     "task-present": "task.present",
     "workflow-evaluate": "workflow.evaluate",
     "workflow-snapshot": "workflow.snapshot",
+    "workflow-check": "workflow.check",
+    **{name.replace(".", "-", 1): name for name in ("workflow.payload", "workflow.check-detail", "workflow.handoff-create", "workflow.handoff-read")},
+    "workflow-checkpoint": "workflow.checkpoint",
+    "workflow-evidence": "workflow.evidence",
+    "workflow-attest": "workflow.attest",
+    "session-import": "session.import",
+    "workspace-materialize": "workspace.materialize",
+    "workflow-check-status": "workflow.check-status",
+    "workflow-check-cancel": "workflow.check-cancel",
     "workflow-repair": "workflow.repair",
     "workflow-start": "workflow.start",
     "scheduler-status": "scheduler.status",

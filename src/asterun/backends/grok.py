@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import ExitStack
 import logging
 import os
 import shutil
@@ -60,7 +61,7 @@ DEFAULT_CODE_TIMEOUT_SECONDS = 900
 
 
 def build_grok_code_command(grok_bin: str, *, cwd: Path, prompt_file: Path,
-                            session_id: str, model: str | None, max_turns: int) -> list[str]:
+                            session_id: str, model: str | None, max_turns: int, resume: bool = False) -> list[str]:
     """Explicit coding grant, constrained by the native workspace sandbox and tool set."""
     validate_grok_execution_options({"execution_profile": CODE_PROFILE, "max_turns": max_turns}, "grok")
     return [grok_bin, "--cwd", str(cwd), "--sandbox", CODE_SANDBOX,
@@ -69,7 +70,7 @@ def build_grok_code_command(grok_bin: str, *, cwd: Path, prompt_file: Path,
         "--tools", ",".join(CODE_TOOLS), "--disallowed-tools", "search_tool,use_tool,Agent",
         "--disable-web-search", "--no-subagents", "--no-plan",
         "--model", resolve_grok_model(model), "--max-turns", str(max_turns),
-        "--session-id", session_id, "--prompt-file", str(prompt_file),
+        "--resume" if resume else "--session-id", session_id, "--prompt-file", str(prompt_file),
         "--output-format", "streaming-json"]
 
 
@@ -282,6 +283,7 @@ class GrokAcpTransport:
 
 
 class GrokBackend:
+    accepts_native_context = True
     def __init__(self, config: BackendConfig) -> None:
         validate_grok_execution_options({key: getattr(config, key) for key in GROK_EXECUTION_OPTIONS
                                          if getattr(config, key) is not None}, f"backends.{config.name}")
@@ -295,6 +297,25 @@ class GrokBackend:
     @property
     def execution_profile(self) -> str:
         return self.config.execution_profile or PROFILE
+
+    @property
+    def supports_native_resume(self):
+        return self.execution_profile == CODE_PROFILE and self.config.session_policy == "resume"
+
+    def resume_native(self, native, cwd):
+        from asterun.backends.grok_session import binding, session_lease, verify_resume_cli
+        if not self.supports_native_resume:
+            raise AsterunError(CAPABILITY_UNSUPPORTED, "需显式启用编码 session_policy=resume")
+        home = self._prepared_home()
+        binary = self.discover_bin()
+        if binary is None:
+            raise self.unavailable_error()
+        env = build_environment(home, execution_profile=CODE_PROFILE)
+        verify_resume_cli(binary, env)
+        expected = binding(self.config, home, cwd, binary, native.get("asterun_identity"))
+        with session_lease(home, cwd, native.get("backend_session_id"), expected, resume=True):
+            return {"native_checked": True, "native_resumed": False, "resume_ready": True,
+                    "verification": "local_binding_only"}
 
     def _sync_native_session(self, session_id):
         if not session_id or not self.config.session_sync_home:
@@ -373,6 +394,11 @@ class GrokBackend:
     def inspect(self) -> dict[str, Any]:
         self.calls.append(BackendCall("inspect"))
         binary = self.discover_bin()
+        capabilities = [item.to_dict() for item in capability_rows("grok")]
+        for item in capabilities:
+            if item["name"] == "resume_session" and self.supports_native_resume:
+                item.update(adapter_support="supported", verification_status="offline_verified",
+                            verification_environment="isolated_fake_cli")
         return {
             "backend": self.config.name,
             "kind": "grok",
@@ -392,9 +418,11 @@ class GrokBackend:
             "timeout_seconds": self.config.timeout_seconds or (DEFAULT_CODE_TIMEOUT_SECONDS if self.execution_profile == CODE_PROFILE else 180),
             "handshake_is_not_resume": True,
             "native_resume_verified": False,
-            "capabilities": [item.to_dict() for item in capability_rows("grok")],
+            "session_policy": self.config.session_policy or "new",
+            "native_resume_enabled": self.supports_native_resume,
+            "capabilities": capabilities,
             "methods": [] if self.execution_profile == CODE_PROFILE else list(GROK_ACP_METHODS),
-            "message": "inspect 不启动进程；文本使用 ACP，显式编码使用有界 headless。原生续接与取消仍未验证。",
+            "message": "inspect 不启动进程；编码可显式启用受管会话续接，CLI 能力在派发前核对。真实续接和取消仍待现场验证。",
         }
 
     def verify_connection(self) -> dict[str, Any]:
@@ -421,10 +449,10 @@ class GrokBackend:
         if self.execution_profile != CODE_PROFILE:
             return self.dispatch(task_id, run_id, script, text, cwd=cwd)
         return self._dispatch_code(task_id, run_id, script, text, cwd=cwd, publish=publish,
-                                   stopping=stopping if stopping is not None else Event())
+                                   native=native, stopping=stopping if stopping is not None else Event())
 
     def _dispatch_code(self, task_id: TaskId, run_id: RunId, script: str, text: str, *,
-                       cwd: Path | None, publish=None, stopping=None) -> dict[str, Any]:
+                       cwd: Path | None, publish=None, stopping=None, native=None) -> dict[str, Any]:
         from asterun.backends.base import require_dispatch_cwd
         from asterun.backends.grok_code import CodeProcessHandle, run_code
 
@@ -433,6 +461,8 @@ class GrokBackend:
         runner_entered = False
         session_id = ""
         process_handle = None
+        lease = ExitStack()
+        resumed = False
         try:
             if not self.can_dispatch():
                 raise self.unavailable_error()
@@ -441,17 +471,25 @@ class GrokBackend:
             home = self._prepared_home()
             binary = self.discover_bin()
             assert binary is not None
+            from asterun.backends.grok_session import binding, session_lease, verify_resume_cli
+            native = native or {}
+            previous = native.get("backend_session_id")
+            resumed = bool(previous and self.supports_native_resume)
+            session_id = previous if resumed else str(uuid4())
+            env = build_environment(home, execution_profile=CODE_PROFILE)
+            if resumed:
+                verify_resume_cli(binary, env)
+            expected = binding(self.config, home, cwd, binary, native.get("asterun_identity"))
+            lease.enter_context(session_lease(home, cwd, session_id, expected, resume=resumed, update_after=True))
             # Prompt files are private, temporary, and outside the source workspace.
             with tempfile.TemporaryDirectory(prefix="asterun-grok-code-") as directory:
                 prompt_file = Path(directory) / "prompt.txt"
                 fd = os.open(prompt_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
                 with os.fdopen(fd, "w", encoding="utf-8") as handle:
                     handle.write(text)
-                session_id = str(uuid4())
                 command = build_grok_code_command(str(binary), cwd=cwd, prompt_file=prompt_file,
                     session_id=session_id, model=self.config.model,
-                    max_turns=self.config.max_turns or DEFAULT_CODE_MAX_TURNS)
-                env = build_environment(home, execution_profile=CODE_PROFILE)
+                    max_turns=self.config.max_turns or DEFAULT_CODE_MAX_TURNS, resume=resumed)
                 with self._code_lock:
                     if self._closing:
                         raise AsterunError(BACKEND_UNAVAILABLE, "Grok 后端正在关闭，未启动编码进程")
@@ -462,14 +500,15 @@ class GrokBackend:
                     task_id=task_id.value, run_id=run_id.value,
                     timeout_seconds=self.config.timeout_seconds or DEFAULT_CODE_TIMEOUT_SECONDS,
                     publish=publish, stopping=stopping if stopping is not None else Event(),
-                    process_handle=process_handle)
+                    process_handle=process_handle, resumed=resumed)
         except Exception as error:
             # An unexpected runner/cleanup exception cannot prove the prompt was not sent.
             return {"status": str(RunStatus.PENDING_RECONCILE if runner_entered else RunStatus.FAILED),
                 "terminated": not runner_entered,
                 "error_code": "REMOTE_STATE_UNKNOWN" if runner_entered else (
                     error.code if isinstance(error, AsterunError) else BACKEND_UNAVAILABLE),
-                "summary": "Grok 编码运行结果未确认，需要对账" if runner_entered else "Grok 编码派发准备失败，尚未提交模型轮次", "events": [],
+                "summary": ("Grok 编码运行结果未确认，需要对账" if runner_entered else
+                            error.message if isinstance(error, AsterunError) else "Grok 编码派发准备失败，尚未提交模型轮次"), "events": [],
                 "native": {"execution_profile": CODE_PROFILE, "native_resumed": False, "session_id": session_id,
                     DISPATCH_RECEIPT_KEY: {"task_id": task_id.value, "run_id": run_id.value,
                         "stage": "prompt" if runner_entered else "preflight", "prompt_attempted": runner_entered,
@@ -485,10 +524,11 @@ class GrokBackend:
                     with self._code_lock:
                         self._active_code_handles.discard(process_handle)
             self._sync_native_session(session_id)
+            lease.close()
 
-    def dispatch(self, task_id: TaskId, run_id: RunId, script: str, text: str, *, cwd: Path | None = None) -> dict[str, Any]:
+    def dispatch(self, task_id: TaskId, run_id: RunId, script: str, text: str, *, cwd: Path | None = None, native=None) -> dict[str, Any]:
         if self.execution_profile == CODE_PROFILE:
-            return self._dispatch_code(task_id, run_id, script, text, cwd=cwd)
+            return self._dispatch_code(task_id, run_id, script, text, cwd=cwd, native=native)
         self.calls.append(
             BackendCall("dispatch", {"task_id": task_id.value, "run_id": run_id.value, "script": script, "text": text})
         )

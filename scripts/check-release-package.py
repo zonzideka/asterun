@@ -38,7 +38,7 @@ PRIVATE_MEMBERS = (
 PUBLIC_GUIDES = (
     "user-manual", "install", "antigravity", "approval-policy", "pr-review",
     "fixed-read-scope", "codex-projects", "plugins", "capability-profile",
-    "review-consumer", "release-v0.1",
+    "review-consumer", "release-v0.1", "standard-skill",
 )
 PLUGIN_NAMES = ("antigravity", "cursor", "jules")
 

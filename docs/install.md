@@ -121,7 +121,7 @@ asterun-grok inspect --home /absolute/private/grok-profile
 
 `model` 默认请求 `grok-4.6`，显式指定的模型原样交给 CLI。`text-only-v1` 最多运行一轮，默认超时 180 秒，使用空工具集和原生 read-only 沙箱。派发时使用专用 HOME，清理继承的认证和配置覆盖，并关闭配置同步、自动更新和扩展工具。
 
-专用配置、扩展和工作区祖先目录中的额外 `.grok` 配置来源须符合 profile。原生沙箱的隔离效果依平台而异；处理不可信材料时，使用独立 OS 用户或执行主机。自动原生续接、取消和审批桥接尚未接入。
+专用配置、扩展和工作区祖先目录中的额外 `.grok` 配置来源须符合 profile。原生沙箱的隔离效果依平台而异；处理不可信材料时，使用独立 OS 用户或执行主机。文本模式原生续接、取消和审批桥接尚未接入；编码模式的可选续接见下文。
 
 启动失败若确认发生在发送 prompt 前，记录为失败和 0 turns；发送后的不明结果保留 UNKNOWN 与已知原生会话引用。后续查询沿用原任务。
 
@@ -151,6 +151,14 @@ asterun-grok prepare --home /absolute/private/grok-profile --execution-profile w
 v1 将该对象放入 `backends.grok-code`；v2 将 bin/home/model 和编码选项放入内置 Grok 连接的 `options`。应用配置修订后，使用 `task-submit --workspace PROJECT --backend grok-code --text TR` 提交。若需隔离文件修改，先创建 Git worktree，再将其实际目录登记为工作区。
 
 原生回合默认 12，范围 1-100；超时默认 900 秒，范围 1-3600。提交和派发时均检查 `workspace.read`、`workspace.write`、`process.execute`。旧配置省略 `execution_profile` 时沿用文本模式。
+
+编码配置可显式增加 `"session_policy": "resume"`。第一轮创建原生会话，之后 `task-submit --conversation-id ID` 或原任务的 `workflow-repair` 使用 `--resume`；省略或设置 `new` 保持旧行为。切换策略不自动认领旧会话：只接受本版 Asterun 创建并保留私有绑定记录的会话。派发前读取本地 CLI 帮助确认续接参数，核对 CLI 字节、账户/主机、profile、模型、工作区和原生日志摘要，并持有跨进程会话锁。会话缺失、日志被外部续接、绑定漂移或同时使用时均拒绝，不静默换新会话。
+
+`session-resume --conversation-id ID --native` 对编码模式只做本地绑定与可续接条件检查，返回 `resume_ready`，不发送模型请求。实际轮次收到匹配的原生 end 事件后才记录 `native_resumed=true`。未决运行必须先对账；不能把超时直接视为已取消。离线协议替身已覆盖续接，真实模型与原生客户端的现场续接仍待验证。
+
+Grok 编码结果的 `native.provider_failure` 区分额度耗尽、限流、认证失败、回合上限、超时和协议不完整；不保存原始错误尾部。已经可能执行的运行仍保留 `REMOTE_STATE_UNKNOWN`，即使同时识别出 HTTP 402。持久的 402 记录会停止同池新派发，重启不会清除；在途运行不被自动取消，预留不因此退款。v2 使用原派发绑定的计费池和 `window_id`，v1 使用独立 home、账户、主机和可选 `quota_epoch`。确认额度恢复后才显式更新窗口；不因修改模型或普通 revision 自动恢复，不自动换账号或改用付费 API，余额仍为 unknown。
+
+直接运行 Grok CLI 不经过上述生命周期钩子，也不会触发 Asterun 自动日志同步。直调结束后仍需调用下一节的 `asterun-grok sync-sessions`；本次没有修改其它项目的直调脚本。
 
 编码模式使用 headless streaming-json，按配置直接执行文件读写、搜索和终端管理工具。Web、MCP 和子代理保持关闭。原生必须成功应用命名沙箱：读取范围覆盖文件系统，写入范围包括工作区、原生 HOME 和临时目录；macOS 子进程仍可能访问网络。执行用户与主机按仓库信任程度选择。
 
@@ -252,3 +260,5 @@ python3 scripts/verify-installed-control.py --venv /absolute/venv \
 脚本检查 CLI/MCP、输出与产物、事件、幂等、核心重启和备份恢复。使用普通 Python 运行，以保留断言。
 
 Antigravity 的专用 HOME、权限绑定、迁移和运行命令见[操作说明](antigravity.md)。可选插件与 v2 配置见[插件说明](plugins.md)。
+
+2026-09-24 维护接口新增后台局部检查、检查状态/取消、选定文件检查点及分阶段证据。异步检查需要常驻核心和幂等键；缓存与检查点默认关闭，启用方法、权限和恢复边界见[调用方工作流](caller-orchestration.md#后台检查检查点和分阶段证据)。配置了检查点后，状态备份会包含选定源码的私有副本；不再仅是任务元数据。部署仍使用独立实例切换流程。

@@ -90,3 +90,27 @@ def test_human_owned_queued_task_is_not_auto_drained(isolated_env: Path, workspa
     assert fetched.data["task"]["paused"] is True
     snapshot = app.handle("scheduler.status", {})
     assert queued.ids["task_id"] in {item["task_id"] for item in snapshot.data["queue"]}
+
+
+def test_global_slots_apply_across_backends_without_changing_legacy_defaults():
+    from asterun.config import SchedulerConfig
+    from asterun.scheduler import Scheduler
+    from asterun.ids import RunId
+    limited = Scheduler(SchedulerConfig(per_backend_concurrency=3, max_concurrency=1))
+    limited.start('a', RunId('one'), '/one')
+    assert not limited.can_start('b', '/two')
+    limited.finish('a', RunId('one'))
+    assert limited.can_start('b', '/two')
+    legacy = Scheduler(SchedulerConfig(per_backend_concurrency=3))
+    legacy.start('a', RunId('one'), '/one')
+    assert legacy.can_start('b', '/two')
+    assert not legacy.can_start('b', '/one')
+
+
+def test_separate_check_and_implementation_limits(isolated_env, workspace_root):
+    app, _ = _scheduler_app(isolated_env, workspace_root, max_concurrency=3, local_check_concurrency=1)
+    try:
+        assert app.config.scheduler.local_check_concurrency == 1
+        assert app.scheduler.snapshot()['max_concurrency'] == 3
+    finally:
+        app.close()

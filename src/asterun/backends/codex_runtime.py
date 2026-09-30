@@ -84,6 +84,12 @@ class CodexRuntime:
         if native.get("backend_session_id") and native.get("read_scope_binding") != binding:
             raise AsterunError(BINDING_MISMATCH, "原生线程的固定读取范围不匹配")
 
+        transition = deepcopy(native.get("context_transition"))
+        if transition:
+            from asterun.backends.codex_context import preflight
+            current = preflight(str(self.backend.discover_bin()))
+            if current != transition['capability_evidence']:
+                raise AsterunError(BINDING_MISMATCH, "原生安装/schema 已变化，不执行上下文切换")
         self.backend.calls.append(BackendCall("dispatch", {"run_id": run_id.value}))
         key = run_id.value
         try:
@@ -103,11 +109,20 @@ class CodexRuntime:
                 thread_params = {"approvalPolicy": "never", "sandbox": "read-only",
                     "config": read_scope_config(transport, cwd)}
             if native.get("backend_session_id"):
-                self._read(transport, native, cwd, check_latest=True)
-                session = transport.resume_session(thread_id=native["backend_session_id"], cwd=cwd,
-                    resume_params=thread_params)
-                if session.session_id != native["backend_session_id"]:
-                    raise AsterunError(BINDING_MISMATCH, "续接返回了不同的原生线程")
+                source_thread = self._read(transport, native, cwd, check_latest=True)
+                if transition and (not source_thread.get('turns') or source_thread['turns'][-1].get('status') not in TERMINALS):
+                    raise AsterunError(REMOTE_STATE_UNKNOWN, "缺少源原生轮次的确定终态")
+                if transition and transition['strategy'] == 'handoff_fresh':
+                    transition['phase'] = 'session_create_requested'
+                    publish({'status': 'dispatching', 'native': {'context_transition': transition}, 'terminated': False})
+                    session = transport.create_session(cwd=cwd, thread_params=thread_params)
+                    if session.session_id == native['backend_session_id']:
+                        raise AsterunError(BINDING_MISMATCH, "交接重建必须返回新的原生线程")
+                else:
+                    session = transport.resume_session(thread_id=native["backend_session_id"], cwd=cwd,
+                        resume_params=thread_params)
+                    if session.session_id != native["backend_session_id"]:
+                        raise AsterunError(BINDING_MISMATCH, "续接返回了不同的原生线程")
             else:
                 if read_scope is not None:
                     thread_params.update({"environments": [], "dynamicTools": [read_scope.tool_spec()]})
@@ -119,6 +134,10 @@ class CodexRuntime:
                 self.sessions[key] = session
             # 没有这次确认，不能发出 turn/start；重启时也不会猜测并重发。
             bound_native = {"thread_id": session.session_id, "backend_session_id": session.session_id}
+            if transition:
+                transition['phase'] = 'session_bound'
+                transition['successor_thread_id'] = session.session_id
+                bound_native['context_transition'] = transition
             if read_scope is not None:
                 bound_native["read_scope_binding"] = binding
                 def latch_violation():
@@ -127,16 +146,29 @@ class CodexRuntime:
                         "native": {**bound_native, "turn_id": session.current_turn_id,
                                    "read_scope_violation": True}})
                 service_requests = self._attach_read_scope(session, read_scope, scope_errors, latch_violation)
-            publish({"status": "dispatching", "native": bound_native, "terminated": False})
+            publish({"status": "dispatching", "native": deepcopy(bound_native), "terminated": False})
             if stopping.is_set():
                 raise RuntimeError("核心已停止")
             with self.lock:
                 cancelled = key in self.cancelled
             if cancelled:
                 return {"status": "cancelled", "terminated": True, "summary": "轮次发出前已取消"}
+            if transition and transition['strategy'] == 'native_compact':
+                from asterun.backends.codex_context import compact
+                transition = compact(self, transport, session, transition, publish, stopping,
+                                     lambda: key in self.cancelled)
+                bound_native['context_transition'] = transition
+            if transition:
+                if stopping.is_set() or key in self.cancelled:
+                    raise AsterunError(REMOTE_STATE_UNKNOWN, "上下文切换后收到停止意图，不派发工作轮次")
+                transition['phase'] = 'prompt_requested'
+                publish({'status': 'dispatching', 'native': deepcopy(bound_native), 'terminated': False})
             turn_requested = True
             transport.start_session_turn(session, text=text,
                 turn_params={"environments": [], "approvalPolicy": "never"} if read_scope is not None else None)
+            if transition:
+                transition['phase'] = 'prompt_started'
+                publish({'status': 'running', 'native': {**deepcopy(bound_native), 'turn_id': session.current_turn_id}, 'terminated': False})
             if self.backend.config.desktop_projects is True:
                 # 原生空线程可能尚无持久历史；首轮受理后再登记，且先保存轮次引用。
                 publish({"status": "running", "native": {**bound_native, "turn_id": session.current_turn_id},
@@ -161,7 +193,8 @@ class CodexRuntime:
                 }
                 if snapshot.get("token_usage"):
                     result["native"].update(token_usage=deepcopy(snapshot["token_usage"]),
-                                            usage_scope="thread_cumulative", usage_source="codex_app_server")
+                                            usage_scope="thread_cumulative", usage_source="codex_app_server",
+                                            usage_observation=deepcopy(snapshot.get("usage_observation", {})))
                 if scope_errors:
                     result["native"]["read_scope_violation"] = True
                     result["summary"] = "原生请求超出固定只读工具协议，本轮停止"
@@ -331,6 +364,10 @@ class CodexRuntime:
             transport.close()
 
     def reconcile(self, native, cwd):
+        transition = native.get('context_transition')
+        if transition and transition.get('phase') != 'prompt_started':
+            return {'status': 'pending_reconcile', 'terminated': False, 'error_code': REMOTE_STATE_UNKNOWN,
+                    'native': native, 'summary': '上下文切换/工作轮次未完整确认；压缩成功不能代替任务完成，不重发'}
         transport = self._connect(cwd)
         try:
             thread = self._read(transport, native, cwd)
