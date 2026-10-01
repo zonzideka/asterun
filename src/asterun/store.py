@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
+from threading import RLock
 from typing import Protocol
 
 from asterun.contracts import ApprovalRequest, Event, Operation, OperationStatus, Run, SessionBinding, Task
@@ -16,6 +18,11 @@ from asterun.ids import ApprovalId, ConversationId, OperationId, RunId, TaskId
 
 
 class Store(Protocol):
+    def save_payload_manifest(self, run_id: RunId, scope: str, manifest: dict) -> None: ...
+    def last_event_sequence(self, run_id: RunId) -> int: ...
+    def commit_handoff(self, task: Task, run: Run, expected: dict, revision: int, content: bytes) -> dict: ...
+    def put_checkpoint_blob(self, content: bytes) -> str: ...
+    def get_checkpoint_blob(self, sha256: str) -> bytes: ...
     def save_task(self, task: Task) -> None: ...
     def get_task(self, task_id: TaskId) -> Task: ...
     def save_run(self, run: Run) -> None: ...
@@ -50,7 +57,36 @@ class MemoryStore:
         self.sessions: dict[str, SessionBinding] = {}
         self._ops_by_key: dict[tuple[str, str, str, str], Operation] = {}
         self.applied_config_revision: int | None = None
+        self.checkpoint_blobs = {}
+        self._handoff_lock = RLock()
         self.fail_next_intent = False
+
+    def save_payload_manifest(self, run_id, scope, manifest):
+        from copy import deepcopy
+        with self._handoff_lock:
+            run = deepcopy(self.get_run(run_id))
+            run.native.setdefault('payload_manifests', {})[scope] = manifest
+            self.save_run(run)
+
+    def last_event_sequence(self, run_id):
+        events = self.events.get(run_id.value, [])
+        return events[-1].seq if events else 0
+
+    def commit_handoff(self, task, run, expected, revision, content):
+        from asterun.handoff import commit
+        with self._handoff_lock:
+            return commit(self, task, run, expected, revision, content)
+
+    def put_checkpoint_blob(self, content: bytes) -> str:
+        sha = hashlib.sha256(content).hexdigest()
+        self.checkpoint_blobs[sha] = content
+        return sha
+
+    def get_checkpoint_blob(self, sha256: str) -> bytes:
+        content = self.checkpoint_blobs.get(sha256)
+        if content is None or hashlib.sha256(content).hexdigest() != sha256:
+            raise AsterunError(NOT_FOUND, "检查点内容缺失或摘要不匹配")
+        return content
 
     def save_task(self, task: Task) -> None:
         self.tasks[task.id.value] = task
@@ -109,6 +145,10 @@ class MemoryStore:
         return (operation.principal, operation.action, operation.target, operation.idempotency_key)
 
     def commit_intent(self, operation: Operation, task: Task, run: Run, *, session: SessionBinding | None = None) -> tuple[Operation, Task, Run, bool]:
+        with self._handoff_lock:
+            return self._commit_intent(operation, task, run, session=session)
+
+    def _commit_intent(self, operation, task, run, *, session=None):
         if self.fail_next_intent:
             self.fail_next_intent = False
             raise AsterunError(
@@ -129,6 +169,8 @@ class MemoryStore:
             if existing.task_id is None or existing.run_id is None:
                 raise AsterunError(NOT_FOUND, "已有意图缺少任务引用")
             return existing, self.get_task(existing.task_id), self.get_run(existing.run_id), True
+        from asterun.context_transition import cas
+        cas(self, task, run)
         operation.task_id = task.id
         operation.run_id = run.id
         operation.status = OperationStatus.INTENDED
@@ -217,6 +259,9 @@ class JsonFileStore(MemoryStore):
         self.directory = directory
         self.path = directory / "store.json"
         self._load()
+
+    def commit_handoff(self, *args):
+        raise AsterunError("CAPABILITY_UNSUPPORTED", "交接 CAS 需要 SQLite 或离线内存存储")
 
     def _load(self) -> None:
         if not self.path.exists():

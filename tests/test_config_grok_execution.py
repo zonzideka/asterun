@@ -11,7 +11,7 @@ from asterun.errors import AsterunError, INVALID_CONFIG, UNKNOWN_FIELD
 from tests.conftest import write_config
 
 
-FIELDS = ("execution_profile", "max_turns", "timeout_seconds", "session_sync_home")
+FIELDS = ("execution_profile", "max_turns", "timeout_seconds", "session_sync_home", "session_policy", "quota_epoch")
 
 
 def configured_path(isolated_env, workspace_root, version, options, kind="grok"):
@@ -31,6 +31,7 @@ def configured_path(isolated_env, workspace_root, version, options, kind="grok")
 @pytest.mark.parametrize("version", [1, 2])
 @pytest.mark.parametrize("options", [
     {"session_sync_home": "/test-only/usage-home"},
+    {"execution_profile": "workspace-code-v1", "session_policy": "resume", "quota_epoch": "2026-09"},
     {}, {"execution_profile": "text-only-v1"}, {"max_turns": 1},
     {"timeout_seconds": 1}, {"timeout_seconds": 3600},
     {"execution_profile": "workspace-code-v1"},
@@ -62,6 +63,8 @@ def test_grok_execution_options_preserve_only_explicit_values(isolated_env, work
     for value in (None, True, False, 1.0, "1", 0, -1, 3601, [], {})
 ] + [
     *[{"session_sync_home": value} for value in (None, True, "", "relative", "/foo/../bar", "/tmp/invalid\x00")],
+    *[{"session_policy": value} for value in (None, True, [], {}, "resume", "new")],
+    *[{"quota_epoch": value} for value in (None, True, [], {}, "", "../../epoch")],
     {"max_turns": 2}, {"execution_profile": "text-only-v1", "max_turns": 2},
 ])
 def test_grok_execution_limits_reject_invalid_or_implicitly_relaxed_options(isolated_env, workspace_root, version, options):

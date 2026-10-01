@@ -232,7 +232,7 @@ def backup_state(state_dir: Path, dest: Path) -> dict[str, Any]:
     except (OSError, sqlite3.Error, ValueError, KeyError, TypeError, AttributeError) as exc:
         raise AsterunError(INVALID_REQUEST, "状态备份失败；原状态库未被改写") from exc
     return {"output": str(dest), "bytes": dest.stat().st_size, "schema_version": version,
-            "includes": [DB_NAME, MANIFEST_NAME], "message": "状态快照已备份，未包含原生会话、配置文件或工作区。"}
+            "includes": [DB_NAME, MANIFEST_NAME], "message": "状态快照已备份，未包含原生会话、配置文件或完整工作区；已配置检查点的选定源码保留在库内。"}
 
 
 def restore_state(archive_path: Path, state_dir: Path) -> dict[str, Any]:

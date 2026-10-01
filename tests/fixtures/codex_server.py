@@ -6,6 +6,22 @@ import threading
 import time
 from pathlib import Path
 
+# 上下文控制的离线 schema 替身，仅导出本测试声明的协议。
+if '--version' in sys.argv:
+    print('codex-fixture context-v1'); raise SystemExit(0)
+if 'generate-json-schema' in sys.argv:
+    root = Path(sys.argv[sys.argv.index('--out') + 1]); (root / 'v2').mkdir(parents=True)
+    documents = {
+        'ClientRequest.json': {'oneOf': [{'properties': {'method': {'enum': [m]}}} for m in
+            ['thread/compact/start', 'thread/read', 'thread/start', 'thread/resume', 'turn/start']]},
+        'ServerNotification.json': {'definitions': {'ThreadItem': {'oneOf': [
+            {'properties': {'type': {'enum': ['contextCompaction']}}}]},
+            'TurnCompletedNotification': {'required': ['threadId', 'turn']}}},
+        'v2/ThreadCompactStartParams.json': {'required': ['threadId'], 'properties': {'threadId': {'type': 'string'}}},
+        'v2/ThreadCompactStartResponse.json': {'type': 'object'}}
+    for name, value in documents.items(): (root / name).write_text(json.dumps(value))
+    raise SystemExit(0)
+
 state = Path.cwd() / "native.json"
 audit = Path.cwd() / "native-calls.jsonl"
 threads = json.loads(state.read_text()) if state.exists() else {}
@@ -60,6 +76,21 @@ for line in sys.stdin:
         result = {"thread": threads[thread_id]}
     elif method in {"thread/resume", "thread/read"}:
         result = {"thread": threads[params["threadId"]]}
+    elif method == "thread/compact/start":
+        thread_id = params['threadId']; turns = threads[thread_id]['turns']
+        scenario_file = Path.cwd() / 'context-scenario.json'
+        scenario = json.loads(scenario_file.read_text()) if scenario_file.exists() else 'success'
+        turn = {'id': f'native-turn-{len(turns) + 1}', 'status': 'inProgress', 'items': []}
+        turns.append(turn); save()
+        emit({'id': message['id'], 'result': {}})
+        if scenario == 'disconnect_after_ack': break
+        if scenario == 'ack_only': continue
+        emit({'method': 'turn/started', 'params': {'threadId': thread_id, 'turn': turn}})
+        turn['items'] = [{'id': 'compact-item', 'type': 'contextCompaction'}]
+        turn['status'] = 'failed' if scenario == 'failed' else 'completed'; save()
+        emit({'method': 'item/completed', 'params': {'threadId': thread_id, 'turnId': turn['id'], 'item': turn['items'][0]}})
+        emit({'method': 'turn/completed', 'params': {'threadId': thread_id, 'turn': turn}})
+        continue
     elif method == "turn/start":
         thread_id = params["threadId"]
         turns = threads[thread_id]["turns"]
@@ -83,7 +114,7 @@ for line in sys.stdin:
                              "reasoningOutputTokens": 1, "totalTokens": 12}}}})
         if "disconnect" in text:
             break
-        if "approval" in text:
+        if "approval" in text.split("\n离线交接重建材料", 1)[0]:
             pending["native-approval"] = (thread_id, turn)
             emit({"id": "native-approval", "method": "item/commandExecution/requestApproval", "params": {
                 "threadId": thread_id, "turnId": turn["id"], "itemId": "test-command", "startedAtMs": 0,

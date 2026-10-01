@@ -57,4 +57,6 @@ GrokBot 等调用方可以在云电脑中部署 Asterun，也可以通过已有�
 
 [Asterun Bot 模板](https://x.ai/bot/4r3ysO1eA-6ZLI6cRoTNU)提供 GrokBot 的安装引导、任务跟踪和聊天交付，作为可选接入独立发布。[安装说明与配套代码](https://github.com/zonzideka/asterun/blob/grokbot-template-v0.1.0-rc1/integrations/grokbot/README.md)按固定版本提供。
 
+[标准 skill 入口](docs/standard-skill.md)提供按需加载的通用调用说明和独立脚本，连接既有核心完成紧凑等待、版本绑定与有限修复。它可以独立安装到支持 Agent Skills 的客户端，GrokBot 的聊天交付保持独立。
+
 接口集成查阅 [runner-control/v1](docs/protocol/IMPLEMENTATION.md) 和 [capability profile](docs/capability-profile.md)。

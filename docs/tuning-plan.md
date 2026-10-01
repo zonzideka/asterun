@@ -125,3 +125,12 @@ runner 开销通过 fake 直接测量，真实模型总耗时另列。资源成�
 SQLite 在线备份使用一致性备份机制，并同时管理 Asterun 产物清单与哈希。运行中的主数据库文件另有 WAL 等状态，完整备份按[SQLite 备份接口](https://sqlite.org/backup.html)处理。
 
 A4 补充保留和清理规则：保留待对账操作及审计证据，清理前检查活动引用。重置范围限定在 Asterun 自有状态，用户原生线程、代码和共享账户继续保留。每次升级回看性能及失败分布，出现新变化或失败证据时再扩大回归范围。
+
+
+## 2026-09-24 三路径配对样本工具
+
+`scripts/compare-workflow-samples.py INPUT.json --output REPORT.json` 只读取离线样本，不启动模型，输出保留 external_reported 来源。输入为 6—10 个任务、每组 1—3 次、direct / asterun_baseline / asterun_candidate 三条路径的完整配对。每行必须包含 case、trial、arm、implementation_revision、context、quality_passed、completed、simulated，以及 controller_tokens、executor_tokens、reviewer_tokens、repairs、read_bytes、wait_seconds、manual_interventions、elapsed_seconds。未测量指标填 null。
+
+context 精确包含 snapshot_sha256、model、cli_version、tool_permissions、context_policy、concurrency、quality_gate，值为固定条件的字符串描述或摘要。同任务同轮次三条路径条件不同、缺项、重复或计数无效时拒绝报告。每条路径保留样本数、完成数、质量通过数和各指标中位数；只有所有配对都为真实、完成、质量通过且三类 Token 完整时才计算总 Token 的相对节省。单有主控 Token 降低不能代表整个流程节省，订阅实付费用不参与换算。
+
+本轮只完成工具、模拟协议数据校验和数值夹具回归，尚未跑同任务集的三路径执行对照，也没有真实模型样本。不能把夹具中的算术比例当实测收益。后续先固定三个入口版本与同一任务集，跑 fake 执行对照，再在明确额度预算内采集真实样本；预算、原生 CLI 现场和模型质量仍单独验收。

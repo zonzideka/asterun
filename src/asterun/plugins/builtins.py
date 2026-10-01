@@ -10,12 +10,12 @@ from asterun.plugins.registry import PluginRegistry
 BUILTINS = {
     "fake": {"plugin_id": "asterun.fake", "factory": "asterun.backends.fake:FakeBackend", "options": {"bin"}},
     "codex": {"plugin_id": "openai.codex", "factory": "asterun.backends.codex:CodexBackend", "options": {"bin", "desktop_projects"}},
-    "grok": {"plugin_id": "xai.grok", "factory": "asterun.backends.grok:GrokBackend", "options": {"bin", "home", "model", "execution_profile", "max_turns", "timeout_seconds", "session_sync_home"}},
+    "grok": {"plugin_id": "xai.grok", "factory": "asterun.backends.grok:GrokBackend", "options": {"bin", "home", "model", "execution_profile", "max_turns", "timeout_seconds", "session_sync_home", "session_policy", "quota_epoch"}},
     "claude": {"plugin_id": "anthropic.claude", "factory": "asterun.backends.claude:ClaudeBackend", "options": {"bin"}},
     "antigravity": {"plugin_id": "google.antigravity-cli", "factory": "asterun.backends.antigravity:AntigravityBackend", "options": {"bin", "home", "model"}},
 }
 
-GROK_EXECUTION_OPTIONS = ("execution_profile", "max_turns", "timeout_seconds", "session_sync_home")
+GROK_EXECUTION_OPTIONS = ("execution_profile", "max_turns", "timeout_seconds", "session_sync_home", "session_policy", "quota_epoch")
 
 
 def validate_grok_execution_options(options, where):
@@ -28,6 +28,13 @@ def validate_grok_execution_options(options, where):
             raise AsterunError(INVALID_CONFIG, f"{where}.{key} 必须为 1..{upper} 的整数")
     if profile == "text-only-v1" and "max_turns" in options and options["max_turns"] != 1:
         raise AsterunError(INVALID_CONFIG, f"{where}.max_turns 在 text-only-v1 下只能为 1")
+    if "session_policy" in options:
+        if options["session_policy"] not in ("new", "resume") or profile != "workspace-code-v1":
+            raise AsterunError(INVALID_CONFIG, f"{where}.session_policy 仅用于编码配置，必须为 new 或 resume")
+    if "quota_epoch" in options:
+        value = options["quota_epoch"]
+        if not isinstance(value, str) or not 1 <= len(value) <= 100 or not value.isascii() or not all(c.isalnum() or c in "-_." for c in value):
+            raise AsterunError(INVALID_CONFIG, f"{where}.quota_epoch 必须为最多 100 字符的 ASCII 标识")
     if "session_sync_home" in options:
         value = options["session_sync_home"]
         if (not isinstance(value, str) or not value.strip() or value != value.strip()
