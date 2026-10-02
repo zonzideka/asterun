@@ -57,6 +57,6 @@ Callers such as GrokBot can deploy Asterun on a cloud computer or invoke a local
 
 The optional [Asterun Bot template](https://x.ai/bot/4r3ysO1eA-6ZLI6cRoTNU) provides GrokBot setup, task tracking, and chat delivery. Its [setup guide and companion code](https://github.com/zonzideka/asterun/blob/grokbot-template-v0.1.0-rc1/integrations/grokbot/README.en.md) are available in a pinned release.
 
-The [standard skill entry point](docs/en/standard-skill.md) provides instructions loaded on demand and a standalone helper for compact waiting, version binding and bounded repairs through the existing core. It requires core `0.1.0a14` or later. It can be installed independently in Agent Skills clients; GrokBot chat delivery remains separate.
+The [standard skill entry point](docs/en/standard-skill.md) provides instructions loaded on demand and a standalone helper for compact waiting, version binding and bounded repairs through the existing core. It requires core `0.1.0a14` or later. Until a14 is published and the GrokBot lock is updated, do not point this skill at the a13 instance installed by the GrokBot template; keep GrokBot on published a13 and use the skill only against this source tree or a later a14 wheel. It can be installed independently in Agent Skills clients; GrokBot chat delivery remains separate.
 
 For integrations, see [runner-control/v1](docs/en/protocol/IMPLEMENTATION.md) and the [capability profile](docs/en/capability-profile.md).

@@ -2,7 +2,9 @@
 
 ## 接入与基本调用
 
-需要 Python 3.11+、已安装的 Asterun CLI 和已经配置并启动的常驻核心，版本为 `0.1.0a14` 或更新。先从当前项目的安装记录取得实例状态目录、工作区名、后端名与允许动作；本技能不扫描账户目录或自动创建实例。脚本在任何业务命令前读取 `asterun version`，并以 `--connect diagnose` 核对应答核心；低于最低版本时返回 `CORE_VERSION_UNSUPPORTED` 并给出升级说明，不把 `unrecognized arguments: --compact --no-events` 或无效的 `workflow-snapshot` 子命令包装成 `INVALID_CLI_RESPONSE`，也不隐式改成同步任务或完整正文轮询。公开 `0.1.0a13` wheel 不含这些入口。
+需要 Python 3.11+、已安装的 Asterun CLI 和已经配置并启动的常驻核心，版本为 `0.1.0a14` 或更新。先从当前项目的安装记录取得实例状态目录、工作区名、后端名与允许动作；本技能不扫描账户目录或自动创建实例。脚本在任何业务命令前用短超时读取 `asterun version`，并以 `--connect diagnose` 核对应答核心。低于最低版本时返回 `CORE_VERSION_UNSUPPORTED` 并给出升级说明；`version` 失败返回客户端错误而不是升级提示；diagnose 超时、非零退出或缺少 `version` 时，只读与 `submit`/`cancel`/`repair` 等变更命令都不会发出，分别返回 `CORE_UNREACHABLE` 或 `CORE_VERSION_UNKNOWN`。不把 `unrecognized arguments: --compact --no-events` 或无效的 `workflow-snapshot` 子命令包装成 `INVALID_CLI_RESPONSE`，也不隐式改成同步任务或完整正文轮询。公开 `0.1.0a13` wheel 不含这些入口。
+
+在 `0.1.0a14` 发布且 GrokBot `release-lock.json` 更新之前，GrokBot 模板锁定的 a13 与本技能不能一起使用：GrokBot 继续按其锁安装 a13；本技能只对接从当前源码或日后 a14 wheel 安装的核心。
 
 在下面示例中，将 `/path/to/skill` 替换成实际技能安装目录，将状态目录替换成已有实例。工作区是核心配置的名称，提示路径是该工作区内的规范相对路径。调用脚本不要求当前目录等于工作区，核心按配置解析输入路径。完整证据可能包含任务正文、源码及原生输出，应存入项目忽略的私有目录。
 

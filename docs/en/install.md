@@ -19,7 +19,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 ```
 
-`asterun version` should report `0.1.0a14` or later. The [standard skill](standard-skill.md) needs compact observation and `workflow-snapshot` from that version; the published `0.1.0a13` wheel is not sufficient. The GrokBot template still installs the published a13 wheel from its release lock until the maintainer publishes this version and updates that lock.
+`asterun version` should report `0.1.0a14` or later. The [standard skill](standard-skill.md) needs compact observation and `workflow-snapshot` from that version; the published `0.1.0a13` wheel is not sufficient. Until a14 is published and the lock is updated, the GrokBot template (which installs published a13 from its release lock) and the standard skill cannot be used together: keep GrokBot on a13, and point the skill only at a core installed from this source tree or a later a14 wheel.
 
 Once the virtual environment is active, use `asterun` directly. For development, install `.[test]` from a full Git checkout and run `scripts/verify-offline.sh`. Default tests use temporary state and the fake backend.
 

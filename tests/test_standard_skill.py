@@ -28,24 +28,58 @@ def load_script(path, name):
     return module
 
 
-def write_fake_cli(path, *, cli_version="0.1.0a14", core_version=None, body="raise SystemExit(2)\n"):
+def write_fake_cli(path, *, cli_version="0.1.0a14", core_version=None, body="raise SystemExit(2)\n",
+                   version_behavior="ok", diagnose_behavior="ok", log_path=None):
     core_version = cli_version if core_version is None else core_version
+    replies = {
+        "ok": "print(json.dumps({'ok': True, 'data': {'version': %r, 'package': 'asterun'}}))\nraise SystemExit(0)\n",
+        "timeout": "import time\ntime.sleep(30)\nraise SystemExit(0)\n",
+        "error": "print('not-json')\nraise SystemExit(1)\n",
+        "missing": "print(json.dumps({'ok': True, 'data': {'package': 'asterun'}}))\nraise SystemExit(0)\n",
+        "nonzero": "print(json.dumps({'ok': False, 'error': {'code': 'CORE_DOWN'}}))\nraise SystemExit(2)\n",
+    }
+    log_block = ""
+    if log_path is not None:
+        log_block = (
+            "from pathlib import Path as _LogPath\n"
+            f"_log=_LogPath({str(log_path)!r})\n"
+            "_log.write_text((_log.read_text() if _log.exists() else '') + command + '\\n')\n"
+        )
     path.write_text(
         f"#!{sys.executable}\nimport json, sys\n"
         "argv = sys.argv[1:]\n"
         "command = next((item for item in argv if item in "
         "{'version','diagnose','task-submit','task-watch','task-get','task-cancel',"
         "'workflow-snapshot','workflow-evaluate','workflow-repair','backend-inspect','usage-report'}), '')\n"
-        f"if command == 'version':\n"
-        f"    print(json.dumps({{'ok': True, 'data': {{'version': {cli_version!r}, 'package': 'asterun'}}}}))\n"
-        "    raise SystemExit(0)\n"
-        f"if command == 'diagnose':\n"
-        f"    print(json.dumps({{'ok': True, 'data': {{'version': {core_version!r}, 'package': 'asterun'}}}}))\n"
-        "    raise SystemExit(0)\n"
+        + log_block +
+        "if command == 'version':\n"
+        + _indent(replies[version_behavior] % (cli_version,) if "%r" in replies[version_behavior] else replies[version_behavior])
+        + "if command == 'diagnose':\n"
+        + _indent(replies[diagnose_behavior] % (core_version,) if "%r" in replies[diagnose_behavior] else replies[diagnose_behavior])
         + body
     )
     path.chmod(0o700)
     return path
+
+
+def _indent(block, spaces=4):
+    pad = " " * spaces
+    return "".join(pad + line + "\n" for line in block.splitlines())
+
+
+def parse_skill_args(tmp_path, executable, *command, cli_timeout="20"):
+    return skill.parser().parse_args(
+        ["--asterun-bin", str(executable), "--state-dir", str(tmp_path / "state"),
+         "--artifacts-dir", str(tmp_path / "calls"), "--cli-timeout", str(cli_timeout), *command]
+    )
+
+
+def assert_no_upgrade_hint(value):
+    text = json.dumps(value, ensure_ascii=False)
+    assert value["error"]["code"] != "CORE_VERSION_UNSUPPORTED"
+    assert "current_version" not in value
+    assert "请安装 0.1.0a14" not in text
+    assert "upgrade" not in text.lower()
 
 
 skill = load_script(SOURCE / "scripts/run.py", "asterun_standard_skill")
@@ -345,10 +379,30 @@ def test_invalid_wait_budget_is_rejected_before_cli_call(tmp_path, timeout):
 @pytest.mark.parametrize("value,ok", [
     ("0.1.0a13", False), ("0.1.0a14", True), ("0.1.0a15", True), ("0.1.0b1", True),
     ("0.1.0rc1", True), ("0.1.0", True), ("0.1.0a12", False), ("1.0.0", True),
+    ("0.1.0a14.dev1", False), ("0.1.0a14+local", True), ("0.1.0a14+local.1", True),
+    ("0.1.0a14.dev1+g123", False), ("0.1.0a15.dev1", True), ("0.1.0a14.post1", True),
     ("not-a-version", False), ("", False), (None, False),
 ])
 def test_version_gate_compares_pep440_prereleases(value, ok):
     assert skill.version_supported(value) is ok
+    if isinstance(value, str) and value:
+        parsed = skill.parse_version(value)
+        assert (parsed is not None) is (value != "not-a-version")
+
+
+def test_pep440_fallback_parses_dev_and_local_builds():
+    minimum = skill._parse_pep440("0.1.0a14")
+    assert minimum is not None
+    assert skill._parse_pep440("0.1.0a14.dev1") < minimum
+    assert skill._parse_pep440("0.1.0a14+local") > minimum
+    assert skill._parse_pep440("0.1.0a14.dev1+g123") < minimum
+    assert skill._parse_pep440("0.1.0a15.dev1") > minimum
+    packaging = pytest.importorskip("packaging.version")
+    for value in ("0.1.0a14", "0.1.0a14.dev1", "0.1.0a14+local", "0.1.0a14+local.1",
+                  "0.1.0a14.dev1+g123", "0.1.0a15.dev1", "0.1.0a14.post1"):
+        fallback = skill._parse_pep440(value)
+        assert fallback is not None
+        assert (fallback >= minimum) == (packaging.Version(value) >= packaging.Version("0.1.0a14"))
 
 
 def test_current_core_meets_skill_minimum():
@@ -402,18 +456,108 @@ def test_new_cli_old_core_fails_fast_on_diagnose_version(tmp_path):
     assert not log.exists() or "task-watch" not in log.read_text()
 
 
-def test_unreadable_cli_version_is_not_treated_as_compatible(tmp_path):
+def test_unreadable_cli_version_is_client_error_not_unsupported(tmp_path):
     executable = tmp_path / "broken-version"
-    write_fake_cli(executable, body="print('not-json')\nraise SystemExit(0)\n")
-    executable.write_text(
-        f"#!{sys.executable}\nprint('not-json')\nraise SystemExit(0)\n"
-    )
-    executable.chmod(0o700)
-    args = skill.parser().parse_args(["--asterun-bin", str(executable), "--state-dir", str(tmp_path / "state"),
-                                      "--artifacts-dir", str(tmp_path / "calls"), "discover"])
-    value, code = skill.execute(args)
-    assert code == 2 and value["error"]["code"] == "CORE_VERSION_UNSUPPORTED"
-    assert value["current_version"] == "unknown"
+    write_fake_cli(executable, version_behavior="error")
+    value, code = skill.execute(parse_skill_args(tmp_path, executable, "discover"))
+    assert code == 1 and value["error"]["code"] == "INVALID_CLI_RESPONSE"
+    assert_no_upgrade_hint(value)
+    assert "intent" not in value.get("artifacts", {})
+
+
+def test_cli_version_timeout_is_not_unsupported(tmp_path):
+    executable = tmp_path / "slow-version"
+    write_fake_cli(executable, version_behavior="timeout", log_path=tmp_path / "commands.log")
+    started = time.monotonic()
+    value, code = skill.execute(parse_skill_args(tmp_path, executable, "submit",
+                                                 "--workspace", "demo", "--backend", "fake",
+                                                 "--input", "task.md", "--idempotency-key", "k",
+                                                 cli_timeout="20"))
+    elapsed = time.monotonic() - started
+    assert elapsed < 8
+    assert code == 124 and value["error"]["code"] == "CLIENT_TIMEOUT"
+    assert_no_upgrade_hint(value)
+    logged = (tmp_path / "commands.log").read_text()
+    assert "version" in logged and "diagnose" not in logged and "task-submit" not in logged
+
+
+@pytest.mark.parametrize("diagnose_behavior", ["error", "nonzero"])
+def test_diagnose_failure_fails_closed_before_mutation(tmp_path, diagnose_behavior):
+    log = tmp_path / "commands.log"
+    executable = tmp_path / "diagnose-fail"
+    write_fake_cli(executable, diagnose_behavior=diagnose_behavior, log_path=log, body=(
+        "raise SystemExit(0)\n"
+    ))
+    for extra in (["submit", "--workspace", "demo", "--backend", "fake",
+                   "--input", "task.md", "--idempotency-key", "k"],
+                  ["cancel", "--task-id", "tsk_old"],
+                  ["discover"]):
+        skill.clear_probe_cache()
+        if log.exists():
+            log.unlink()
+        value, code = skill.execute(parse_skill_args(tmp_path, executable, *extra))
+        assert code == 2 and value["error"]["code"] == "CORE_UNREACHABLE"
+        assert_no_upgrade_hint(value)
+        logged = log.read_text() if log.exists() else ""
+        assert "diagnose" in logged
+        assert "task-submit" not in logged and "task-cancel" not in logged
+        assert "backend-inspect" not in logged
+        assert "intent" not in value.get("artifacts", {})
+
+
+def test_diagnose_timeout_fails_closed_before_mutation(tmp_path):
+    log = tmp_path / "commands.log"
+    executable = tmp_path / "diagnose-timeout"
+    write_fake_cli(executable, diagnose_behavior="timeout", log_path=log)
+    started = time.monotonic()
+    value, code = skill.execute(parse_skill_args(tmp_path, executable, "submit",
+                                                 "--workspace", "demo", "--backend", "fake",
+                                                 "--input", "task.md", "--idempotency-key", "k",
+                                                 cli_timeout="20"))
+    elapsed = time.monotonic() - started
+    assert elapsed < 8
+    assert code == 124 and value["error"]["code"] == "CORE_UNREACHABLE"
+    assert_no_upgrade_hint(value)
+    logged = log.read_text()
+    assert "diagnose" in logged and "task-submit" not in logged
+    assert "intent" not in value.get("artifacts", {})
+
+
+def test_diagnose_missing_version_fails_closed(tmp_path):
+    log = tmp_path / "commands.log"
+    executable = tmp_path / "diagnose-missing"
+    write_fake_cli(executable, diagnose_behavior="missing", log_path=log)
+    for extra in (["submit", "--workspace", "demo", "--backend", "fake",
+                   "--input", "task.md", "--idempotency-key", "k"],
+                  ["wait", "--task-id", "tsk_old", "--timeout", "1"]):
+        skill.clear_probe_cache()
+        if log.exists():
+            log.unlink()
+        value, code = skill.execute(parse_skill_args(tmp_path, executable, *extra))
+        assert code == 2 and value["error"]["code"] == "CORE_VERSION_UNKNOWN"
+        assert_no_upgrade_hint(value)
+        logged = log.read_text()
+        assert "diagnose" in logged
+        assert "task-submit" not in logged and "task-watch" not in logged
+
+
+def test_successful_probe_is_cached_per_process(tmp_path):
+    log = tmp_path / "commands.log"
+    executable = tmp_path / "cached-cli"
+    write_fake_cli(executable, log_path=log, body=(
+        "print(json.dumps({'ok': True, 'data': {'task': {}, 'run': {}}, 'ids': {}}))\n"
+        "raise SystemExit(0)\n"
+    ))
+    skill.clear_probe_cache()
+    args = parse_skill_args(tmp_path, executable, "status", "--task-id", "tsk_1")
+    first, code = skill.execute(args)
+    assert code == 0 and first["ok"]
+    second, code = skill.execute(args)
+    assert code == 0 and second["ok"]
+    logged = log.read_text().split()
+    assert logged.count("version") == 1
+    assert logged.count("diagnose") == 1
+    assert logged.count("task-get") == 2
 
 
 def test_run_py_connect_argv_is_accepted_by_cli_parser(tmp_path):

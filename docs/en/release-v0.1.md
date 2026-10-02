@@ -6,9 +6,9 @@ The current public source version is `0.1.0a14`. The stable `0.1.0` release has 
 
 ## 0.1.0a14
 
-Relative to the published `v0.1.0a13` wheel, this source includes compact caller observation (`task-get --compact`, `task-watch --compact --no-events`), `workflow-snapshot`, the standard skill entry point, and an explicit core-version gate in that skill. The skill requires an installed CLI and resident core of `0.1.0a14` or later. On `0.1.0a13` it no longer wraps argparse failures as `INVALID_CLI_RESPONSE`; it runs `asterun version` and `asterun diagnose` first and returns `CORE_VERSION_UNSUPPORTED`.
+Relative to the published `v0.1.0a13` wheel, this source includes compact caller observation (`task-get --compact`, `task-watch --compact --no-events`), `workflow-snapshot`, the standard skill entry point, and an explicit core-version gate in that skill. The skill requires an installed CLI and resident core of `0.1.0a14` or later. Probe failures do not send mutating or read-only business commands. On `0.1.0a13` it no longer wraps argparse failures as `INVALID_CLI_RESPONSE`; it returns `CORE_VERSION_UNSUPPORTED`. An unreachable diagnose or a reply without `version` returns `CORE_UNREACHABLE` or `CORE_VERSION_UNKNOWN`.
 
-This prerelease is not tagged yet. The GrokBot template `0.1.0-rc1` `integrations/grokbot/release-lock.json` still points at the published a13 wheel and digest; chat-skill behavior is unchanged. Update that lock only after the maintainer publishes the a14 wheel and records its SHA-256.
+This prerelease is not tagged yet. The GrokBot template `0.1.0-rc1` remains pinned to the published a13 wheel and digest; chat-skill behavior is unchanged. Until a14 is published and that lock is updated, the GrokBot template and the standard skill cannot be used together: keep GrokBot on a13, and point the skill only at this source tree or a later a14 wheel.
 
 ## Deployment scope
 

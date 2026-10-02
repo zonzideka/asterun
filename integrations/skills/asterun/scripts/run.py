@@ -21,35 +21,74 @@ import tempfile
 MAX_FILE_BYTES = 1024 * 1024
 MAX_REPLY_BYTES = 12 * 1024
 MIN_CORE_VERSION = "0.1.0a14"
+PROBE_TIMEOUT = 3.0
 MUTATIONS = {"submit", "evaluate", "repair", "cancel"}
 BINDING = {"task_id": "task_id", "run_id": "expected_run_id", "revision": "expected_revision",
            "input_hash": "expected_input_hash", "target_hash": "expected_target_hash", "target_paths": "target_paths"}
-_PRE_RELEASE = {"a": 0, "b": 1, "rc": 2}
+_PRE_LETTER = {"a": 0, "alpha": 0, "b": 1, "beta": 1, "c": 2, "rc": 2, "pre": 2, "preview": 2}
+_PEP440 = re.compile(
+    r"^(?:(?P<epoch>[0-9]+)!)?(?P<release>[0-9]+(?:\.[0-9]+)*)"
+    r"(?:[-._]?(?P<pre_l>alpha|beta|preview|pre|rc|a|b|c)[-._]?(?P<pre_n>[0-9]+)?)?"
+    r"(?:[-._]?post[-._]?(?P<post>[0-9]+))?(?:[-._]?dev[-._]?(?P<dev>[0-9]+))?"
+    r"(?:\+(?P<local>[a-z0-9]+(?:[-._][a-z0-9]+)*))?$",
+    re.IGNORECASE,
+)
+_PROBE_CACHE = {}
 
 
 class InputError(ValueError):
     pass
 
 
-class CoreUnsupported(Exception):
-    def __init__(self, current, source):
+class GateError(Exception):
+    def __init__(self, code, message, *, current=None, source=None, exit_code=2, next_action=""):
+        self.code = code
+        self.message = message
         self.current = current
         self.source = source
+        self.exit_code = exit_code
+        self.next_action = next_action
 
 
-def version_tuple(value):
-    if not isinstance(value, str):
+def parse_version(value):
+    if not isinstance(value, str) or not value.strip():
         return None
-    match = re.fullmatch(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:(a|b|rc)(0|[1-9]\d*))?", value)
+    text = value.strip()
+    try:
+        from packaging.version import InvalidVersion, Version
+        try:
+            return Version(text)
+        except InvalidVersion:
+            return None
+    except ImportError:
+        return _parse_pep440(text)
+
+
+def _parse_pep440(value):
+    match = _PEP440.fullmatch(value)
     if not match:
         return None
-    major, minor, patch, tag, number = match.groups()
-    stage = 3 if tag is None else _PRE_RELEASE[tag]
-    return (int(major), int(minor), int(patch), stage, 0 if number is None else int(number))
+    epoch = int(match["epoch"] or 0)
+    release = tuple(int(part) for part in match["release"].split("."))
+    while len(release) > 1 and release[-1] == 0:
+        release = release[:-1]
+    inf, ninf = 10 ** 12, -10 ** 12
+    pre_l, pre_n, post, dev = match["pre_l"], match["pre_n"], match["post"], match["dev"]
+    if pre_l:
+        pre_key = (1, _PRE_LETTER[pre_l.lower()], int(pre_n or 0))
+    elif post is None and dev is not None:
+        pre_key = (0,)
+    else:
+        pre_key = (2,)
+    post_key = ninf if post is None else int(post)
+    dev_key = inf if dev is None else int(dev)
+    local_key = inf if match["local"] else ninf
+    return (epoch, release, pre_key, post_key, dev_key, local_key)
 
 
 def version_supported(value, minimum=MIN_CORE_VERSION):
-    actual, needed = version_tuple(value), version_tuple(minimum)
+    # PEP 440：0.1.0a14+local 高于 a14；0.1.0a14.dev1 低于 a14，不视为已发布 a14。
+    actual, needed = parse_version(value), parse_version(minimum)
     return actual is not None and needed is not None and actual >= needed
 
 
@@ -325,6 +364,15 @@ def envelope_version(path):
     return version if isinstance(version, str) and version else None
 
 
+def probe_cache_key(binary, state_dir):
+    info = os.stat(binary)
+    return (binary, info.st_mtime_ns, info.st_size, str(Path(state_dir).resolve()))
+
+
+def clear_probe_cache():
+    _PROBE_CACHE.clear()
+
+
 def unsupported_message(current, source):
     return (f"标准 skill 需要 Asterun 核心 {MIN_CORE_VERSION} 或更新；当前{source}为 {current}。"
             "已发布的 0.1.0a13 不含 task-watch --compact/--no-events 与 workflow-snapshot。"
@@ -332,25 +380,84 @@ def unsupported_message(current, source):
             "asterun diagnose 核对应答版本后重试。")
 
 
+def gate_error(code, message, *, current=None, source=None, exit_code=2, next_action=""):
+    return GateError(code, message, current=current, source=source, exit_code=exit_code,
+                     next_action=next_action)
+
+
 def probe_core_versions(args, directory, binary):
-    timeout = args.cli_timeout
+    # 只读与变更都要求核验常驻核心版本；核验失败不把业务命令发给可能过旧的实例。
+    timeout = min(PROBE_TIMEOUT, args.cli_timeout)
+    key = probe_cache_key(binary, args.state_dir)
+    cached = _PROBE_CACHE.get(key)
+    if cached is not None:
+        return cached
     version_path, version_err = directory / "version.json", directory / "version-stderr.txt"
     code, timed_out, interrupted = run_cli([binary, "version"], version_path, version_err, timeout)
-    if timed_out or interrupted:
-        raise CoreUnsupported("unknown", "CLI")
+    if timed_out:
+        raise gate_error("CLIENT_TIMEOUT", "asterun version 在探测时限内未返回", source="CLI",
+                         exit_code=124, next_action="检查 CLI 是否可执行后重试；这不是核心过旧")
+    if interrupted:
+        raise gate_error("CLIENT_INTERRUPTED", "asterun version 探测被中断", source="CLI",
+                         exit_code=130, next_action="核对已保存探测记录后重试；变更命令尚未发出")
     cli_version = envelope_version(version_path) if code == 0 else None
+    if cli_version is None:
+        raise gate_error("INVALID_CLI_RESPONSE", "无法从 asterun version 读取版本", source="CLI",
+                         exit_code=1, next_action="读取 version 探测的 stdout/stderr 后重试；不要当作核心过旧去升级")
     if not version_supported(cli_version):
-        raise CoreUnsupported(cli_version or "unknown", "CLI")
+        raise gate_error("CORE_VERSION_UNSUPPORTED", unsupported_message(cli_version, "CLI"),
+                         current=cli_version, source="CLI",
+                         next_action="升级已安装 CLI 与常驻核心到 0.1.0a14 或更新并重启 serve；"
+                                     "用 asterun version 与 asterun diagnose 核对后再重试，不要改用完整事件轮询绕过")
     diagnose_path, diagnose_err = directory / "diagnose.json", directory / "diagnose-stderr.txt"
     code, timed_out, interrupted = run_cli(
         [binary, "--state-dir", str(args.state_dir.absolute()), "--connect", "diagnose"],
         diagnose_path, diagnose_err, timeout)
-    if timed_out or interrupted or code != 0:
-        return cli_version
+    if timed_out:
+        raise gate_error("CORE_UNREACHABLE",
+                         "asterun diagnose 在探测时限内未返回；变更与只读命令均未发出",
+                         source="常驻核心", exit_code=124,
+                         next_action="确认该 state-dir 上 asterun serve 正在运行后重试；不要把探测超时当成核心过旧去升级")
+    if interrupted:
+        raise gate_error("CLIENT_INTERRUPTED", "asterun diagnose 探测被中断", source="常驻核心",
+                         exit_code=130, next_action="核对已保存探测记录后重试；变更命令尚未发出")
+    if code != 0:
+        raise gate_error("CORE_UNREACHABLE",
+                         "asterun diagnose 无法核对应答核心；变更与只读命令均未发出",
+                         source="常驻核心",
+                         next_action="确认该 state-dir 上 asterun serve 正在运行后重试；不要把探测失败当成核心过旧去升级")
     core_version = envelope_version(diagnose_path)
-    if core_version is not None and not version_supported(core_version):
-        raise CoreUnsupported(core_version, "常驻核心")
-    return core_version or cli_version
+    if core_version is None:
+        raise gate_error("CORE_VERSION_UNKNOWN",
+                         "应答核心的 diagnose 未返回可解析版本；变更与只读命令均未发出",
+                         source="常驻核心",
+                         next_action="运行 asterun --connect diagnose 核对后再重试；不要把缺版本当成核心过旧去升级")
+    if not version_supported(core_version):
+        raise gate_error("CORE_VERSION_UNSUPPORTED", unsupported_message(core_version, "常驻核心"),
+                         current=core_version, source="常驻核心",
+                         next_action="升级已安装 CLI 与常驻核心到 0.1.0a14 或更新并重启 serve；"
+                                     "用 asterun version 与 asterun diagnose 核对后再重试，不要改用完整事件轮询绕过")
+    proven = (cli_version, core_version)
+    _PROBE_CACHE[key] = proven
+    return proven
+
+
+def gate_result(exc, args, directory):
+    result = {"ok": False, "error": {"code": exc.code, "message": exc.message},
+              "next_action": exc.next_action, "checked": exc.source}
+    if exc.current is not None:
+        result["current_version"] = exc.current
+        result["minimum_version"] = MIN_CORE_VERSION
+    artifacts = {"directory": str(directory)}
+    for key, name in (("version", "version.json"), ("version_stderr", "version-stderr.txt"),
+                      ("diagnose", "diagnose.json"), ("diagnose_stderr", "diagnose-stderr.txt")):
+        path = directory / name
+        if path.is_file():
+            artifacts[key] = str(path)
+    result.update(schema_version="asterun-skill-result/v1", command=args.command,
+                  cli_exit_code=exc.exit_code, artifacts=artifacts)
+    private_write(directory / "result.json", dump(result))
+    return result, exc.exit_code
 
 
 def execute(args):
@@ -362,23 +469,8 @@ def execute(args):
     directory = operation_directory(args)
     try:
         probe_core_versions(args, directory, binary)
-    except CoreUnsupported as exc:
-        result = {"ok": False, "error": {"code": "CORE_VERSION_UNSUPPORTED",
-                  "message": unsupported_message(exc.current, exc.source)},
-                  "current_version": exc.current, "minimum_version": MIN_CORE_VERSION,
-                  "checked": exc.source,
-                  "next_action": "升级已安装 CLI 与常驻核心到 0.1.0a14 或更新并重启 serve；"
-                                 "用 asterun version 与 asterun diagnose 核对后再重试，不要改用完整事件轮询绕过"}
-        artifacts = {"directory": str(directory)}
-        for key, name in (("version", "version.json"), ("version_stderr", "version-stderr.txt"),
-                          ("diagnose", "diagnose.json"), ("diagnose_stderr", "diagnose-stderr.txt")):
-            path = directory / name
-            if path.is_file():
-                artifacts[key] = str(path)
-        result.update(schema_version="asterun-skill-result/v1", command=args.command, cli_exit_code=2,
-                      artifacts=artifacts)
-        private_write(directory / "result.json", dump(result))
-        return result, 2
+    except GateError as exc:
+        return gate_result(exc, args, directory)
     argv = [binary, "--state-dir", str(args.state_dir.absolute()), "--connect",
             *request_args(args, directory)]
     timeout = max(args.cli_timeout, args.timeout + 5) if args.command == "wait" else args.cli_timeout
