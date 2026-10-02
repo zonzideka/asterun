@@ -4,7 +4,7 @@
 
 Asterun 在你选择的电脑或服务器上执行 Agent 任务。通过 CLI、MCP 或其他应用提交后，核心负责后台运行、会话关联、审批、结果记录和故障恢复。后端使用执行主机上已授权的账户。
 
-当前版本为 `0.1.0a14`，采用 [Apache-2.0 许可证](LICENSE)。首版范围已冻结，已实现能力和验证情况见[发行说明](docs/release-v0.1.md)。公开 GitHub 预发布仍为 `v0.1.0a13`，维护者打标签并上传 wheel 前请从本仓库源码安装。
+当前版本为 `0.1.0a14`，采用 [Apache-2.0 许可证](LICENSE)。首版范围已冻结，已实现能力和验证情况见[发行说明](docs/release-v0.1.md)。本次预发布的核心 wheel、源码包、标准 skill ZIP 与 `SHA256SUMS` 见[对应版本发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a14)。
 
 ## 开始使用
 
@@ -57,6 +57,6 @@ GrokBot 等调用方可以在云电脑中部署 Asterun，也可以通过已有�
 
 [Asterun Bot 模板](https://x.ai/bot/4r3ysO1eA-6ZLI6cRoTNU)提供 GrokBot 的安装引导、任务跟踪和聊天交付，作为可选接入独立发布。[安装说明与配套代码](https://github.com/zonzideka/asterun/blob/grokbot-template-v0.1.0-rc1/integrations/grokbot/README.md)按固定版本提供。
 
-[标准 skill 入口](docs/standard-skill.md)提供按需加载的通用调用说明和独立脚本，连接既有核心完成紧凑等待、版本绑定与有限修复。它需要核心 `0.1.0a14` 或更新。在 a14 发布并更新 GrokBot 锁之前，不要把它和锁定 a13 的 GrokBot 模板接到同一实例；GrokBot 继续用已发布 a13，标准 skill 只对接本仓库源码或日后的 a14 wheel。它可以独立安装到支持 Agent Skills 的客户端，GrokBot 的聊天交付保持独立。
+[标准 skill 入口](docs/standard-skill.md)提供按需加载的通用调用说明和独立脚本，连接既有核心完成紧凑等待、版本绑定与有限修复。标准发行版要求 CLI 和常驻核心均为 `0.1.0a14` 或更新；仍报告 a13 的历史主线构建仅在双端接口探测通过后兼容。GrokBot 模板仍独立锁定公开 a13，该锁安装的实例不能使用本技能。它可以独立安装到支持 Agent Skills 的客户端，GrokBot 的聊天交付保持独立。
 
 接口集成查阅 [runner-control/v1](docs/protocol/IMPLEMENTATION.md) 和 [capability profile](docs/capability-profile.md)。
