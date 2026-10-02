@@ -5,6 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from asterun import __version__
 from asterun.cli import main
 
 
@@ -93,7 +94,7 @@ def test_cli_rejects_self_reported_request_file(config_path: Path, isolated_env:
 
 def test_cli_version_and_missing_config(isolated_env: Path) -> None:
     version = _run(["version"])
-    assert json.loads(version.stdout)["data"]["version"] == "0.1.0a13"
+    assert json.loads(version.stdout)["data"]["version"] == __version__ == "0.1.0a14"
     missing = _run(["--home", str(isolated_env / "empty-home"), "config-validate"])
     assert json.loads(missing.stdout)["error"]["code"] == "CONFIG_REQUIRED"
 
@@ -159,3 +160,24 @@ def test_cli_diagnose_is_redacted(config_path: Path, isolated_env: Path) -> None
 
 def test_main_helper_returns_zero_for_version() -> None:
     assert main(["version"]) == 0
+
+
+def test_cli_parser_accepts_compact_watch_and_workflow_snapshot() -> None:
+    from asterun.cli import build_parser
+
+    parser = build_parser()
+    watch = parser.parse_args([
+        "--connect", "task-watch", "tsk_skill", "--compact", "--no-events",
+        "--timeout", "30", "--cursor", "0", "--run-id", "run_skill",
+    ])
+    assert watch.command == "task-watch" and watch.compact and watch.no_events
+    assert watch.run_id == "run_skill" and watch.timeout == 30 and watch.cursor == 0
+    snapshot = parser.parse_args([
+        "--connect", "workflow-snapshot", "tsk_skill", "--run-id", "run_skill",
+        "--target", "note.txt", "--target", "src/main.py",
+    ])
+    assert snapshot.command == "workflow-snapshot"
+    assert snapshot.expected_run_id == "run_skill"
+    assert snapshot.target_paths == ["note.txt", "src/main.py"]
+    compact_get = parser.parse_args(["--connect", "task-get", "tsk_skill", "--compact"])
+    assert compact_get.command == "task-get" and compact_get.compact

@@ -4,7 +4,7 @@
 
 Asterun runs Agent tasks on your computer or server. Submit work through the CLI, MCP, or another application; the core handles background execution, session links, approvals, results, and recovery. Backends use accounts already authorized on the execution host.
 
-The current version is `0.1.0a13`, licensed under [Apache-2.0](LICENSE). The first release's scope is frozen. See the [release notes](docs/en/release-v0.1.md) for supported features and validation status.
+The current version is `0.1.0a14`, licensed under [Apache-2.0](LICENSE). The first release's scope is frozen. See the [release notes](docs/en/release-v0.1.md) for supported features and validation status. See the [versioned release page](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a14) for this prerelease's core wheel, source distribution, standard skill ZIP, and `SHA256SUMS`.
 
 ## Get started
 
@@ -57,6 +57,6 @@ Callers such as GrokBot can deploy Asterun on a cloud computer or invoke a local
 
 The optional [Asterun Bot template](https://x.ai/bot/4r3ysO1eA-6ZLI6cRoTNU) provides GrokBot setup, task tracking, and chat delivery. Its [setup guide and companion code](https://github.com/zonzideka/asterun/blob/grokbot-template-v0.1.0-rc1/integrations/grokbot/README.en.md) are available in a pinned release.
 
-The [standard skill entry point](docs/en/standard-skill.md) provides instructions loaded on demand and a standalone helper for compact waiting, version binding and bounded repairs through the existing core. It can be installed independently in Agent Skills clients; GrokBot chat delivery remains separate.
+The [standard skill entry point](docs/en/standard-skill.md) provides instructions loaded on demand and a standalone helper for compact waiting, version binding and bounded repairs through the existing core. The minimum supported release is `0.1.0a14` for both CLI and resident core; historical main-branch builds reporting a13 are accepted only after both interface probes pass. The GrokBot template remains separately pinned to published a13, and an instance installed from that lock cannot serve this skill. It can be installed independently in Agent Skills clients; GrokBot chat delivery remains separate.
 
 For integrations, see [runner-control/v1](docs/en/protocol/IMPLEMENTATION.md) and the [capability profile](docs/en/capability-profile.md).

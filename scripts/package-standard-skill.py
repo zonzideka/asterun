@@ -34,8 +34,16 @@ def build(source, output, source_commit):
         if any(re.search(pattern, blob) for pattern in deny):
             raise ValueError("skill 成员含本机身份或秘密模式：" + name)
         blobs[name] = blob
+    match = re.search(br'^MIN_CORE_VERSION = "([^"]+)"$', blobs["scripts/run.py"], re.M)
+    if not match:
+        raise ValueError("skill 脚本缺少 MIN_CORE_VERSION")
+    minimum = match.group(1).decode("ascii")
+    if not re.fullmatch(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:(a|b|rc)(0|[1-9]\d*))?", minimum):
+        raise ValueError("最低核心版本无效")
     manifest = {"schema_version": "asterun-standard-skill/v1", "source_commit": source_commit,
-                "core_interface": "asterun CLI --connect; compact observation; bound external workflow",
+                "minimum_core_version": minimum,
+                "legacy_compatibility": {"version": "0.1.0a13", "requires": "cli_and_resident_feature_probes"},
+                "core_interface": "asterun CLI --connect >= " + minimum + "; compact observation; bound external workflow",
                 "files": {name: {"bytes": len(blob), "sha256": hashlib.sha256(blob).hexdigest()}
                           for name, blob in blobs.items()}}
     blobs["manifest.json"] = (json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode()

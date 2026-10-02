@@ -28,6 +28,60 @@ def load_script(path, name):
     return module
 
 
+def write_fake_cli(path, *, cli_version="0.1.0a14", core_version=None, body="raise SystemExit(2)\n",
+                   version_behavior="ok", diagnose_behavior="ok", log_path=None):
+    core_version = cli_version if core_version is None else core_version
+    replies = {
+        "ok": "print(json.dumps({'ok': True, 'data': {'version': %r, 'package': 'asterun'}}))\nraise SystemExit(0)\n",
+        "timeout": "import time\ntime.sleep(30)\nraise SystemExit(0)\n",
+        "error": "print('not-json')\nraise SystemExit(1)\n",
+        "missing": "print(json.dumps({'ok': True, 'data': {'package': 'asterun'}}))\nraise SystemExit(0)\n",
+        "nonzero": "print(json.dumps({'ok': False, 'error': {'code': 'CORE_DOWN'}}))\nraise SystemExit(2)\n",
+    }
+    log_block = ""
+    if log_path is not None:
+        log_block = (
+            "from pathlib import Path as _LogPath\n"
+            f"_log=_LogPath({str(log_path)!r})\n"
+            "_log.write_text((_log.read_text() if _log.exists() else '') + command + '\\n')\n"
+        )
+    path.write_text(
+        f"#!{sys.executable}\nimport json, sys\n"
+        "argv = sys.argv[1:]\n"
+        "command = next((item for item in argv if item in "
+        "{'version','diagnose','task-submit','task-watch','task-get','task-cancel',"
+        "'workflow-snapshot','workflow-evaluate','workflow-repair','backend-inspect','control-resources','usage-report'}), '')\n"
+        + log_block +
+        "if command == 'version':\n"
+        + _indent(replies[version_behavior] % (cli_version,) if "%r" in replies[version_behavior] else replies[version_behavior])
+        + "if command == 'diagnose':\n"
+        + _indent(replies[diagnose_behavior] % (core_version,) if "%r" in replies[diagnose_behavior] else replies[diagnose_behavior])
+        + body
+    )
+    path.chmod(0o700)
+    return path
+
+
+def _indent(block, spaces=4):
+    pad = " " * spaces
+    return "".join(pad + line + "\n" for line in block.splitlines())
+
+
+def parse_skill_args(tmp_path, executable, *command, cli_timeout="20"):
+    return skill.parser().parse_args(
+        ["--asterun-bin", str(executable), "--state-dir", str(tmp_path / "state"),
+         "--artifacts-dir", str(tmp_path / "calls"), "--cli-timeout", str(cli_timeout), *command]
+    )
+
+
+def assert_no_upgrade_hint(value):
+    text = json.dumps(value, ensure_ascii=False)
+    assert value["error"]["code"] != "CORE_VERSION_UNSUPPORTED"
+    assert "current_version" not in value
+    assert "请安装 0.1.0a14" not in text
+    assert "upgrade" not in text.lower()
+
+
 skill = load_script(SOURCE / "scripts/run.py", "asterun_standard_skill")
 packager = load_script(ROOT / "scripts/package-standard-skill.py", "asterun_skill_packager")
 
@@ -91,6 +145,13 @@ def test_copied_skill_fake_roundtrip_and_no_prompt_echo(resident, workspace_root
     call, client, _ = resident
     discovered, code = call("discover")
     assert code == 0 and discovered["ok"]
+    assert discovered["backends"][0]["kind"] == "fake"
+    assert "fake" in discovered["next_action"] and "模拟" in discovered["next_action"]
+    resources, code = call("resources")
+    assert code == 0 and resources["ok"]
+    assert resources["resource_count"] == 1 and resources["resources_truncated"] is False
+    assert resources["resources"][0]["workspace"] == "demo"
+    assert Path(resources["resources"][0]["location"]) == workspace_root
     first, code = submit(call, workspace_root)
     assert code == 0 and first["ok"]
     repeated, code = submit(call, workspace_root)
@@ -138,6 +199,22 @@ def test_binding_evaluation_repair_replay_and_drift(resident, workspace_root, is
         assert repaired["ids"][key] == repeated["ids"][key]
     current = client.handle("task.get", {"task_id": task_id}).data
     assert current["task"]["repair_count"] == 1 and current["task"]["run_count"] == 2
+    usage, code = call("usage", "--task-id", task_id, "--include-runs", "--include-observations")
+    assert code == 0 and usage["usage"]["totals"]["run_count"] == 2
+    assert usage["usage"]["scope"] == {"task_id": task_id}
+    coverage = usage["usage"]["coverage"]
+    assert coverage["source"] == "persisted_run_native" and coverage["runs"] == "persisted_only"
+    assert coverage["controller"] == "not_observed" and coverage["native_requests"] == "unknown"
+    assert coverage["run_details_included"] and coverage["session_observations_included"]
+    assert coverage["acceptance_revalidated"] is False
+    pagination = usage["usage"]["pagination"]
+    assert pagination["has_more"] and pagination["totals_scope"] == "complete_query"
+    second_page, code = call("usage", "--task-id", task_id, "--include-runs", "--include-observations",
+                             "--cursor", pagination["next_cursor"])
+    assert code == 0 and second_page["usage"]["totals"] == usage["usage"]["totals"]
+    first_raw = json.loads(Path(usage["artifacts"]["response"]).read_text())["data"]
+    second_raw = json.loads(Path(second_page["artifacts"]["response"]).read_text())["data"]
+    assert first_raw["runs"][0]["run_id"] != second_raw["runs"][0]["run_id"]
     snap_file, binding = snapshot(call, task_id, current["run"]["id"])
     write_report(workspace_root, binding, True)
     evaluated, code = call("evaluate", "--snapshot-file", str(snap_file), "--workspace-root", str(workspace_root),
@@ -198,10 +275,11 @@ def test_cancel_request_is_not_confirmed_termination(resident):
 def test_uncertain_mutation_is_called_once_and_private_evidence_retained(tmp_path, mode):
     executable = tmp_path / "fake-cli"
     counter = tmp_path / "calls"
-    executable.write_text(f"#!{sys.executable}\nfrom pathlib import Path\nimport time\n"
-                          f"p=Path({str(counter)!r}); p.write_text(p.read_text()+'x' if p.exists() else 'x')\n"
-                          + ("print('{broken', flush=True)\n" if mode == "malformed" else "time.sleep(10)\n"))
-    executable.chmod(0o700)
+    write_fake_cli(executable, body=(
+        f"from pathlib import Path\nimport time\n"
+        f"p=Path({str(counter)!r}); p.write_text(p.read_text()+'x' if p.exists() else 'x')\n"
+        + ("print('{broken', flush=True)\n" if mode == "malformed" else "time.sleep(10)\n")
+    ))
     args = skill.parser().parse_args(["--asterun-bin", str(executable), "--state-dir", str(tmp_path / "state"),
         "--artifacts-dir", str(tmp_path / "calls-data"), "--cli-timeout", "2", "submit",
         "--workspace", "demo", "--backend", "fake", "--input", "task.md", "--idempotency-key", "stable"])
@@ -223,6 +301,138 @@ def test_large_backend_output_stays_in_private_file(resident):
     print("SKILL_PAYLOAD_SAMPLE " + json.dumps({"fixture_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
         "full_response_bytes": value["metrics"]["response_bytes"], "visible_summary_bytes": len(skill.dump(value)),
         "native_tokens": "not_measured", "subscription_quota_effect": "unknown"}))
+
+
+def test_pretty_cli_response_above_ipc_limit_remains_readable(tmp_path):
+    executable = tmp_path / "verbose-cli"
+    # This valid envelope fits the core's compact IPC response limit. The real
+    # CLI emits indent=2, which can exceed that limit without changing the data.
+    envelope = {"ok": True, "ids": {"task_id": "tsk_large"}, "data": {
+        "task": {"id": "tsk_large", "acceptance": "pending"},
+        "run": {"id": "run_large", "status": "succeeded", "native": {
+            "tool_events": [{"type": "tool", "metadata": {"output": "private-output"}}] * 15000}}}}
+    assert len(json.dumps(envelope).encode()) < skill.MAX_FILE_BYTES
+    raw = json.dumps(envelope, indent=2)
+    assert skill.MAX_FILE_BYTES < len(raw.encode()) < skill.MAX_INSPECT_RESPONSE_BYTES
+    write_fake_cli(executable, body=f"print({raw!r})\n")
+    result, code = skill.execute(parse_skill_args(tmp_path, executable, "inspect", "--task-id", "tsk_large"))
+    assert code == 0 and result["ok"] and result["run"]["status"] == "succeeded"
+    assert len(skill.dump(result)) < 4096 and "private-output" not in skill.dump(result).decode()
+    saved = Path(result["artifacts"]["response"])
+    assert json.loads(saved.read_text()) == envelope
+    assert stat.S_IMODE(saved.stat().st_mode) == 0o600
+
+
+@pytest.mark.parametrize("shape, expected_error", [
+    ("pretty_2m", None),
+    ("pretty_7m", "CLI_RESPONSE_TOO_LARGE"),
+    ("ipc_overflow", "INVALID_REQUEST"),
+])
+def test_inspect_limits_through_resident_socket_and_real_cli(resident, shape, expected_error):
+    from asterun.ids import RunId
+    from asterun.service import MAX_MESSAGE
+    from asterun.sqlite_store import SqliteStore
+
+    call, client, state = resident
+    admitted = client.handle("task.submit", {"workspace": "demo", "backend": "fake", "text": "limit fixture"})
+    assert admitted.ok and admitted.data["run"]["status"] == "succeeded"
+    task_id, run_id = admitted.ids["task_id"], admitted.ids["run_id"]
+    baseline = client.handle("task.get", {"task_id": task_id}).to_dict()
+    events = {
+        "pretty_2m": [{"type": "tool", "metadata": {"output": "private-output"}}] * 15000,
+        "pretty_7m": [{"x": [[[[[[0]]]]]]}] * 25000,
+        "ipc_overflow": [{"output": "private-output" * 90000}],
+    }[shape]
+    # Only the terminal fake run in this test's temporary database is modified.
+    # All subsequent reads use the actual resident service, CLI and copied skill.
+    store = SqliteStore(state / "asterun.sqlite")
+    try:
+        run = store.get_run(RunId(run_id))
+        assert run.status == "succeeded"
+        run.native["tool_events"] = events
+        store.save_run(run)
+    finally:
+        store.close()
+    baseline["data"]["run"]["native"]["tool_events"] = events
+    wire_bytes = len(json.dumps(baseline, ensure_ascii=False).encode()) + 1
+    pretty_bytes = len(json.dumps(baseline, ensure_ascii=False, indent=2).encode()) + 1
+    if shape == "ipc_overflow":
+        assert wire_bytes > MAX_MESSAGE
+    else:
+        assert wire_bytes < MAX_MESSAGE < pretty_bytes
+        assert (pretty_bytes > skill.MAX_INSPECT_RESPONSE_BYTES) == (shape == "pretty_7m")
+
+    result, code = call("inspect", "--task-id", task_id)
+    response_path = Path(result["artifacts"]["response"])
+    raw = response_path.read_bytes()
+    saved = json.loads(raw)
+    assert stat.S_IMODE(response_path.stat().st_mode) == 0o600
+    assert len(skill.dump(result)) < 4096 and "private-output" not in skill.dump(result).decode()
+    if expected_error is None:
+        assert code == 0 and result["ok"] and saved["ok"]
+        assert saved["data"]["run"]["native"]["tool_events"] == events
+    else:
+        assert code == 1 and not result["ok"] and result["error"]["code"] == expected_error
+        if shape == "pretty_7m":
+            assert len(raw) > skill.MAX_INSPECT_RESPONSE_BYTES
+            assert result["outcome"] == "unobserved" and saved["ok"]
+            assert saved["data"]["run"]["native"]["tool_events"] == events
+        else:
+            assert len(raw) < MAX_MESSAGE and not saved["ok"]
+            assert saved["error"]["code"] == "INVALID_REQUEST"
+            assert not saved.get("data")  # The service retained only an error envelope.
+    status, status_code = call("status", "--task-id", task_id)
+    assert status_code == 0 and status["ok"] and status["run"]["id"] == run_id
+    assert status["run"]["status"] == "succeeded"
+    print("SKILL_TRANSPORT_LIMIT " + json.dumps({"case": shape, "wire_bytes": wire_bytes,
+        "pretty_bytes": pretty_bytes, "saved_cli_bytes": len(raw), "error": expected_error}))
+
+
+def test_oversized_private_response_has_explicit_limit_and_keeps_evidence(tmp_path):
+    executable = tmp_path / "oversized-cli"
+    write_fake_cli(executable, body=(
+        f"print(json.dumps({{'ok': True, 'data': {{'output': 'x' * {skill.MAX_INSPECT_RESPONSE_BYTES}}}}}))\n"))
+    result, code = skill.execute(parse_skill_args(tmp_path, executable, "inspect", "--task-id", "tsk_large"))
+    assert code == 1 and result["error"] == {
+        "code": "CLI_RESPONSE_TOO_LARGE", "limit_bytes": skill.MAX_INSPECT_RESPONSE_BYTES}
+    assert result["outcome"] == "unobserved"
+    assert Path(result["artifacts"]["response"]).stat().st_size > skill.MAX_INSPECT_RESPONSE_BYTES
+    assert len(skill.dump(result)) < 4096
+
+
+def test_submit_stdin_marker_is_rejected_before_business_call(tmp_path):
+    executable = tmp_path / "fake-cli"
+    log = tmp_path / "commands.log"
+    write_fake_cli(executable, log_path=log)
+    args = parse_skill_args(tmp_path, executable, "submit", "--workspace", "demo", "--backend", "fake",
+                            "--input", "-", "--idempotency-key", "stable")
+    with pytest.raises(skill.InputError, match="stdin"):
+        skill.execute(args)
+    assert "task-submit" not in log.read_text().splitlines()
+
+
+def test_usage_without_observation_opt_in_keeps_real_coverage(resident, workspace_root):
+    call, _, _ = resident
+    submitted, _ = submit(call, workspace_root)
+    result, code = call("usage", "--task-id", submitted["ids"]["task_id"])
+    assert code == 0
+    usage = result["usage"]
+    assert usage["coverage"]["run_count"] == 1
+    assert usage["coverage"]["source"] == "persisted_run_native"
+    assert usage["coverage"]["run_details_included"] is False
+    assert usage["coverage"]["session_observations_included"] is False
+    assert usage["billed_usage_verified"] is False and usage["subscription_quota_effect"] == "unknown"
+    assert usage["totals"]["tokens"]["input_tokens"]["known_sum"] is None
+
+
+def test_discovery_distinguishes_text_and_code_profiles():
+    result = skill.summarize({"ok": True, "data": {"backends": [
+        {"backend": "text-agent", "kind": "grok", "execution_profile": "text-v1", "transport": "acp"},
+        {"backend": "coding-agent", "kind": "grok", "execution_profile": "workspace-code-v1", "transport": "headless"}
+    ]}}, "discover")
+    assert result["backends"][0]["execution_profile"] == "text-v1"
+    assert result["backends"][1]["execution_profile"] == "workspace-code-v1"
+    assert result["backends"][1]["transport"] == "headless"
 
 
 @pytest.mark.parametrize("target", ["../report.json", "/report.json", "a//b.json", "./report.json"])
@@ -260,6 +470,8 @@ def test_packaged_skill_has_only_reviewed_files_and_matching_hashes(tmp_path):
         for name, item in manifest["files"].items():
             raw = archive.read("asterun/" + name)
             assert item["sha256"] == hashlib.sha256(raw).hexdigest() and item["bytes"] == len(raw)
+        assert manifest["minimum_core_version"] == skill.MIN_CORE_VERSION == "0.1.0a14"
+        assert skill.MIN_CORE_VERSION in manifest["core_interface"]
     assert result["sha256"] == hashlib.sha256(output.read_bytes()).hexdigest()
     with pytest.raises(FileExistsError):
         packager.build(SOURCE, output, "a" * 40)
@@ -283,10 +495,11 @@ def test_old_core_rejection_is_preserved_without_fallback(tmp_path):
     executable = tmp_path / "old-cli"
     counter = tmp_path / "invocations"
     envelope = json.dumps({"ok": False, "data": None, "error": {"code": "UNKNOWN_FIELD"}, "ids": {}})
-    executable.write_text(f"#!{sys.executable}\nfrom pathlib import Path\n"
+    write_fake_cli(executable, body=(
+        f"from pathlib import Path\n"
         f"p=Path({str(counter)!r});p.write_text(p.read_text()+'x' if p.exists() else 'x')\n"
-        f"print({envelope!r})\nraise SystemExit(2)\n")
-    executable.chmod(0o700)
+        f"print({envelope!r})\nraise SystemExit(2)\n"
+    ))
     args = skill.parser().parse_args(["--asterun-bin", str(executable), "--state-dir", str(tmp_path / "state"),
         "--artifacts-dir", str(tmp_path / "data"), "status", "--task-id", "tsk_old"])
     value, code = skill.execute(args)
@@ -316,3 +529,212 @@ def test_invalid_wait_budget_is_rejected_before_cli_call(tmp_path, timeout):
                                      "wait", "--task-id", "tsk_test", "--timeout", timeout])
     with pytest.raises(skill.InputError):
         skill.request_args(args, tmp_path)
+
+
+@pytest.mark.parametrize("value,ok", [
+    ("0.1.0a13", False), ("0.1.0a14", True), ("0.1.0a15", True), ("0.1.0b1", True),
+    ("0.1.0rc1", True), ("0.1.0", True), ("0.1.0a12", False), ("1.0.0", True),
+    ("0.1.0a14.dev1", False), ("0.1.0a14+local", True), ("0.1.0a14+local.1", True),
+    ("0.1.0a14.dev1+g123", False), ("0.1.0a15.dev1", True), ("0.1.0a14.post1", True),
+    ("not-a-version", False), ("", False), (None, False),
+])
+def test_version_gate_compares_pep440_prereleases(value, ok):
+    assert skill.version_supported(value) is ok
+    if isinstance(value, str) and value:
+        parsed = skill.parse_version(value)
+        assert (parsed is not None) is (value != "not-a-version")
+
+
+def test_pep440_fallback_parses_dev_and_local_builds():
+    minimum = skill._parse_pep440("0.1.0a14")
+    assert minimum is not None
+    assert skill._parse_pep440("0.1.0a14.dev1") < minimum
+    assert skill._parse_pep440("0.1.0a14+local") > minimum
+    assert skill._parse_pep440("0.1.0a14.dev1+g123") < minimum
+    assert skill._parse_pep440("0.1.0a15.dev1") > minimum
+    packaging = pytest.importorskip("packaging.version")
+    for value in ("0.1.0a14", "0.1.0a14.dev1", "0.1.0a14+local", "0.1.0a14+local.1",
+                  "0.1.0a14.dev1+g123", "0.1.0a15.dev1", "0.1.0a14.post1"):
+        fallback = skill._parse_pep440(value)
+        assert fallback is not None
+        assert (fallback >= minimum) == (packaging.Version(value) >= packaging.Version("0.1.0a14"))
+
+
+def test_current_core_meets_skill_minimum():
+    from asterun import __version__
+    assert skill.version_supported(__version__)
+    assert __version__ == "0.1.0a14"
+
+
+def test_published_a13_fails_fast_without_watch_or_snapshot(tmp_path):
+    log = tmp_path / "commands.log"
+    executable = tmp_path / "a13-cli"
+    write_fake_cli(executable, cli_version="0.1.0a13", body=(
+        f"from pathlib import Path\n"
+        f"Path({str(log)!r}).write_text(Path({str(log)!r}).read_text() + command + '\\n' "
+        f"if Path({str(log)!r}).exists() else command + '\\n')\n"
+        "print('asterun: error: unrecognized arguments: --compact --no-events', file=sys.stderr)\n"
+        "raise SystemExit(2)\n"
+    ))
+    common = ["--asterun-bin", str(executable), "--state-dir", str(tmp_path / "state"),
+              "--artifacts-dir", str(tmp_path / "calls")]
+    for extra in (["discover"], ["wait", "--task-id", "tsk_old", "--timeout", "1"],
+                  ["snapshot", "--task-id", "tsk_old", "--run-id", "run_old", "--target", "note.txt"]):
+        args = skill.parser().parse_args([*common, *extra])
+        value, code = skill.execute(args)
+        assert code == 2 and not value["ok"]
+        assert value["error"]["code"] == "CORE_VERSION_UNSUPPORTED"
+        assert value["current_version"] == "0.1.0a13"
+        assert value["minimum_version"] == "0.1.0a14"
+        assert "0.1.0a14" in value["next_action"]
+        assert "INVALID_CLI_RESPONSE" not in json.dumps(value)
+    logged = log.read_text() if log.exists() else ""
+    assert "task-watch" not in logged and "workflow-snapshot" not in logged
+    assert "backend-inspect" not in logged
+
+
+def test_new_cli_old_core_fails_fast_on_capability_probe(tmp_path):
+    log = tmp_path / "commands.log"
+    executable = tmp_path / "mixed-cli"
+    write_fake_cli(executable, cli_version="0.1.0a14", core_version="0.1.0a13", body=(
+        "if '--help' in sys.argv:\n    print('--compact --no-events'); raise SystemExit(0)\n"
+        f"from pathlib import Path\n"
+        f"Path({str(log)!r}).write_text(Path({str(log)!r}).read_text() + command + '\\n' "
+        f"if Path({str(log)!r}).exists() else command + '\\n')\n"
+        "print(json.dumps({'ok': False, 'error': {'code': 'INVALID_REQUEST'}}))\n"
+        "raise SystemExit(1)\n"
+    ))
+    args = skill.parser().parse_args(["--asterun-bin", str(executable), "--state-dir", str(tmp_path / "state"),
+                                      "--artifacts-dir", str(tmp_path / "calls"), "wait",
+                                      "--task-id", "tsk_old", "--timeout", "1"])
+    value, code = skill.execute(args)
+    assert code == 2 and value["error"]["code"] == "CORE_VERSION_UNSUPPORTED"
+    assert value["current_version"] == "0.1.0a13" and value["checked"] == "常驻核心"
+    assert not log.exists() or "task-watch" not in log.read_text()
+
+
+def test_unreadable_cli_version_is_client_error_not_unsupported(tmp_path):
+    executable = tmp_path / "broken-version"
+    write_fake_cli(executable, version_behavior="error")
+    value, code = skill.execute(parse_skill_args(tmp_path, executable, "discover"))
+    assert code == 1 and value["error"]["code"] == "INVALID_CLI_RESPONSE"
+    assert_no_upgrade_hint(value)
+    assert "intent" not in value.get("artifacts", {})
+
+
+def test_cli_version_timeout_is_not_unsupported(tmp_path):
+    executable = tmp_path / "slow-version"
+    write_fake_cli(executable, version_behavior="timeout", log_path=tmp_path / "commands.log")
+    started = time.monotonic()
+    value, code = skill.execute(parse_skill_args(tmp_path, executable, "submit",
+                                                 "--workspace", "demo", "--backend", "fake",
+                                                 "--input", "task.md", "--idempotency-key", "k",
+                                                 cli_timeout="20"))
+    elapsed = time.monotonic() - started
+    assert elapsed < 8
+    assert code == 124 and value["error"]["code"] == "CLIENT_TIMEOUT"
+    assert_no_upgrade_hint(value)
+    logged = (tmp_path / "commands.log").read_text()
+    assert "version" in logged and "diagnose" not in logged and "task-submit" not in logged
+
+
+@pytest.mark.parametrize("diagnose_behavior", ["error", "nonzero"])
+def test_diagnose_failure_fails_closed_before_mutation(tmp_path, diagnose_behavior):
+    log = tmp_path / "commands.log"
+    executable = tmp_path / "diagnose-fail"
+    write_fake_cli(executable, diagnose_behavior=diagnose_behavior, log_path=log, body=(
+        "raise SystemExit(0)\n"
+    ))
+    for extra in (["submit", "--workspace", "demo", "--backend", "fake",
+                   "--input", "task.md", "--idempotency-key", "k"],
+                  ["cancel", "--task-id", "tsk_old"],
+                  ["discover"]):
+        skill.clear_probe_cache()
+        if log.exists():
+            log.unlink()
+        value, code = skill.execute(parse_skill_args(tmp_path, executable, *extra))
+        assert code == 2 and value["error"]["code"] == "CORE_UNREACHABLE"
+        assert_no_upgrade_hint(value)
+        logged = log.read_text() if log.exists() else ""
+        assert "diagnose" in logged
+        assert "task-submit" not in logged and "task-cancel" not in logged
+        assert "backend-inspect" not in logged
+        assert "intent" not in value.get("artifacts", {})
+
+
+def test_diagnose_timeout_fails_closed_before_mutation(tmp_path):
+    log = tmp_path / "commands.log"
+    executable = tmp_path / "diagnose-timeout"
+    write_fake_cli(executable, diagnose_behavior="timeout", log_path=log)
+    started = time.monotonic()
+    value, code = skill.execute(parse_skill_args(tmp_path, executable, "submit",
+                                                 "--workspace", "demo", "--backend", "fake",
+                                                 "--input", "task.md", "--idempotency-key", "k",
+                                                 cli_timeout="20"))
+    elapsed = time.monotonic() - started
+    assert elapsed < 8
+    assert code == 124 and value["error"]["code"] == "CORE_UNREACHABLE"
+    assert_no_upgrade_hint(value)
+    logged = log.read_text()
+    assert "diagnose" in logged and "task-submit" not in logged
+    assert "intent" not in value.get("artifacts", {})
+
+
+def test_diagnose_missing_version_fails_closed(tmp_path):
+    log = tmp_path / "commands.log"
+    executable = tmp_path / "diagnose-missing"
+    write_fake_cli(executable, diagnose_behavior="missing", log_path=log)
+    for extra in (["submit", "--workspace", "demo", "--backend", "fake",
+                   "--input", "task.md", "--idempotency-key", "k"],
+                  ["wait", "--task-id", "tsk_old", "--timeout", "1"]):
+        skill.clear_probe_cache()
+        if log.exists():
+            log.unlink()
+        value, code = skill.execute(parse_skill_args(tmp_path, executable, *extra))
+        assert code == 2 and value["error"]["code"] == "CORE_VERSION_UNKNOWN"
+        assert_no_upgrade_hint(value)
+        logged = log.read_text()
+        assert "diagnose" in logged
+        assert "task-submit" not in logged and "task-watch" not in logged
+
+
+def test_core_probe_is_refreshed_on_every_call(tmp_path):
+    log = tmp_path / "commands.log"
+    executable = tmp_path / "cached-cli"
+    write_fake_cli(executable, log_path=log, body=(
+        "print(json.dumps({'ok': True, 'data': {'task': {}, 'run': {}}, 'ids': {}}))\n"
+        "raise SystemExit(0)\n"
+    ))
+    skill.clear_probe_cache()
+    args = parse_skill_args(tmp_path, executable, "status", "--task-id", "tsk_1")
+    first, code = skill.execute(args)
+    assert code == 0 and first["ok"]
+    second, code = skill.execute(args)
+    assert code == 0 and second["ok"]
+    logged = log.read_text().split()
+    assert logged.count("version") == 2
+    assert logged.count("diagnose") == 2
+    assert logged.count("task-get") == 2
+
+
+def test_run_py_connect_argv_is_accepted_by_cli_parser(tmp_path):
+    from asterun.cli import build_parser
+    parser = build_parser()
+    common = ["--asterun-bin", "asterun", "--state-dir", str(tmp_path / "state"),
+              "--artifacts-dir", str(tmp_path / "calls")]
+    wait_args = skill.parser().parse_args([*common, "wait", "--task-id", "tsk_1", "--run-id", "run_1",
+                                           "--timeout", "30", "--cursor", "0"])
+    wait_argv = skill.request_args(wait_args, tmp_path)
+    parsed = parser.parse_args(["--state-dir", str(tmp_path / "state"), "--connect", *wait_argv])
+    assert parsed.command == "task-watch" and parsed.compact and parsed.no_events
+    assert parsed.run_id == "run_1" and "--compact" in wait_argv and "--no-events" in wait_argv
+    snap_args = skill.parser().parse_args([*common, "snapshot", "--task-id", "tsk_1", "--run-id", "run_1",
+                                           "--target", "note.txt"])
+    snap_argv = skill.request_args(snap_args, tmp_path)
+    parsed = parser.parse_args(["--state-dir", str(tmp_path / "state"), "--connect", *snap_argv])
+    assert parsed.command == "workflow-snapshot" and parsed.expected_run_id == "run_1"
+    assert parsed.target_paths == ["note.txt"]
+    status_args = skill.parser().parse_args([*common, "status", "--task-id", "tsk_1"])
+    parsed = parser.parse_args(["--state-dir", str(tmp_path / "state"), "--connect",
+                                *skill.request_args(status_args, tmp_path)])
+    assert parsed.command == "task-get" and parsed.compact

@@ -13,6 +13,8 @@ python3 -m venv .venv
 source .venv/bin/activate
 ```
 
+`asterun version` 应返回 `0.1.0a14` 或更新。[标准 skill](standard-skill.md) 依赖该版本中的紧凑观察与 `workflow-snapshot`；公开 `0.1.0a13` wheel 不够。从 [a14 发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a14)取得核心 wheel 和校验文件。GrokBot 模板仍按独立发行锁安装公开 a13，该实例不能使用标准 skill；模板锁升级另行验证和发布。历史主线构建仍报告 a13 时，仅在 CLI 与应答核心的能力探测全部通过后兼容，规则见[标准 skill](standard-skill.md)。
+
 激活虚拟环境后，直接使用 `asterun`。开发时从完整 Git 检出安装 `.[test]`，再运行 `scripts/verify-offline.sh`；默认测试使用临时状态和 fake 后端。
 
 ## 配置并启动核心
