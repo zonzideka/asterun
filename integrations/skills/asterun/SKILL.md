@@ -3,7 +3,7 @@ name: asterun
 description: 通过已有 Asterun 实例委托 Agent 任务，跟踪后台执行，绑定真实验收报告并在原任务上有限修复。用于用户选择 Asterun 的执行与恢复工作流。
 ---
 
-使用已配置实例、实际工作区和后端名称。第一次使用读取 [references/workflow.md](references/workflow.md) 的接入与基本调用部分；需要验收、修复或异常恢复时再读取对应部分。宿主登录、聊天交付和调度由入口适配层负责。
+使用已配置实例、实际工作区和后端名称。第一次使用读取 [references/workflow.md](references/workflow.md) 的接入与基本调用部分；需要验收、修复或异常恢复时再读取对应部分。宿主登录、聊天交付和调度由入口适配层负责。已安装 CLI 与常驻核心必须是 Asterun `0.1.0a14` 或更新；脚本会先调用 `asterun version` 和 `asterun diagnose`，低于该版本会立即失败，而不是把 argparse 错误报成 `INVALID_CLI_RESPONSE`。
 
 用本技能目录内的 `scripts/run.py` 调用已安装 Asterun CLI，显式提供 `--state-dir` 和核心状态目录之外的 `--artifacts-dir`。脚本只连接已有常驻核心。不要把示例路径当成当前实例配置；用 `discover` 核对真实后端名。用户未选择委托执行时按其原任务方式工作。
 

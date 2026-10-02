@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""标准 skill 的一次性 CLI 调用器；权威状态始终由 Asterun 核心保存。"""
+"""标准 skill 的一次性 CLI 调用器；权威状态始终由 Asterun 核心保存。
+
+需要已安装 Asterun CLI 与常驻核心 >= 0.1.0a14。更早的公开 wheel（含 0.1.0a13）
+没有 wait/snapshot 使用的 --compact/--no-events 与 workflow-snapshot。
+"""
 from __future__ import annotations
 
 import argparse
@@ -8,6 +12,7 @@ import json
 import math
 import os
 from pathlib import Path, PurePosixPath
+import re
 import shutil
 import stat
 import subprocess
@@ -15,13 +20,37 @@ import tempfile
 
 MAX_FILE_BYTES = 1024 * 1024
 MAX_REPLY_BYTES = 12 * 1024
+MIN_CORE_VERSION = "0.1.0a14"
 MUTATIONS = {"submit", "evaluate", "repair", "cancel"}
 BINDING = {"task_id": "task_id", "run_id": "expected_run_id", "revision": "expected_revision",
            "input_hash": "expected_input_hash", "target_hash": "expected_target_hash", "target_paths": "target_paths"}
+_PRE_RELEASE = {"a": 0, "b": 1, "rc": 2}
 
 
 class InputError(ValueError):
     pass
+
+
+class CoreUnsupported(Exception):
+    def __init__(self, current, source):
+        self.current = current
+        self.source = source
+
+
+def version_tuple(value):
+    if not isinstance(value, str):
+        return None
+    match = re.fullmatch(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:(a|b|rc)(0|[1-9]\d*))?", value)
+    if not match:
+        return None
+    major, minor, patch, tag, number = match.groups()
+    stage = 3 if tag is None else _PRE_RELEASE[tag]
+    return (int(major), int(minor), int(patch), stage, 0 if number is None else int(number))
+
+
+def version_supported(value, minimum=MIN_CORE_VERSION):
+    actual, needed = version_tuple(value), version_tuple(minimum)
+    return actual is not None and needed is not None and actual >= needed
 
 
 def unique_object(pairs):
@@ -268,24 +297,11 @@ def operation_directory(args):
     return Path(tempfile.mkdtemp(prefix=args.command + "-", dir=root))
 
 
-def execute(args):
-    if not math.isfinite(args.cli_timeout) or not 0 < args.cli_timeout <= 60:
-        raise InputError("CLI 时限必须大于零且不超过 60 秒")
-    binary = shutil.which(args.asterun_bin)
-    if binary is None:
-        raise InputError("找不到已安装的 Asterun CLI")
-    directory = operation_directory(args)
-    argv = [binary, "--state-dir", str(args.state_dir.absolute()), "--connect",
-            *request_args(args, directory)]
-    timeout = max(args.cli_timeout, args.timeout + 5) if args.command == "wait" else args.cli_timeout
-    private_write(directory / "intent.json", dump({"schema_version": "asterun-skill-call/v1",
-                  "command": args.command, "argv": argv, "mutation": args.command in MUTATIONS,
-                  "authoritative_state": "asterun_core", "automatic_retries": 0}))
-    response_path, stderr_path = directory / "response.json", directory / "stderr.txt"
+def run_cli(argv, stdout_path, stderr_path, timeout):
     timed_out = False
     interrupted = False
     # 只终止调用客户端；--connect 后的后台任务由已有核心继续管理。
-    with os.fdopen(os.open(response_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as out, \
+    with os.fdopen(os.open(stdout_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as out, \
          os.fdopen(os.open(stderr_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as err:
         process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=out, stderr=err)
         try:
@@ -296,6 +312,82 @@ def execute(args):
             process.kill()
             process.wait()
             code = 130 if interrupted else 124
+    return code, timed_out, interrupted
+
+
+def envelope_version(path):
+    try:
+        envelope = decode(regular_bytes(path))
+    except (InputError, OSError):
+        return None
+    data = envelope.get("data") if isinstance(envelope, dict) and envelope.get("ok") is True else None
+    version = data.get("version") if isinstance(data, dict) else None
+    return version if isinstance(version, str) and version else None
+
+
+def unsupported_message(current, source):
+    return (f"标准 skill 需要 Asterun 核心 {MIN_CORE_VERSION} 或更新；当前{source}为 {current}。"
+            "已发布的 0.1.0a13 不含 task-watch --compact/--no-events 与 workflow-snapshot。"
+            "请安装 0.1.0a14 或当前源码构建，重启 asterun serve，再用 asterun version 与 "
+            "asterun diagnose 核对应答版本后重试。")
+
+
+def probe_core_versions(args, directory, binary):
+    timeout = args.cli_timeout
+    version_path, version_err = directory / "version.json", directory / "version-stderr.txt"
+    code, timed_out, interrupted = run_cli([binary, "version"], version_path, version_err, timeout)
+    if timed_out or interrupted:
+        raise CoreUnsupported("unknown", "CLI")
+    cli_version = envelope_version(version_path) if code == 0 else None
+    if not version_supported(cli_version):
+        raise CoreUnsupported(cli_version or "unknown", "CLI")
+    diagnose_path, diagnose_err = directory / "diagnose.json", directory / "diagnose-stderr.txt"
+    code, timed_out, interrupted = run_cli(
+        [binary, "--state-dir", str(args.state_dir.absolute()), "--connect", "diagnose"],
+        diagnose_path, diagnose_err, timeout)
+    if timed_out or interrupted or code != 0:
+        return cli_version
+    core_version = envelope_version(diagnose_path)
+    if core_version is not None and not version_supported(core_version):
+        raise CoreUnsupported(core_version, "常驻核心")
+    return core_version or cli_version
+
+
+def execute(args):
+    if not math.isfinite(args.cli_timeout) or not 0 < args.cli_timeout <= 60:
+        raise InputError("CLI 时限必须大于零且不超过 60 秒")
+    binary = shutil.which(args.asterun_bin)
+    if binary is None:
+        raise InputError("找不到已安装的 Asterun CLI")
+    directory = operation_directory(args)
+    try:
+        probe_core_versions(args, directory, binary)
+    except CoreUnsupported as exc:
+        result = {"ok": False, "error": {"code": "CORE_VERSION_UNSUPPORTED",
+                  "message": unsupported_message(exc.current, exc.source)},
+                  "current_version": exc.current, "minimum_version": MIN_CORE_VERSION,
+                  "checked": exc.source,
+                  "next_action": "升级已安装 CLI 与常驻核心到 0.1.0a14 或更新并重启 serve；"
+                                 "用 asterun version 与 asterun diagnose 核对后再重试，不要改用完整事件轮询绕过"}
+        artifacts = {"directory": str(directory)}
+        for key, name in (("version", "version.json"), ("version_stderr", "version-stderr.txt"),
+                          ("diagnose", "diagnose.json"), ("diagnose_stderr", "diagnose-stderr.txt")):
+            path = directory / name
+            if path.is_file():
+                artifacts[key] = str(path)
+        result.update(schema_version="asterun-skill-result/v1", command=args.command, cli_exit_code=2,
+                      artifacts=artifacts)
+        private_write(directory / "result.json", dump(result))
+        return result, 2
+    argv = [binary, "--state-dir", str(args.state_dir.absolute()), "--connect",
+            *request_args(args, directory)]
+    timeout = max(args.cli_timeout, args.timeout + 5) if args.command == "wait" else args.cli_timeout
+    private_write(directory / "intent.json", dump({"schema_version": "asterun-skill-call/v1",
+                  "command": args.command, "argv": argv, "mutation": args.command in MUTATIONS,
+                  "authoritative_state": "asterun_core", "automatic_retries": 0,
+                  "minimum_core_version": MIN_CORE_VERSION}))
+    response_path, stderr_path = directory / "response.json", directory / "stderr.txt"
+    code, timed_out, interrupted = run_cli(argv, response_path, stderr_path, timeout)
     artifacts = {"directory": str(directory), "response": str(response_path), "stderr": str(stderr_path),
                  "intent": str(directory / "intent.json")}
     try:

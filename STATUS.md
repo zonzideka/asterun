@@ -2,7 +2,9 @@
 
 [中文](STATUS.md) | [English](STATUS.en.md)
 
-当前版本为 `0.1.0a13`，采用 Apache-2.0。首版功能范围已冻结，维护集中在现有缺陷、兼容性、现场验收和发行内容。使用入口见 [README](README.md)、[用户手册](docs/user-manual.md)和[发行说明](docs/release-v0.1.md)。
+当前版本为 `0.1.0a14`，采用 Apache-2.0。首版功能范围已冻结，维护集中在现有缺陷、兼容性、现场验收和发行内容。使用入口见 [README](README.md)、[用户手册](docs/user-manual.md)和[发行说明](docs/release-v0.1.md)。公开预发布标签仍为 `v0.1.0a13`；本版本尚未打标签或上传 wheel。
+
+2026-10-02 标准 skill 与已发布 `0.1.0a13` wheel 不匹配：PR #5 的 `wait`/`snapshot` 依赖其后合入的 `task-watch --compact --no-events` 与 `workflow-snapshot`。源码版本改为 `0.1.0a14`，技能脚本在任何命令前用 `asterun version` 和 `asterun diagnose` 核对最低核心版本，旧 CLI 返回 `CORE_VERSION_UNSUPPORTED` 而不再报 `INVALID_CLI_RESPONSE`。GrokBot 模板 `0.1.0-rc1` 的 release-lock 仍指向已发布 a13 wheel，聊天技能未改。维护者需打 `v0.1.0a14` 标签、发布 wheel 并在核对 SHA-256 后决定是否更新 GrokBot 锁。
 
 2026-10-01 推送验收修正了依赖门禁测试对宿主 OS 沙箱的隐含依赖：该逻辑测试使用合成检查结果，覆盖组合检查失败和沙箱不支持时均不能验收通过，不改核心隔离行为。本机依赖、阶段门禁、局部检查和后台检查专项 48 项通过；GitHub runner 缺少 bubblewrap 时，真实沙箱用例仍按现有规则跳过，不能据此宣称 Linux 现场隔离已验证。当前提交的 CI 与合并状态见 [PR #5](https://github.com/zonzideka/asterun/pull/5)。
 

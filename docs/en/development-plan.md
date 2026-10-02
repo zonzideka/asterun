@@ -2,7 +2,9 @@
 
 [中文](../development-plan.md) | [English](development-plan.md)
 
-The first release covers the capabilities implemented in `0.1.0a13`. Current work focuses on defects, compatibility, live acceptance, and release documentation. The core and all three optional plugins use Apache-2.0. See the [release notes](release-v0.1.md) for scope and [STATUS](../../STATUS.en.md) for test and deployment results tied to specific revisions.
+The first release covers the capabilities implemented in `0.1.0a13`. The current source version is `0.1.0a14`. Current work focuses on defects, compatibility, live acceptance, and release documentation. The core and all three optional plugins use Apache-2.0. See the [release notes](release-v0.1.md) for scope and [STATUS](../../STATUS.en.md) for test and deployment results tied to specific revisions.
+
+On 2026-10-02 the standard skill is gated to core `0.1.0a14` or later. The GrokBot template lock still points at the published a13 wheel until the maintainer tags and publishes this version.
 
 ## Current maintenance priorities
 

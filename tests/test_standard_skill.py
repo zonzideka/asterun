@@ -28,6 +28,26 @@ def load_script(path, name):
     return module
 
 
+def write_fake_cli(path, *, cli_version="0.1.0a14", core_version=None, body="raise SystemExit(2)\n"):
+    core_version = cli_version if core_version is None else core_version
+    path.write_text(
+        f"#!{sys.executable}\nimport json, sys\n"
+        "argv = sys.argv[1:]\n"
+        "command = next((item for item in argv if item in "
+        "{'version','diagnose','task-submit','task-watch','task-get','task-cancel',"
+        "'workflow-snapshot','workflow-evaluate','workflow-repair','backend-inspect','usage-report'}), '')\n"
+        f"if command == 'version':\n"
+        f"    print(json.dumps({{'ok': True, 'data': {{'version': {cli_version!r}, 'package': 'asterun'}}}}))\n"
+        "    raise SystemExit(0)\n"
+        f"if command == 'diagnose':\n"
+        f"    print(json.dumps({{'ok': True, 'data': {{'version': {core_version!r}, 'package': 'asterun'}}}}))\n"
+        "    raise SystemExit(0)\n"
+        + body
+    )
+    path.chmod(0o700)
+    return path
+
+
 skill = load_script(SOURCE / "scripts/run.py", "asterun_standard_skill")
 packager = load_script(ROOT / "scripts/package-standard-skill.py", "asterun_skill_packager")
 
@@ -198,10 +218,11 @@ def test_cancel_request_is_not_confirmed_termination(resident):
 def test_uncertain_mutation_is_called_once_and_private_evidence_retained(tmp_path, mode):
     executable = tmp_path / "fake-cli"
     counter = tmp_path / "calls"
-    executable.write_text(f"#!{sys.executable}\nfrom pathlib import Path\nimport time\n"
-                          f"p=Path({str(counter)!r}); p.write_text(p.read_text()+'x' if p.exists() else 'x')\n"
-                          + ("print('{broken', flush=True)\n" if mode == "malformed" else "time.sleep(10)\n"))
-    executable.chmod(0o700)
+    write_fake_cli(executable, body=(
+        f"from pathlib import Path\nimport time\n"
+        f"p=Path({str(counter)!r}); p.write_text(p.read_text()+'x' if p.exists() else 'x')\n"
+        + ("print('{broken', flush=True)\n" if mode == "malformed" else "time.sleep(10)\n")
+    ))
     args = skill.parser().parse_args(["--asterun-bin", str(executable), "--state-dir", str(tmp_path / "state"),
         "--artifacts-dir", str(tmp_path / "calls-data"), "--cli-timeout", "2", "submit",
         "--workspace", "demo", "--backend", "fake", "--input", "task.md", "--idempotency-key", "stable"])
@@ -260,6 +281,8 @@ def test_packaged_skill_has_only_reviewed_files_and_matching_hashes(tmp_path):
         for name, item in manifest["files"].items():
             raw = archive.read("asterun/" + name)
             assert item["sha256"] == hashlib.sha256(raw).hexdigest() and item["bytes"] == len(raw)
+        assert manifest["minimum_core_version"] == skill.MIN_CORE_VERSION == "0.1.0a14"
+        assert skill.MIN_CORE_VERSION in manifest["core_interface"]
     assert result["sha256"] == hashlib.sha256(output.read_bytes()).hexdigest()
     with pytest.raises(FileExistsError):
         packager.build(SOURCE, output, "a" * 40)
@@ -283,10 +306,11 @@ def test_old_core_rejection_is_preserved_without_fallback(tmp_path):
     executable = tmp_path / "old-cli"
     counter = tmp_path / "invocations"
     envelope = json.dumps({"ok": False, "data": None, "error": {"code": "UNKNOWN_FIELD"}, "ids": {}})
-    executable.write_text(f"#!{sys.executable}\nfrom pathlib import Path\n"
+    write_fake_cli(executable, body=(
+        f"from pathlib import Path\n"
         f"p=Path({str(counter)!r});p.write_text(p.read_text()+'x' if p.exists() else 'x')\n"
-        f"print({envelope!r})\nraise SystemExit(2)\n")
-    executable.chmod(0o700)
+        f"print({envelope!r})\nraise SystemExit(2)\n"
+    ))
     args = skill.parser().parse_args(["--asterun-bin", str(executable), "--state-dir", str(tmp_path / "state"),
         "--artifacts-dir", str(tmp_path / "data"), "status", "--task-id", "tsk_old"])
     value, code = skill.execute(args)
@@ -316,3 +340,100 @@ def test_invalid_wait_budget_is_rejected_before_cli_call(tmp_path, timeout):
                                      "wait", "--task-id", "tsk_test", "--timeout", timeout])
     with pytest.raises(skill.InputError):
         skill.request_args(args, tmp_path)
+
+
+@pytest.mark.parametrize("value,ok", [
+    ("0.1.0a13", False), ("0.1.0a14", True), ("0.1.0a15", True), ("0.1.0b1", True),
+    ("0.1.0rc1", True), ("0.1.0", True), ("0.1.0a12", False), ("1.0.0", True),
+    ("not-a-version", False), ("", False), (None, False),
+])
+def test_version_gate_compares_pep440_prereleases(value, ok):
+    assert skill.version_supported(value) is ok
+
+
+def test_current_core_meets_skill_minimum():
+    from asterun import __version__
+    assert skill.version_supported(__version__)
+    assert __version__ == "0.1.0a14"
+
+
+def test_published_a13_fails_fast_without_watch_or_snapshot(tmp_path):
+    log = tmp_path / "commands.log"
+    executable = tmp_path / "a13-cli"
+    write_fake_cli(executable, cli_version="0.1.0a13", body=(
+        f"from pathlib import Path\n"
+        f"Path({str(log)!r}).write_text(Path({str(log)!r}).read_text() + command + '\\n' "
+        f"if Path({str(log)!r}).exists() else command + '\\n')\n"
+        "print('asterun: error: unrecognized arguments: --compact --no-events', file=sys.stderr)\n"
+        "raise SystemExit(2)\n"
+    ))
+    common = ["--asterun-bin", str(executable), "--state-dir", str(tmp_path / "state"),
+              "--artifacts-dir", str(tmp_path / "calls")]
+    for extra in (["discover"], ["wait", "--task-id", "tsk_old", "--timeout", "1"],
+                  ["snapshot", "--task-id", "tsk_old", "--run-id", "run_old", "--target", "note.txt"]):
+        args = skill.parser().parse_args([*common, *extra])
+        value, code = skill.execute(args)
+        assert code == 2 and not value["ok"]
+        assert value["error"]["code"] == "CORE_VERSION_UNSUPPORTED"
+        assert value["current_version"] == "0.1.0a13"
+        assert value["minimum_version"] == "0.1.0a14"
+        assert "0.1.0a14" in value["error"]["message"]
+        assert "INVALID_CLI_RESPONSE" not in json.dumps(value)
+    logged = log.read_text() if log.exists() else ""
+    assert "task-watch" not in logged and "workflow-snapshot" not in logged
+    assert "backend-inspect" not in logged
+
+
+def test_new_cli_old_core_fails_fast_on_diagnose_version(tmp_path):
+    log = tmp_path / "commands.log"
+    executable = tmp_path / "mixed-cli"
+    write_fake_cli(executable, cli_version="0.1.0a14", core_version="0.1.0a13", body=(
+        f"from pathlib import Path\n"
+        f"Path({str(log)!r}).write_text(Path({str(log)!r}).read_text() + command + '\\n' "
+        f"if Path({str(log)!r}).exists() else command + '\\n')\n"
+        "raise SystemExit(2)\n"
+    ))
+    args = skill.parser().parse_args(["--asterun-bin", str(executable), "--state-dir", str(tmp_path / "state"),
+                                      "--artifacts-dir", str(tmp_path / "calls"), "wait",
+                                      "--task-id", "tsk_old", "--timeout", "1"])
+    value, code = skill.execute(args)
+    assert code == 2 and value["error"]["code"] == "CORE_VERSION_UNSUPPORTED"
+    assert value["current_version"] == "0.1.0a13" and value["checked"] == "常驻核心"
+    assert not log.exists() or "task-watch" not in log.read_text()
+
+
+def test_unreadable_cli_version_is_not_treated_as_compatible(tmp_path):
+    executable = tmp_path / "broken-version"
+    write_fake_cli(executable, body="print('not-json')\nraise SystemExit(0)\n")
+    executable.write_text(
+        f"#!{sys.executable}\nprint('not-json')\nraise SystemExit(0)\n"
+    )
+    executable.chmod(0o700)
+    args = skill.parser().parse_args(["--asterun-bin", str(executable), "--state-dir", str(tmp_path / "state"),
+                                      "--artifacts-dir", str(tmp_path / "calls"), "discover"])
+    value, code = skill.execute(args)
+    assert code == 2 and value["error"]["code"] == "CORE_VERSION_UNSUPPORTED"
+    assert value["current_version"] == "unknown"
+
+
+def test_run_py_connect_argv_is_accepted_by_cli_parser(tmp_path):
+    from asterun.cli import build_parser
+    parser = build_parser()
+    common = ["--asterun-bin", "asterun", "--state-dir", str(tmp_path / "state"),
+              "--artifacts-dir", str(tmp_path / "calls")]
+    wait_args = skill.parser().parse_args([*common, "wait", "--task-id", "tsk_1", "--run-id", "run_1",
+                                           "--timeout", "30", "--cursor", "0"])
+    wait_argv = skill.request_args(wait_args, tmp_path)
+    parsed = parser.parse_args(["--state-dir", str(tmp_path / "state"), "--connect", *wait_argv])
+    assert parsed.command == "task-watch" and parsed.compact and parsed.no_events
+    assert parsed.run_id == "run_1" and "--compact" in wait_argv and "--no-events" in wait_argv
+    snap_args = skill.parser().parse_args([*common, "snapshot", "--task-id", "tsk_1", "--run-id", "run_1",
+                                           "--target", "note.txt"])
+    snap_argv = skill.request_args(snap_args, tmp_path)
+    parsed = parser.parse_args(["--state-dir", str(tmp_path / "state"), "--connect", *snap_argv])
+    assert parsed.command == "workflow-snapshot" and parsed.expected_run_id == "run_1"
+    assert parsed.target_paths == ["note.txt"]
+    status_args = skill.parser().parse_args([*common, "status", "--task-id", "tsk_1"])
+    parsed = parser.parse_args(["--state-dir", str(tmp_path / "state"), "--connect",
+                                *skill.request_args(status_args, tmp_path)])
+    assert parsed.command == "task-get" and parsed.compact

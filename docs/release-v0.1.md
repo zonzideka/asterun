@@ -2,7 +2,13 @@
 
 # 首版发行说明
 
-当前公开源码版本为 `0.1.0a13`，正式稳定版 `0.1.0` 尚未发布。首版范围已冻结，发布准备集中在现有行为、兼容和打包修复。项目采用 [Apache-2.0](../LICENSE)。
+当前公开源码版本为 `0.1.0a14`，正式稳定版 `0.1.0` 尚未发布。GitHub 上已发布的预发布包仍是 `v0.1.0a13`；本版本尚未打标签或上传 wheel。首版范围已冻结，发布准备集中在现有行为、兼容和打包修复。项目采用 [Apache-2.0](../LICENSE)。
+
+## 0.1.0a14
+
+相对已发布的 `v0.1.0a13`，源码包含其后合入的外部主控紧凑观察（`task-get --compact`、`task-watch --compact --no-events`）、`workflow-snapshot`、标准 skill 入口，以及技能对核心版本的显式门禁。标准 skill 要求已安装 CLI 与常驻核心均为 `0.1.0a14` 或更新；在 `0.1.0a13` 上不再把 argparse 错误报成 `INVALID_CLI_RESPONSE`，而是先运行 `asterun version` 与 `asterun diagnose` 并返回 `CORE_VERSION_UNSUPPORTED`。
+
+本预发布尚未打标签。GrokBot 模板 `0.1.0-rc1` 的 [release-lock.json](../integrations/grokbot/release-lock.json) 仍指向已发布 a13 wheel 及其 SHA-256；聊天技能行为不变。维护者发布 a14 wheel 并核对摘要后，再决定是否更新该锁。
 
 ## 运行范围
 
