@@ -50,7 +50,7 @@ def write_fake_cli(path, *, cli_version="0.1.0a14", core_version=None, body="rai
         "argv = sys.argv[1:]\n"
         "command = next((item for item in argv if item in "
         "{'version','diagnose','task-submit','task-watch','task-get','task-cancel',"
-        "'workflow-snapshot','workflow-evaluate','workflow-repair','backend-inspect','usage-report'}), '')\n"
+        "'workflow-snapshot','workflow-evaluate','workflow-repair','backend-inspect','control-resources','usage-report'}), '')\n"
         + log_block +
         "if command == 'version':\n"
         + _indent(replies[version_behavior] % (cli_version,) if "%r" in replies[version_behavior] else replies[version_behavior])
@@ -145,6 +145,13 @@ def test_copied_skill_fake_roundtrip_and_no_prompt_echo(resident, workspace_root
     call, client, _ = resident
     discovered, code = call("discover")
     assert code == 0 and discovered["ok"]
+    assert discovered["backends"][0]["kind"] == "fake"
+    assert "fake" in discovered["next_action"] and "模拟" in discovered["next_action"]
+    resources, code = call("resources")
+    assert code == 0 and resources["ok"]
+    assert resources["resource_count"] == 1 and resources["resources_truncated"] is False
+    assert resources["resources"][0]["workspace"] == "demo"
+    assert Path(resources["resources"][0]["location"]) == workspace_root
     first, code = submit(call, workspace_root)
     assert code == 0 and first["ok"]
     repeated, code = submit(call, workspace_root)
@@ -192,6 +199,22 @@ def test_binding_evaluation_repair_replay_and_drift(resident, workspace_root, is
         assert repaired["ids"][key] == repeated["ids"][key]
     current = client.handle("task.get", {"task_id": task_id}).data
     assert current["task"]["repair_count"] == 1 and current["task"]["run_count"] == 2
+    usage, code = call("usage", "--task-id", task_id, "--include-runs", "--include-observations")
+    assert code == 0 and usage["usage"]["totals"]["run_count"] == 2
+    assert usage["usage"]["scope"] == {"task_id": task_id}
+    coverage = usage["usage"]["coverage"]
+    assert coverage["source"] == "persisted_run_native" and coverage["runs"] == "persisted_only"
+    assert coverage["controller"] == "not_observed" and coverage["native_requests"] == "unknown"
+    assert coverage["run_details_included"] and coverage["session_observations_included"]
+    assert coverage["acceptance_revalidated"] is False
+    pagination = usage["usage"]["pagination"]
+    assert pagination["has_more"] and pagination["totals_scope"] == "complete_query"
+    second_page, code = call("usage", "--task-id", task_id, "--include-runs", "--include-observations",
+                             "--cursor", pagination["next_cursor"])
+    assert code == 0 and second_page["usage"]["totals"] == usage["usage"]["totals"]
+    first_raw = json.loads(Path(usage["artifacts"]["response"]).read_text())["data"]
+    second_raw = json.loads(Path(second_page["artifacts"]["response"]).read_text())["data"]
+    assert first_raw["runs"][0]["run_id"] != second_raw["runs"][0]["run_id"]
     snap_file, binding = snapshot(call, task_id, current["run"]["id"])
     write_report(workspace_root, binding, True)
     evaluated, code = call("evaluate", "--snapshot-file", str(snap_file), "--workspace-root", str(workspace_root),
@@ -278,6 +301,73 @@ def test_large_backend_output_stays_in_private_file(resident):
     print("SKILL_PAYLOAD_SAMPLE " + json.dumps({"fixture_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
         "full_response_bytes": value["metrics"]["response_bytes"], "visible_summary_bytes": len(skill.dump(value)),
         "native_tokens": "not_measured", "subscription_quota_effect": "unknown"}))
+
+
+def test_pretty_cli_response_above_ipc_limit_remains_readable(tmp_path):
+    executable = tmp_path / "verbose-cli"
+    # This valid envelope fits the core's compact IPC response limit. The real
+    # CLI emits indent=2, which can exceed that limit without changing the data.
+    envelope = {"ok": True, "ids": {"task_id": "tsk_large"}, "data": {
+        "task": {"id": "tsk_large", "acceptance": "pending"},
+        "run": {"id": "run_large", "status": "succeeded", "native": {
+            "tool_events": [{"type": "tool", "metadata": {"output": "private-output"}}] * 15000}}}}
+    assert len(json.dumps(envelope).encode()) < skill.MAX_FILE_BYTES
+    raw = json.dumps(envelope, indent=2)
+    assert skill.MAX_FILE_BYTES < len(raw.encode()) < skill.MAX_INSPECT_RESPONSE_BYTES
+    write_fake_cli(executable, body=f"print({raw!r})\n")
+    result, code = skill.execute(parse_skill_args(tmp_path, executable, "inspect", "--task-id", "tsk_large"))
+    assert code == 0 and result["ok"] and result["run"]["status"] == "succeeded"
+    assert len(skill.dump(result)) < 4096 and "private-output" not in skill.dump(result).decode()
+    saved = Path(result["artifacts"]["response"])
+    assert json.loads(saved.read_text()) == envelope
+    assert stat.S_IMODE(saved.stat().st_mode) == 0o600
+
+
+def test_oversized_private_response_has_explicit_limit_and_keeps_evidence(tmp_path):
+    executable = tmp_path / "oversized-cli"
+    write_fake_cli(executable, body=(
+        f"print(json.dumps({{'ok': True, 'data': {{'output': 'x' * {skill.MAX_INSPECT_RESPONSE_BYTES}}}}}))\n"))
+    result, code = skill.execute(parse_skill_args(tmp_path, executable, "inspect", "--task-id", "tsk_large"))
+    assert code == 1 and result["error"] == {
+        "code": "CLI_RESPONSE_TOO_LARGE", "limit_bytes": skill.MAX_INSPECT_RESPONSE_BYTES}
+    assert result["outcome"] == "unobserved"
+    assert Path(result["artifacts"]["response"]).stat().st_size > skill.MAX_INSPECT_RESPONSE_BYTES
+    assert len(skill.dump(result)) < 4096
+
+
+def test_submit_stdin_marker_is_rejected_before_business_call(tmp_path):
+    executable = tmp_path / "fake-cli"
+    log = tmp_path / "commands.log"
+    write_fake_cli(executable, log_path=log)
+    args = parse_skill_args(tmp_path, executable, "submit", "--workspace", "demo", "--backend", "fake",
+                            "--input", "-", "--idempotency-key", "stable")
+    with pytest.raises(skill.InputError, match="stdin"):
+        skill.execute(args)
+    assert "task-submit" not in log.read_text().splitlines()
+
+
+def test_usage_without_observation_opt_in_keeps_real_coverage(resident, workspace_root):
+    call, _, _ = resident
+    submitted, _ = submit(call, workspace_root)
+    result, code = call("usage", "--task-id", submitted["ids"]["task_id"])
+    assert code == 0
+    usage = result["usage"]
+    assert usage["coverage"]["run_count"] == 1
+    assert usage["coverage"]["source"] == "persisted_run_native"
+    assert usage["coverage"]["run_details_included"] is False
+    assert usage["coverage"]["session_observations_included"] is False
+    assert usage["billed_usage_verified"] is False and usage["subscription_quota_effect"] == "unknown"
+    assert usage["totals"]["tokens"]["input_tokens"]["known_sum"] is None
+
+
+def test_discovery_distinguishes_text_and_code_profiles():
+    result = skill.summarize({"ok": True, "data": {"backends": [
+        {"backend": "text-agent", "kind": "grok", "execution_profile": "text-v1", "transport": "acp"},
+        {"backend": "coding-agent", "kind": "grok", "execution_profile": "workspace-code-v1", "transport": "headless"}
+    ]}}, "discover")
+    assert result["backends"][0]["execution_profile"] == "text-v1"
+    assert result["backends"][1]["execution_profile"] == "workspace-code-v1"
+    assert result["backends"][1]["transport"] == "headless"
 
 
 @pytest.mark.parametrize("target", ["../report.json", "/report.json", "a//b.json", "./report.json"])
@@ -431,21 +521,23 @@ def test_published_a13_fails_fast_without_watch_or_snapshot(tmp_path):
         assert value["error"]["code"] == "CORE_VERSION_UNSUPPORTED"
         assert value["current_version"] == "0.1.0a13"
         assert value["minimum_version"] == "0.1.0a14"
-        assert "0.1.0a14" in value["error"]["message"]
+        assert "0.1.0a14" in value["next_action"]
         assert "INVALID_CLI_RESPONSE" not in json.dumps(value)
     logged = log.read_text() if log.exists() else ""
     assert "task-watch" not in logged and "workflow-snapshot" not in logged
     assert "backend-inspect" not in logged
 
 
-def test_new_cli_old_core_fails_fast_on_diagnose_version(tmp_path):
+def test_new_cli_old_core_fails_fast_on_capability_probe(tmp_path):
     log = tmp_path / "commands.log"
     executable = tmp_path / "mixed-cli"
     write_fake_cli(executable, cli_version="0.1.0a14", core_version="0.1.0a13", body=(
+        "if '--help' in sys.argv:\n    print('--compact --no-events'); raise SystemExit(0)\n"
         f"from pathlib import Path\n"
         f"Path({str(log)!r}).write_text(Path({str(log)!r}).read_text() + command + '\\n' "
         f"if Path({str(log)!r}).exists() else command + '\\n')\n"
-        "raise SystemExit(2)\n"
+        "print(json.dumps({'ok': False, 'error': {'code': 'INVALID_REQUEST'}}))\n"
+        "raise SystemExit(1)\n"
     ))
     args = skill.parser().parse_args(["--asterun-bin", str(executable), "--state-dir", str(tmp_path / "state"),
                                       "--artifacts-dir", str(tmp_path / "calls"), "wait",
@@ -541,7 +633,7 @@ def test_diagnose_missing_version_fails_closed(tmp_path):
         assert "task-submit" not in logged and "task-watch" not in logged
 
 
-def test_successful_probe_is_cached_per_process(tmp_path):
+def test_core_probe_is_refreshed_on_every_call(tmp_path):
     log = tmp_path / "commands.log"
     executable = tmp_path / "cached-cli"
     write_fake_cli(executable, log_path=log, body=(
@@ -555,8 +647,8 @@ def test_successful_probe_is_cached_per_process(tmp_path):
     second, code = skill.execute(args)
     assert code == 0 and second["ok"]
     logged = log.read_text().split()
-    assert logged.count("version") == 1
-    assert logged.count("diagnose") == 1
+    assert logged.count("version") == 2
+    assert logged.count("diagnose") == 2
     assert logged.count("task-get") == 2
 
 

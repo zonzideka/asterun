@@ -42,6 +42,7 @@ def build(source, output, source_commit):
         raise ValueError("最低核心版本无效")
     manifest = {"schema_version": "asterun-standard-skill/v1", "source_commit": source_commit,
                 "minimum_core_version": minimum,
+                "legacy_compatibility": {"version": "0.1.0a13", "requires": "cli_and_resident_feature_probes"},
                 "core_interface": "asterun CLI --connect >= " + minimum + "; compact observation; bound external workflow",
                 "files": {name: {"bytes": len(blob), "sha256": hashlib.sha256(blob).hexdigest()}
                           for name, blob in blobs.items()}}

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """标准 skill 的一次性 CLI 调用器；权威状态始终由 Asterun 核心保存。
 
-需要已安装 Asterun CLI 与常驻核心 >= 0.1.0a14。更早的公开 wheel（含 0.1.0a13）
-没有 wait/snapshot 使用的 --compact/--no-events 与 workflow-snapshot。
+标准发行版需要 CLI 与常驻核心 >= 0.1.0a14；公开 a13 不兼容。
+仍标为 a13 的历史源码构建仅在 CLI 与常驻接口探测都通过时兼容。
 """
 from __future__ import annotations
 
@@ -19,6 +19,8 @@ import subprocess
 import tempfile
 
 MAX_FILE_BYTES = 1024 * 1024
+# CLI 会把 IPC 响应重新排版；私有完整对象可大于 IPC 的单行 JSON。
+MAX_INSPECT_RESPONSE_BYTES = 4 * 1024 * 1024
 MAX_REPLY_BYTES = 12 * 1024
 MIN_CORE_VERSION = "0.1.0a14"
 PROBE_TIMEOUT = 3.0
@@ -37,6 +39,10 @@ _PROBE_CACHE = {}
 
 
 class InputError(ValueError):
+    pass
+
+
+class ResponseLimitError(InputError):
     pass
 
 
@@ -183,7 +189,11 @@ def request_args(args, operation_dir):
     command = args.command
     if command == "discover":
         return ["backend-inspect"]
+    if command == "resources":
+        return ["control-resources"]
     if command == "submit":
+        if args.input == "-":
+            raise InputError("本技能不读取 stdin；--input 必须是已配置工作区内的提示文件")
         argv = ["task-submit", "--workspace=" + identifier(args.workspace),
                 "--backend=" + identifier(args.backend), "--input=" + relative_file(args.input),
                 "--idempotency-key=" + identifier(args.idempotency_key)]
@@ -193,7 +203,16 @@ def request_args(args, operation_dir):
     if command in {"status", "inspect", "wait", "snapshot", "cancel", "usage"}:
         task_id = identifier(args.task_id)
         if command == "usage":
-            return ["usage-report", "--task-id=" + task_id, "--page-size", "1"]
+            if not 1 <= args.page_size <= 100:
+                raise InputError("用量明细每页条数必须为 1–100")
+            argv = ["usage-report", "--task-id=" + task_id, "--page-size", str(args.page_size)]
+            if args.include_runs:
+                argv.append("--include-runs")
+            if args.include_observations:
+                argv.append("--include-observations")
+            if args.cursor:
+                argv.append("--cursor=" + identifier(args.cursor))
+            return argv
         if command == "cancel":
             return ["task-cancel", task_id]
         if command in {"status", "inspect"}:
@@ -266,6 +285,8 @@ def summarize(envelope, command):
     native = (snapshot.get("run") or {}).get("native") if isinstance(snapshot.get("run"), dict) else {}
     result["native"] = small_fields(native, ("session_id", "thread_id", "turn_id", "backend_session_id",
                                             "backend_turn_id", "native_resumed", "usage_scope"))
+    if command == "inspect":
+        result["response_compact"] = data.get("compact") is True
     if command == "snapshot":
         result["binding"] = small_fields(data, ("task_id", "run_id", "revision", "input_hash", "target_hash"))
         result["target_count"] = len(data.get("target_paths", []))
@@ -276,9 +297,30 @@ def summarize(envelope, command):
                                   for name, row in list(backends.items())[:32] if isinstance(row, dict)]
         elif isinstance(backends, list):
             result["backends"] = [small_fields(row, ("id", "backend", "name", "kind", "enabled",
-                                  "enabled_in_config", "execution_enabled", "is_real_connection")) for row in backends[:32]]
+                                  "enabled_in_config", "execution_enabled", "is_real_connection",
+                                  "execution_profile", "transport", "model", "binary_found")) for row in backends[:32]]
+        if isinstance(backends, (dict, list)):
+            result["backend_count"] = len(backends)
+            result["backends_truncated"] = len(backends) > 32
+    if command == "resources":
+        resources = data.get("resources", [])
+        if not isinstance(resources, list):
+            raise InputError("资源响应必须包含数组")
+        result["resources"] = [small_fields(row, ("resource_id", "workspace", "location", "enforcement"))
+                               for row in resources[:32]]
+        result["resource_count"] = len(resources)
+        result["resources_truncated"] = len(resources) > 32
     if command == "usage":
-        result["usage"] = {"totals": data.get("totals"), "coverage": data.get("coverage"),
+        coverage = small_fields(data.get("coverage"), ("controller", "native_requests", "runs",
+                    "subscription_quota_effect", "session_observations_added_to_totals"))
+        coverage.update(small_fields(data, ("source", "readonly", "task_status_source", "acceptance_revalidated")))
+        coverage.update(small_fields(data.get("totals"), ("run_count", "task_count")))
+        coverage["run_details_included"] = isinstance(data.get("runs"), list)
+        coverage["session_observations_included"] = isinstance(data.get("observations"), list)
+        result["usage"] = {"totals": data.get("totals"), "coverage": coverage,
+                           "scope": small_fields(data.get("scope"), ("task_id", "workspace", "conversation_id")),
+                           "pagination": small_fields(data.get("pagination"),
+                               ("page_size", "snapshot", "next_cursor", "has_more", "totals_scope")),
                            "billed_usage_verified": data.get("billed_usage_verified"),
                            "subscription_quota_effect": "unknown"}
     if isinstance(data.get("checks"), list):
@@ -311,7 +353,9 @@ def next_action(result, command):
     if command == "cancel":
         return "继续观察并核对原生终止事实；受理取消不等于终止"
     if command == "discover":
-        return "根据用户授权选择实际后端名称与工作区"
+        return "用 resources 核对工作区，并按执行配置选择后端；fake 只模拟契约，不证明实际产出"
+    if command == "resources":
+        return "按 workspace 与 location 核对当前项目；只使用已授权工作区，不自动创建或扩大范围"
     if command == "snapshot":
         return "在该固定版本与所选范围上执行已授权检查并生成真实报告"
     if command == "usage":
@@ -364,12 +408,8 @@ def envelope_version(path):
     return version if isinstance(version, str) and version else None
 
 
-def probe_cache_key(binary, state_dir):
-    info = os.stat(binary)
-    return (binary, info.st_mtime_ns, info.st_size, str(Path(state_dir).resolve()))
-
-
 def clear_probe_cache():
+    # 保留调用兼容；常驻核心可能在两次调用间切换，不能缓存版本或能力。
     _PROBE_CACHE.clear()
 
 
@@ -385,13 +425,77 @@ def gate_error(code, message, *, current=None, source=None, exit_code=2, next_ac
                      next_action=next_action)
 
 
+def probe_cli_features(args, directory, binary, timeout, current_version):
+    for command, options in (("task-get", ("--compact",)),
+                             ("task-watch", ("--compact", "--no-events")),
+                             ("workflow-snapshot", ())):
+        path = directory / ("probe-" + command + "-help.txt")
+        code, timed_out, interrupted = run_cli(
+            [binary, command, "--help"], path,
+            directory / ("probe-" + command + "-help-stderr.txt"), timeout)
+        if timed_out or interrupted:
+            raise gate_error("CLIENT_TIMEOUT" if timed_out else "CLIENT_INTERRUPTED",
+                             "CLI 能力探测未完成；业务命令尚未发出", source="CLI",
+                             exit_code=124 if timed_out else 130,
+                             next_action="核对保存的 help 探测记录后重试；不要当作核心过旧去升级")
+        try:
+            help_text = regular_bytes(path).decode("utf-8")
+        except (InputError, OSError, UnicodeError):
+            raise gate_error("INVALID_CLI_RESPONSE", "无法读取 CLI 能力探测响应", source="CLI",
+                             next_action="核对保存的 help 探测记录；业务命令尚未发出")
+        if code != 0 or not help_text.strip() or any(
+                re.search(r"(?<![\w-])" + re.escape(option) + r"(?![\w-])", help_text) is None
+                for option in options):
+            raise gate_error("CORE_VERSION_UNSUPPORTED",
+                             "当前 CLI 缺少标准 skill 所需的 " + command + " 能力；业务命令尚未发出",
+                             current=current_version, source="CLI",
+                             next_action="安装 0.1.0a14 或更新的 CLI 与核心；历史自编 a13 必须通过全部能力探测")
+
+
+def probe_core_features(args, directory, binary, timeout):
+    import uuid
+
+    task_id = "tsk_skill_probe_" + uuid.uuid4().hex
+    private_write(directory / "probe-binding.json", dump({"task_id": task_id,
+                  "purpose": "compatibility_only", "creates_task": False}))
+    for command in (["task-get", task_id, "--compact"],
+                    ["workflow-snapshot", task_id, "--run-id", "run_skill_probe",
+                     "--target", ".asterun-skill-probe"]):
+        path = directory / ("probe-" + command[0] + ".json")
+        code, timed_out, interrupted = run_cli(
+            [binary, "--state-dir", str(args.state_dir.absolute()), "--connect", *command],
+            path, directory / ("probe-" + command[0] + "-stderr.txt"), timeout)
+        if timed_out or interrupted:
+            raise gate_error("CORE_UNREACHABLE" if timed_out else "CLIENT_INTERRUPTED",
+                             "常驻核心能力探测未完成；业务命令尚未发出", source="常驻核心",
+                             exit_code=124 if timed_out else 130,
+                             next_action="核对现有实例与保存的探测记录后重试；不要当作核心过旧去升级")
+        try:
+            envelope = decode(regular_bytes(path))
+        except (InputError, OSError):
+            envelope = None
+        error = envelope.get("error") if isinstance(envelope, dict) else None
+        error = error if isinstance(error, dict) else {}
+        if (isinstance(envelope, dict) and envelope.get("ok") is False and code == 1
+                and error.get("code") == "NOT_FOUND" and isinstance(error.get("details"), dict)
+                and error["details"].get("id") == task_id):
+            continue
+        if error.get("code") == "BACKEND_UNAVAILABLE":
+            raise gate_error("CORE_UNREACHABLE", "未取得常驻核心的能力探测应答", source="常驻核心",
+                             next_action="确认该 state-dir 的已有核心可达后重试；业务命令尚未发出")
+        if error.get("code") in {"INVALID_REQUEST", "UNKNOWN_FIELD", "METHOD_NOT_FOUND"}:
+            raise gate_error("CORE_VERSION_UNSUPPORTED",
+                             "当前核心不接受标准 skill 所需的 " + command[0] + " 请求；业务命令尚未发出",
+                             current="0.1.0a13", source="常驻核心",
+                             next_action="将 CLI 与常驻核心升级至 0.1.0a14 或更新；不回退到完整事件轮询")
+        raise gate_error("CORE_CAPABILITY_UNKNOWN",
+                         "核心能力探测未返回绑定该探测任务的 NOT_FOUND；业务命令尚未发出",
+                         source="常驻核心", next_action="读取保存的探测响应核对原因；不要跳过门禁或重派业务任务")
+
+
 def probe_core_versions(args, directory, binary):
     # 只读与变更都要求核验常驻核心版本；核验失败不把业务命令发给可能过旧的实例。
     timeout = min(PROBE_TIMEOUT, args.cli_timeout)
-    key = probe_cache_key(binary, args.state_dir)
-    cached = _PROBE_CACHE.get(key)
-    if cached is not None:
-        return cached
     version_path, version_err = directory / "version.json", directory / "version-stderr.txt"
     code, timed_out, interrupted = run_cli([binary, "version"], version_path, version_err, timeout)
     if timed_out:
@@ -401,10 +505,13 @@ def probe_core_versions(args, directory, binary):
         raise gate_error("CLIENT_INTERRUPTED", "asterun version 探测被中断", source="CLI",
                          exit_code=130, next_action="核对已保存探测记录后重试；变更命令尚未发出")
     cli_version = envelope_version(version_path) if code == 0 else None
-    if cli_version is None:
+    if cli_version is None or parse_version(cli_version) is None:
         raise gate_error("INVALID_CLI_RESPONSE", "无法从 asterun version 读取版本", source="CLI",
                          exit_code=1, next_action="读取 version 探测的 stdout/stderr 后重试；不要当作核心过旧去升级")
-    if not version_supported(cli_version):
+    cli_legacy = cli_version == "0.1.0a13"
+    if cli_legacy:
+        probe_cli_features(args, directory, binary, timeout, cli_version)
+    elif not version_supported(cli_version):
         raise gate_error("CORE_VERSION_UNSUPPORTED", unsupported_message(cli_version, "CLI"),
                          current=cli_version, source="CLI",
                          next_action="升级已安装 CLI 与常驻核心到 0.1.0a14 或更新并重启 serve；"
@@ -427,18 +534,26 @@ def probe_core_versions(args, directory, binary):
                          source="常驻核心",
                          next_action="确认该 state-dir 上 asterun serve 正在运行后重试；不要把探测失败当成核心过旧去升级")
     core_version = envelope_version(diagnose_path)
-    if core_version is None:
+    if core_version is None or parse_version(core_version) is None:
         raise gate_error("CORE_VERSION_UNKNOWN",
                          "应答核心的 diagnose 未返回可解析版本；变更与只读命令均未发出",
                          source="常驻核心",
                          next_action="运行 asterun --connect diagnose 核对后再重试；不要把缺版本当成核心过旧去升级")
-    if not version_supported(core_version):
+    core_legacy = core_version == "0.1.0a13"
+    if core_legacy:
+        if not cli_legacy:
+            probe_cli_features(args, directory, binary, timeout, cli_version)
+        probe_core_features(args, directory, binary, timeout)
+    elif not version_supported(core_version):
         raise gate_error("CORE_VERSION_UNSUPPORTED", unsupported_message(core_version, "常驻核心"),
                          current=core_version, source="常驻核心",
                          next_action="升级已安装 CLI 与常驻核心到 0.1.0a14 或更新并重启 serve；"
                                      "用 asterun version 与 asterun diagnose 核对后再重试，不要改用完整事件轮询绕过")
     proven = (cli_version, core_version)
-    _PROBE_CACHE[key] = proven
+    private_write(directory / "compatibility.json", dump({"cli_version": cli_version,
+                  "core_version": core_version, "minimum_release_version": MIN_CORE_VERSION,
+                  "mode": "historical_a13_capabilities" if cli_legacy or core_legacy else "release_version",
+                  "cached": False}))
     return proven
 
 
@@ -485,7 +600,10 @@ def execute(args):
     try:
         if timed_out or interrupted:
             raise InputError("客户端执行未确认")
-        envelope = decode(regular_bytes(response_path))
+        response_limit = MAX_INSPECT_RESPONSE_BYTES if args.command == "inspect" else MAX_FILE_BYTES
+        if response_path.stat().st_size > response_limit:
+            raise ResponseLimitError("CLI 响应超过本命令的解析上限")
+        envelope = decode(regular_bytes(response_path, response_limit))
         if not isinstance(envelope, dict) or type(envelope.get("ok")) is not bool:
             raise InputError("响应缺少有效信封")
         result = summarize(envelope, args.command)
@@ -494,17 +612,26 @@ def execute(args):
             raise InputError("CLI 退出码与响应不一致")
         if not envelope["ok"] and code == 0:
             code = 1
+    except ResponseLimitError:
+        result = {"ok": False, "error": {"code": "CLI_RESPONSE_TOO_LARGE", "limit_bytes": response_limit},
+                  "outcome": "unknown" if args.command in MUTATIONS else "unobserved",
+                  "next_action": "完整原始响应已保存在私有文件；按需局部读取证据，不重派任务"}
+        code = 1
     except (InputError, OSError, TypeError, KeyError, ValueError):
         result = {"ok": False, "error": {"code": "CLIENT_INTERRUPTED" if interrupted else
                   "CLIENT_TIMEOUT" if timed_out else "INVALID_CLI_RESPONSE"},
                   "outcome": "unknown" if args.command in MUTATIONS else "unobserved",
                   "next_action": "读取已保存的原请求与响应，核对原任务；不换键重派"}
         code = 130 if interrupted else 124 if timed_out else 1
+    compatibility_path = directory / "compatibility.json"
+    if compatibility_path.is_file():
+        artifacts["compatibility"] = str(compatibility_path)
+        result["compatibility"] = decode(regular_bytes(compatibility_path))
     result.update(schema_version="asterun-skill-result/v1", command=args.command, cli_exit_code=code,
                   artifacts=artifacts, metrics={"response_bytes": response_path.stat().st_size})
     raw = dump(result)
     if len(raw) > MAX_REPLY_BYTES:
-        for name in ("usage", "backends", "native", "check_sources"):
+        for name in ("usage", "backends", "resources", "native", "check_sources"):
             if name in result:
                 result.pop(name)
                 result.setdefault("omitted_fields", []).append(name)
@@ -525,6 +652,7 @@ def parser():
     root.add_argument("--cli-timeout", type=float, default=20)
     commands = root.add_subparsers(dest="command", required=True)
     commands.add_parser("discover", help="只读发现实际后端名称")
+    commands.add_parser("resources", help="只读发现已授权工作区名称与根路径")
     submit = commands.add_parser("submit", help="提交一次；必须提供稳定幂等键")
     for name in ("workspace", "backend", "input", "idempotency-key"):
         submit.add_argument("--" + name, required=True)
@@ -539,6 +667,11 @@ def parser():
         if name == "snapshot":
             command.add_argument("--run-id", required=True)
             command.add_argument("--target", action="append", required=True)
+        if name == "usage":
+            command.add_argument("--page-size", type=int, default=1)
+            command.add_argument("--cursor")
+            command.add_argument("--include-runs", action="store_true")
+            command.add_argument("--include-observations", action="store_true")
     for name in ("evaluate", "repair"):
         command = commands.add_parser(name)
         command.add_argument("--snapshot-file", type=Path, required=True)
