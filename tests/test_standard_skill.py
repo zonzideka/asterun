@@ -323,6 +323,71 @@ def test_pretty_cli_response_above_ipc_limit_remains_readable(tmp_path):
     assert stat.S_IMODE(saved.stat().st_mode) == 0o600
 
 
+@pytest.mark.parametrize("shape, expected_error", [
+    ("pretty_2m", None),
+    ("pretty_7m", "CLI_RESPONSE_TOO_LARGE"),
+    ("ipc_overflow", "INVALID_REQUEST"),
+])
+def test_inspect_limits_through_resident_socket_and_real_cli(resident, shape, expected_error):
+    from asterun.ids import RunId
+    from asterun.service import MAX_MESSAGE
+    from asterun.sqlite_store import SqliteStore
+
+    call, client, state = resident
+    admitted = client.handle("task.submit", {"workspace": "demo", "backend": "fake", "text": "limit fixture"})
+    assert admitted.ok and admitted.data["run"]["status"] == "succeeded"
+    task_id, run_id = admitted.ids["task_id"], admitted.ids["run_id"]
+    baseline = client.handle("task.get", {"task_id": task_id}).to_dict()
+    events = {
+        "pretty_2m": [{"type": "tool", "metadata": {"output": "private-output"}}] * 15000,
+        "pretty_7m": [{"x": [[[[[[0]]]]]]}] * 25000,
+        "ipc_overflow": [{"output": "private-output" * 90000}],
+    }[shape]
+    # Only the terminal fake run in this test's temporary database is modified.
+    # All subsequent reads use the actual resident service, CLI and copied skill.
+    store = SqliteStore(state / "asterun.sqlite")
+    try:
+        run = store.get_run(RunId(run_id))
+        assert run.status == "succeeded"
+        run.native["tool_events"] = events
+        store.save_run(run)
+    finally:
+        store.close()
+    baseline["data"]["run"]["native"]["tool_events"] = events
+    wire_bytes = len(json.dumps(baseline, ensure_ascii=False).encode()) + 1
+    pretty_bytes = len(json.dumps(baseline, ensure_ascii=False, indent=2).encode()) + 1
+    if shape == "ipc_overflow":
+        assert wire_bytes > MAX_MESSAGE
+    else:
+        assert wire_bytes < MAX_MESSAGE < pretty_bytes
+        assert (pretty_bytes > skill.MAX_INSPECT_RESPONSE_BYTES) == (shape == "pretty_7m")
+
+    result, code = call("inspect", "--task-id", task_id)
+    response_path = Path(result["artifacts"]["response"])
+    raw = response_path.read_bytes()
+    saved = json.loads(raw)
+    assert stat.S_IMODE(response_path.stat().st_mode) == 0o600
+    assert len(skill.dump(result)) < 4096 and "private-output" not in skill.dump(result).decode()
+    if expected_error is None:
+        assert code == 0 and result["ok"] and saved["ok"]
+        assert saved["data"]["run"]["native"]["tool_events"] == events
+    else:
+        assert code == 1 and not result["ok"] and result["error"]["code"] == expected_error
+        if shape == "pretty_7m":
+            assert len(raw) > skill.MAX_INSPECT_RESPONSE_BYTES
+            assert result["outcome"] == "unobserved" and saved["ok"]
+            assert saved["data"]["run"]["native"]["tool_events"] == events
+        else:
+            assert len(raw) < MAX_MESSAGE and not saved["ok"]
+            assert saved["error"]["code"] == "INVALID_REQUEST"
+            assert not saved.get("data")  # The service retained only an error envelope.
+    status, status_code = call("status", "--task-id", task_id)
+    assert status_code == 0 and status["ok"] and status["run"]["id"] == run_id
+    assert status["run"]["status"] == "succeeded"
+    print("SKILL_TRANSPORT_LIMIT " + json.dumps({"case": shape, "wire_bytes": wire_bytes,
+        "pretty_bytes": pretty_bytes, "saved_cli_bytes": len(raw), "error": expected_error}))
+
+
 def test_oversized_private_response_has_explicit_limit_and_keeps_evidence(tmp_path):
     executable = tmp_path / "oversized-cli"
     write_fake_cli(executable, body=(

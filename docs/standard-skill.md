@@ -14,6 +14,8 @@ Asterun 通用技能位于 `integrations/skills/asterun/`，可以复制或独�
 
 `discover` 区分模拟后端和真实后端并保留执行模式；`resources` 返回当前授权的工作区名称与路径。仅有 fake 时可以验证协议与验收流程，不能声称已生成用户所需内容。
 
+`inspect` 保存实际收到的 CLI 响应，解析限额为 4 MiB，用于容纳核心 socket 传来的 JSON 在 CLI 缩进后变大的情况。核心 socket 仍有独立的 1 MiB 单条响应限制；超过时只返回并保存 `INVALID_REQUEST` 错误，不能恢复任务全文。此时用紧凑 `status` 观察原任务，并按已有日志或产物路径读取所需证据，不能把重试 inspect 当作分页。
+
 运行成功、验收、独立审查、终止和发布分别呈现。原目标、所选文件、配置、真实报告摘要、幂等与修复上限由核心重新核对。观察到期退出码 124，后台继续运行；客户端超时或响应损坏保留原意图，结果未知时按原任务对账。外部报告仍是 external_reported，不能替代独立审查。
 
 维护者提交技能源码后运行 `python3 scripts/package-standard-skill.py --output /path/to/asterun-skill.zip` 构建固定文件清单的独立包。ZIP 中的 `asterun/manifest.json` 包含源码提交、`minimum_core_version` 与每个成员的 SHA-256；核心源码包也包含技能源文件和打包脚本。核心 wheel 不隐式安装用户技能或改变客户端配置。GrokBot 模板 `0.1.0-rc1` 的发布锁保持不变。
