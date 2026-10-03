@@ -2,7 +2,7 @@
 
 [中文](STATUS.md) | [English](STATUS.en.md)
 
-当前版本为 `0.1.0a14`，采用 Apache-2.0。首版功能范围已冻结，维护集中在现有缺陷、兼容性、现场验收和发行内容。使用入口见 [README](README.md)、[用户手册](docs/user-manual.md)和[发行说明](docs/release-v0.1.md)。本次预发布的核心与标准 skill 资产及校验文件见[对应版本发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a14)；下方按日期保留各批次当时的验证和部署事实。
+当前版本为 `0.1.0a15`，采用 Apache-2.0。首版功能范围已冻结，维护集中在现有缺陷、兼容性、现场验收和发行内容。使用入口见 [README](README.md)、[用户手册](docs/user-manual.md)和[发行说明](docs/release-v0.1.md)。本次预发布的核心与标准 skill 资产及校验文件见[对应版本发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a15)；下方按日期保留各批次当时的验证和部署事实。
 
 2026-10-03 后续排查发现真实 Grok 编码任务达到回合上限，绑定会话的 end 已返回且 CLI 以 1 退出，却被旧适配器记为未知，持续占用并发名额。修复明确未完成的终态判定，已有误判仅通过匹配任务/运行的持久化回执显式对账；超时、协议损坏和不匹配继续未决。标准 skill 增加 scheduler 与单任务 reconcile，队列摘要提供授权内的占位引用。专项 200 项通过，全套隔离回归 2644 项通过、4 项真实后端跳过；本次修复不在已发布 a14 标签内，修复构建 `57de00e` 的核心与技能已更新到本机，原未知运行经显式对账确认失败结束，占位释放，历史用量与无关记录保持不变；本机安装与恢复事实见[后续排查记录](docs/validation/skill-runtime-recovery-2026-10-03.md)。
 

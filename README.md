@@ -4,7 +4,7 @@
 
 Asterun 在你选择的电脑或服务器上执行 Agent 任务。通过 CLI、MCP 或其他应用提交后，核心负责后台运行、会话关联、审批、结果记录和故障恢复。后端使用执行主机上已授权的账户。
 
-当前版本为 `0.1.0a14`，采用 [Apache-2.0 许可证](LICENSE)。首版范围已冻结，已实现能力和验证情况见[发行说明](docs/release-v0.1.md)。本次预发布的核心 wheel、源码包、标准 skill ZIP 与 `SHA256SUMS` 见[对应版本发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a14)。
+当前版本为 `0.1.0a15`，采用 [Apache-2.0 许可证](LICENSE)。首版范围已冻结，已实现能力和验证情况见[发行说明](docs/release-v0.1.md)。本次预发布的核心 wheel、源码包、标准 skill ZIP 与 `SHA256SUMS` 见[对应版本发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a15)。
 
 ## 开始使用
 

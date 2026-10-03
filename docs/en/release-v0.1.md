@@ -2,7 +2,15 @@
 
 # First release notes
 
-The current public source version is `0.1.0a14`. The stable `0.1.0` release has not yet been published. See the [versioned release page](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a14) for this prerelease's installation assets and checksums. The first release's scope is frozen; preparation focuses on fixes to existing behavior, compatibility, and packaging. Asterun is licensed under [Apache-2.0](../../LICENSE).
+The current public source version is `0.1.0a15`. The stable `0.1.0` release has not yet been published. See the [versioned release page](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a15) for this prerelease's installation assets and checksums. The first release's scope is frozen; preparation focuses on fixes to existing behavior, compatibility, and packaging. Asterun is licensed under [Apache-2.0](../../LICENSE).
+
+## 0.1.0a15
+
+Fixes Grok coding runs incorrectly retaining an unknown state when a session-bound incomplete/cancelled end is followed by exit code 1. Only matching explicit termination evidence confirms a terminal outcome. Nonzero exits accompanying success, timeouts, mismatched sessions and malformed protocols remain unresolved. Existing misclassified runs can reconcile their persisted receipts through the original task without replacement runs or changed acceptance conclusions.
+
+The standard skill adds `scheduler` diagnostics and explicit `reconcile --task-id ID`. Occupying-run references respect task read permissions. Reconciliation may release a slot and start previously queued work; request success does not imply task success. Upgrade both core and skill to a15 for this fix. The minimum skill interface remains a14, but an a14 core lacks this terminal-state repair; replacing the skill alone cannot fix the occupied slot.
+
+Assets include the core wheel, source distribution, `asterun-skill-0.1.0a15.zip`, and `SHA256SUMS`. Repair validation passed 2644 offline tests with four live-backend skips, 21 installed-wheel recovery tests, and installed CLI/MCP, restart and backup/restore checks. The local repair build reconciled the old run and released its slot while preserving native sessions, usage and unrelated history. No new real-model tasks were submitted. See the [live validation record](../validation/skill-runtime-recovery-2026-10-03.md) and the [release page](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a15) for final-commit CI and artifact verification.
 
 ## 0.1.0a14
 

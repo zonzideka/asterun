@@ -2,6 +2,8 @@
 
 The general Asterun skill lives in `integrations/skills/asterun/`. Copy or package it for a client that supports Agent Skills. Its entry point contains `SKILL.md`, a reference and a Python standard-library helper. The existing core retains execution state, permissions, native sessions, idempotency and recovery. GrokBot chat delivery remains a separate integration.
 
+The Grok terminal-state and occupied-slot recovery fix is available from `0.1.0a15`. Upgrade both core and skill; the minimum interface remains a14, but replacing the skill alone does not repair the old core.
+
 The minimum supported release is `0.1.0a14` for both CLI and resident core. The published a13 wheel lacks compact observation and workflow snapshots. Historical source builds that still report exactly a13 are accepted only after CLI help and read-only resident-interface probes pass. There is no bypass switch. Every operation checks the current resident core; connection failures, timeouts, unknown versions and proven incompatibility remain distinct.
 
 Obtain the core wheel, `asterun-skill-0.1.0a14.zip` and `SHA256SUMS` from the [a14 release page](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a14), verify the download digests, then install each in its appropriate location. Building from a fixed source commit is also supported; retain the core version and source SHA with the skill manifest. The GrokBot release lock still installs published a13, which cannot serve this skill. Its lock is validated and published separately.
