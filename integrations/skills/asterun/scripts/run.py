@@ -24,7 +24,7 @@ MAX_INSPECT_RESPONSE_BYTES = 4 * 1024 * 1024
 MAX_REPLY_BYTES = 12 * 1024
 MIN_CORE_VERSION = "0.1.0a14"
 PROBE_TIMEOUT = 3.0
-MUTATIONS = {"submit", "evaluate", "repair", "cancel"}
+MUTATIONS = {"submit", "evaluate", "repair", "cancel", "reconcile"}
 BINDING = {"task_id": "task_id", "run_id": "expected_run_id", "revision": "expected_revision",
            "input_hash": "expected_input_hash", "target_hash": "expected_target_hash", "target_paths": "target_paths"}
 _PRE_LETTER = {"a": 0, "alpha": 0, "b": 1, "beta": 1, "c": 2, "rc": 2, "pre": 2, "preview": 2}
@@ -191,6 +191,8 @@ def request_args(args, operation_dir):
         return ["backend-inspect"]
     if command == "resources":
         return ["control-resources"]
+    if command == "scheduler":
+        return ["scheduler-status"]
     if command == "submit":
         if args.input == "-":
             raise InputError("本技能不读取 stdin；--input 必须是已配置工作区内的提示文件")
@@ -200,8 +202,10 @@ def request_args(args, operation_dir):
         if args.conversation_id:
             argv.append("--conversation-id=" + identifier(args.conversation_id))
         return argv
-    if command in {"status", "inspect", "wait", "snapshot", "cancel", "usage"}:
+    if command in {"status", "inspect", "wait", "snapshot", "cancel", "usage", "reconcile"}:
         task_id = identifier(args.task_id)
+        if command == "reconcile":
+            return ["task-reconcile", task_id]
         if command == "usage":
             if not 1 <= args.page_size <= 100:
                 raise InputError("用量明细每页条数必须为 1–100")
@@ -310,6 +314,24 @@ def summarize(envelope, command):
                                for row in resources[:32]]
         result["resource_count"] = len(resources)
         result["resources_truncated"] = len(resources) > 32
+    if command == "scheduler":
+        result["scheduler"] = small_fields(data, ("queued", "max_queue", "per_backend_concurrency",
+                                                  "max_concurrency", "active_runs_count", "active_runs_truncated"))
+        inflight = data.get("inflight", {})
+        result["scheduler"]["inflight"] = {name: count for name, count in list(inflight.items())[:32]
+            if isinstance(name, str) and len(name.encode()) <= 256 and type(count) is int and count >= 0} if isinstance(inflight, dict) else {}
+        result["scheduler"]["active_runs_available"] = isinstance(data.get("active_runs"), list)
+        for name in ("queue", "active_runs"):
+            rows = data.get(name, [])
+            result["scheduler"][name] = [small_fields(row, ("task_id", "run_id", "backend", "workspace",
+                "status", "error_code", "cancel_requested", "terminated")) for row in rows[:32]] if isinstance(rows, list) else []
+            result["scheduler"][name + "_truncated"] = data.get(name + "_truncated") is True or isinstance(rows, list) and len(rows) > 32
+    if command == "reconcile":
+        rows = data.get("reports", [])
+        result["reports"] = [small_fields(row, ("task_id", "run_id", "run_status", "operation_status",
+            "error_code", "terminal", "unknown", "observing", "re_dispatched")) for row in rows[:1]] if isinstance(rows, list) else []
+        result["unknown_count"] = len(data.get("unknown_states", []))
+        result["re_dispatched"] = data.get("re_dispatched")
     if command == "usage":
         coverage = small_fields(data.get("coverage"), ("controller", "native_requests", "runs",
                     "subscription_quota_effect", "session_observations_added_to_totals"))
@@ -336,6 +358,13 @@ def next_action(result, command):
         return "读取保存的响应核对原请求；结果不明时对账，不换键重派"
     status = result["run"].get("status")
     reason = result.get("reason")
+    if command == "scheduler":
+        return "按 active_runs 的原任务引用核对阻塞原因；旧核心缺少该字段时读取原任务记录，不提高并发或重派绕过"
+    if command == "reconcile":
+        return ("仍有未决运行，保留原任务与占位，不重派或强制释放" if result.get("unknown_count") else
+                "核对 reports 的 terminal/observing 与原任务状态；对账不代表验收通过")
+    if status == "pending_reconcile" or result["run"].get("error_code") == "REMOTE_STATE_UNKNOWN":
+        return "用 inspect 核对原运行证据，再显式 reconcile --task-id 原任务；无法确认终态时保持未决，不重派"
     if result["task"].get("paused"):
         return "核对暂停与审查要求，由主控决定是否恢复原任务"
     if result["approval"].get("state") in {"pending", "forwarding"} or reason == "waiting_input" or status == "waiting_input":
@@ -344,7 +373,9 @@ def next_action(result, command):
         return "核对原运行、认证或暂停原因后再决定后续步骤"
     if status is not None and status not in {"queued", "dispatching", "running", "succeeded", "failed", "cancelled"}:
         return "运行状态无法识别；读取完整证据并核对原运行，停止自动推进"
-    if status in {"queued", "dispatching", "running"} or reason == "deadline":
+    if status == "queued":
+        return "用 scheduler 核对占位运行与队列；复用原任务继续等待，不换键重派或提高并发绕过未决运行"
+    if status in {"dispatching", "running"} or reason == "deadline":
         return "复用 task_id、run_id 和 cursor 继续等待；观察到期不取消任务"
     if status == "failed":
         return "按需读取失败证据；确认缺陷后取得新快照并在原任务上有限修复"
@@ -653,11 +684,12 @@ def parser():
     commands = root.add_subparsers(dest="command", required=True)
     commands.add_parser("discover", help="只读发现实际后端名称")
     commands.add_parser("resources", help="只读发现已授权工作区名称与根路径")
+    commands.add_parser("scheduler", help="只读查询队列与占位运行")
     submit = commands.add_parser("submit", help="提交一次；必须提供稳定幂等键")
     for name in ("workspace", "backend", "input", "idempotency-key"):
         submit.add_argument("--" + name, required=True)
     submit.add_argument("--conversation-id")
-    for name in ("status", "inspect", "wait", "snapshot", "cancel", "usage"):
+    for name in ("status", "inspect", "wait", "snapshot", "cancel", "usage", "reconcile"):
         command = commands.add_parser(name)
         command.add_argument("--task-id", required=True)
         if name == "wait":

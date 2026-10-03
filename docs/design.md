@@ -4,7 +4,7 @@
 
 Asterun 在用户自己的电脑或服务器上执行 Agent 任务，统一管理配置、任务状态、原生会话、权限、调度和结果证据。CLI、MCP 和 GrokBot 等应用通过同一应用服务调用；核心可以独立安装和使用。
 
-本文按 `0.1.0a14` 的实现整理。首版功能范围已冻结，后端支持和现场验证情况见[发行说明](release-v0.1.md)，接口细节见[协议实现表](protocol/IMPLEMENTATION.md)和 [capability profile](capability-profile.md)。
+本文按 `0.1.0a15` 的实现整理。首版功能范围已冻结，后端支持和现场验证情况见[发行说明](release-v0.1.md)，接口细节见[协议实现表](protocol/IMPLEMENTATION.md)和 [capability profile](capability-profile.md)。
 
 ## 模块职责
 

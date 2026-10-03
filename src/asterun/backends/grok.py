@@ -647,6 +647,12 @@ class GrokBackend:
             "native": {**native_receipt(), "stop_reason": reason},
         }
 
+    def reconcile_recorded(self, native, *, task_id, run_id):
+        if self.execution_profile != CODE_PROFILE:
+            return None
+        from asterun.backends.grok_code import reconcile_recorded_terminal
+        return reconcile_recorded_terminal(native, task_id=task_id, run_id=run_id)
+
     def request_cancel(self, run_id: RunId, script: str) -> dict[str, Any]:
         self.calls.append(BackendCall("request_cancel", {"run_id": run_id.value, "script": script}))
         raise AsterunError(
