@@ -1208,6 +1208,12 @@ class Application:
             if self.admission is not None and run and run.status not in TERMINAL_RUN_STATUSES:
                 self.admission.guard_existing_run(run.id.value)
             backend = self._backend(run.backend.value if run else scoped_task.backend.value)
+            if run and run.status not in TERMINAL_RUN_STATUSES and hasattr(backend, "reconcile_recorded"):
+                if not self.executor or run.id.value not in self.executor.workers:
+                    result = backend.reconcile_recorded(run.native, task_id=scoped_task.id.value, run_id=run.id.value)
+                    if result is not None:
+                        self._record_result(run.id, result)
+                        run = self.store.get_run(run.id)
             if run and run.status not in TERMINAL_RUN_STATUSES and hasattr(backend, "reconcile_execution"):
                 from asterun.plugins.core_integration import bind_execution
                 bind_execution(self, run, scoped_task, existing=True)
@@ -1597,7 +1603,18 @@ class Application:
 
     def scheduler_status(self) -> Envelope:
         enforce(self.policy.authorize(self.principal, "scheduler.status", "*"))
-        return ok(self.scheduler.snapshot())
+        active = []
+        for run_id in sorted(self.scheduler.inflight_runs):
+            run = self.store.get_run(RunId(run_id))
+            task = self.store.get_task(run.task_id)
+            if not self.policy.authorize(self.principal, "task.get", task.workspace).allowed:
+                continue
+            active.append({"task_id": task.id.value, "run_id": run.id.value,
+                           "backend": run.backend.value, "workspace": task.workspace,
+                           "status": str(run.status), "error_code": run.error_code,
+                           "cancel_requested": run.cancel_requested, "terminated": run.terminated})
+        return ok({**self.scheduler.snapshot(), "active_runs": active[:32],
+                   "active_runs_count": len(active), "active_runs_truncated": len(active) > 32})
 
     def diagnose(self) -> Envelope:
         enforce(self.policy.authorize(self.principal, "diagnose", "*"))

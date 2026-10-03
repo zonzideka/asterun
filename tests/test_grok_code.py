@@ -68,6 +68,13 @@ elif mode == "no_end":
 elif mode == "nonzero":
     end()
     sys.exit(1)
+elif mode.startswith("exit1_"):
+    reason = mode.removeprefix("exit1_")
+    if reason == "budget_cancelled":
+        emit("max_turns_reached")
+        reason = "cancelled"
+    end(reason)
+    sys.exit(1)
 elif mode == "timeout":
     emit("text", data="Started")
     time.sleep(10)
@@ -193,6 +200,19 @@ def test_native_cancel_requires_bound_end_and_zero_exit(invoke):
     result = invoke("cancelled")
     assert result["status"] == "cancelled" and result["terminated"] is True
     assert result["native"]["stop_reason"] == "cancelled"
+
+
+@pytest.mark.parametrize("reason,status", [
+    ("budget_cancelled", "failed"), ("max_tokens", "failed"),
+    ("max_turn_requests", "failed"), ("max_turns", "failed"),
+    ("refusal", "failed"), ("cancelled", "cancelled"),
+])
+def test_bound_incomplete_end_with_exit_one_is_terminal(invoke, reason, status):
+    result = invoke("exit1_" + reason)
+    assert result["status"] == status and result["terminated"] is True
+    assert result["error_code"] == ("GROK_RUN_INCOMPLETE" if status == "failed" else None)
+    assert result["native"][RECEIPT_KEY]["process_exit_code"] == 1
+    assert result["native"][RECEIPT_KEY]["stage"] == "complete"
 
 
 def test_runtime_timeout_keeps_reference_and_uncertainty(invoke):

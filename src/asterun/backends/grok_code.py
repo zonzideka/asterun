@@ -173,6 +173,45 @@ def _stop_process(proc: subprocess.Popen) -> None:
         pass
 
 
+def incomplete_terminal(reason, turn_limit=False):
+    """A bound native end may prove failure even when the CLI exits with code 1."""
+    if reason in {"max_tokens", "max_turn_requests", "max_turns", "max_turns_reached", "refusal"} or (
+            turn_limit and reason in {"end_turn", "cancelled"}):
+        return {"status": "failed", "terminated": True, "error_code": "GROK_RUN_INCOMPLETE"}
+    if reason == "cancelled":
+        return {"status": "cancelled", "terminated": True, "error_code": None}
+    return None
+
+
+def reconcile_recorded_terminal(native, *, task_id, run_id):
+    """Recover only the legacy nonzero-exit misclassification, from core-held evidence.
+
+    In the legacy reader nonzero_exit was emitted only after both pipes drained
+    without malformed JSON; stop_reason was saved only after validating end's
+    session binding. Missing/end-after-error/timeout receipts remain unknown.
+    """
+    if not isinstance(native, dict):
+        return None
+    receipt = native.get(RECEIPT_KEY)
+    if not isinstance(receipt, dict) or any(receipt.get(k) != v for k, v in {
+            "task_id": task_id, "run_id": run_id, "stage": "prompt",
+            "delivery": "may_have_been_sent", "failure_type": "nonzero_exit"}.items()):
+        return None
+    if receipt.get("prompt_attempted") is not True or type(receipt.get("process_exit_code")) is not int or receipt["process_exit_code"] != 1:
+        return None
+    if (native.get("execution_profile") != "workspace-code-v1" or native.get("transport") != "headless"
+            or not _reference(native.get("session_id")) or native.get("cleanup_incomplete")):
+        return None
+    failure = native.get("provider_failure")
+    turn_limit = isinstance(failure, dict) and failure.get("kind") == "turn_limit" and failure.get("source") == "native_event"
+    result = incomplete_terminal(native.get("stop_reason"), turn_limit)
+    if result is None:
+        return None
+    return {**result, "native": {"recorded_terminal_reconciliation": {
+        "source": "persisted_headless_end_and_exit", "task_id": task_id, "run_id": run_id,
+        "re_dispatched": False}}}
+
+
 class CodeProcessHandle:
     """Own one launch so host shutdown cannot miss the spawn/register boundary."""
 
@@ -418,7 +457,8 @@ def run_code(*, command: list[str], env: dict, cwd: Path, session_id: str,
             # Plans, command catalogs and future event payloads are not persisted.
         if protocol_failure:
             raise _StreamError(protocol_failure)
-        if exit_code != 0:
+        known_incomplete = incomplete_terminal(end["stopReason"], budget_reached) if end else None
+        if exit_code != 0 and not (exit_code == 1 and known_incomplete):
             raise _StreamError("nonzero_exit")
         if end is None:
             raise _StreamError("missing_end")

@@ -50,7 +50,7 @@ def write_fake_cli(path, *, cli_version="0.1.0a14", core_version=None, body="rai
         "argv = sys.argv[1:]\n"
         "command = next((item for item in argv if item in "
         "{'version','diagnose','task-submit','task-watch','task-get','task-cancel',"
-        "'workflow-snapshot','workflow-evaluate','workflow-repair','backend-inspect','control-resources','usage-report'}), '')\n"
+        "'workflow-snapshot','workflow-evaluate','workflow-repair','backend-inspect','control-resources','usage-report','scheduler-status','task-reconcile'}), '')\n"
         + log_block +
         "if command == 'version':\n"
         + _indent(replies[version_behavior] % (cli_version,) if "%r" in replies[version_behavior] else replies[version_behavior])
@@ -139,6 +139,39 @@ def write_report(root, binding, passed):
     report = {key: binding[key] for key in ("task_id", "run_id", "input_hash", "target_hash")}
     report["checks"] = [{"name": "固定消费者检查", "passed": passed, "detail": "离线测试夹具的真实判断"}]
     (root / "report.json").write_text(json.dumps(report, ensure_ascii=False))
+
+
+def test_skill_locates_queue_blocker_and_preserves_unknown_on_reconcile(resident, workspace_root):
+    call, client, _ = resident
+    first = client.handle("task.submit", {"workspace": "demo", "backend": "fake", "script": "lost_reply"})
+    assert first.ok
+    second, code = submit(call, workspace_root)
+    assert code == 0 and second["run"]["status"] == "queued"
+    assert "scheduler" in second["next_action"]
+    diagnostic, code = call("scheduler")
+    assert code == 0 and diagnostic["scheduler"]["queued"] == 1
+    assert diagnostic["scheduler"]["active_runs_available"]
+    assert diagnostic["scheduler"]["active_runs"][0]["task_id"] == first.ids["task_id"]
+    reconciled, code = call("reconcile", "--task-id", first.ids["task_id"])
+    assert code == 0 and reconciled["ok"] and reconciled["unknown_count"] == 1
+    assert reconciled["reports"][0]["unknown"] and not reconciled["reports"][0]["terminal"]
+    assert not reconciled["re_dispatched"]
+    status, code = call("status", "--task-id", second["ids"]["task_id"])
+    assert code == 0 and status["run"]["status"] == "queued"
+    intent = json.loads(Path(reconciled["artifacts"]["intent"]).read_text())
+    assert intent["mutation"] is True
+
+
+def test_scheduler_on_older_core_does_not_invent_active_run_references():
+    result = skill.summarize({"ok": True, "data": {"queued": 1, "inflight": {"grok": 1}, "queue": []}}, "scheduler")
+    assert not result["scheduler"]["active_runs_available"]
+    assert result["scheduler"]["active_runs"] == []
+
+
+def test_reconcile_requires_one_explicit_task(tmp_path):
+    args = skill.parser().parse_args(["--state-dir", str(tmp_path / "state"),
+        "--artifacts-dir", str(tmp_path / "calls"), "reconcile", "--task-id", "tsk_original"])
+    assert skill.request_args(args, tmp_path) == ["task-reconcile", "tsk_original"]
 
 
 def test_copied_skill_fake_roundtrip_and_no_prompt_echo(resident, workspace_root):
