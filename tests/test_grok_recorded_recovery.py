@@ -1,4 +1,5 @@
 from copy import deepcopy
+import json
 
 import pytest
 
@@ -95,6 +96,15 @@ def test_reconcile_after_restart_releases_only_proven_slot_and_drains_queue(isol
         app.policy = original_policy
         second = app.handle("task.submit", {"workspace": "demo", "backend": "grok", "text": "new"})
         assert second.ok and second.data["queued"]
+        diagnostic = app.handle("scheduler.status", {}).data
+        assert diagnostic["queue"][0]["task_id"] == second.ids["task_id"]
+        app.policy = DenyTaskReads()
+        restricted = app.handle("scheduler.status", {}).data
+        assert restricted["queue"] == [] and restricted["active_runs"] == []
+        assert restricted["queued"] == 1  # 授权的容量总览保留，但不泄露无权任务引用。
+        for reference in (task.id.value, run.id.value, second.ids["task_id"], second.ids["run_id"]):
+            assert reference not in json.dumps(restricted)
+        app.policy = original_policy
         result = app.handle("task.reconcile", {"task_id": task.id.value})
         if not recoverable:
             assert result.ok and result.data["unknown_states"]

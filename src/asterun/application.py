@@ -1603,6 +1603,10 @@ class Application:
 
     def scheduler_status(self) -> Envelope:
         enforce(self.policy.authorize(self.principal, "scheduler.status", "*"))
+        snapshot = self.scheduler.snapshot()
+        snapshot["queue"] = [item for item in snapshot["queue"]
+                             if self.policy.authorize(self.principal, "task.get",
+                                 self.store.get_task(TaskId(item["task_id"])).workspace).allowed]
         active = []
         for run_id in sorted(self.scheduler.inflight_runs):
             run = self.store.get_run(RunId(run_id))
@@ -1613,7 +1617,7 @@ class Application:
                            "backend": run.backend.value, "workspace": task.workspace,
                            "status": str(run.status), "error_code": run.error_code,
                            "cancel_requested": run.cancel_requested, "terminated": run.terminated})
-        return ok({**self.scheduler.snapshot(), "active_runs": active[:32],
+        return ok({**snapshot, "active_runs": active[:32],
                    "active_runs_count": len(active), "active_runs_truncated": len(active) > 32})
 
     def diagnose(self) -> Envelope:

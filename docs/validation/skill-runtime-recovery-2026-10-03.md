@@ -15,3 +15,5 @@
 通过已安装技能执行一次显式 reconcile 后，旧运行从 paused / REMOTE_STATE_UNKNOWN 变为 failed / GROK_RUN_INCOMPLETE，terminated=true；原任务仍由人工控制，acceptance=pending，没有被冒认为成功。现场 scheduler 回读 queued=0、inflight={}、active_runs=[]，占位已释放。数据库逐行比较仅原 run、对应 operation 和原 conversation 的 session 行发生变化，没有新增任务或运行，其余历史行完全一致。原运行除 status、terminated、error_code 和 native 新增对账来源外均未改变，原生会话、回执和用量保持原值。此前被调用方取消的排队任务仍为 cancelled / terminated=true，没有被重派。更新后的 discover、resources、status、scheduler、reconcile 均在本机常驻核心上回读通过。
 
 私有复现、测试与部署证据位于本机 Asterun 数据目录的 skill-updates/20261003-runtime-repair。该目录保存原运行响应、专项及全套 JUnit、切换门禁、依赖版本清单、switch-plan/apply-result.json、skill-installation.json 与 live-recovery.json。实现已本地提交并安装，本轮未推送或公开发布。本次没有新增真实模型任务，排队恢复的离线协议证据不能替代真实模型产出验收。
+
+发行前 PR 审查进一步发现 queue 仍暴露无权任务引用，已在核心 scheduler.status 按持久任务的 task.get 权限过滤，与 active_runs 一致；授权的容量总览计数保留。恢复专项覆盖有权队列可见、无权任务和运行引用均不可见，以及过滤不改变原队列恢复行为。初次新增断言缺少 json 导入，补齐后 21 项专项通过。该权限补充属于 a15 发行源码，先前本机安装的 57de00e 构建不包含这项后续变更；本轮发布不自动切换本机实例。
