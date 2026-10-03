@@ -10,7 +10,7 @@
 
 标准 skill 新增 `scheduler` 占位诊断和 `reconcile --task-id ID`，占位引用遵循任务读取权限。对账可能释放名额并启动原有队列，因此须核对原任务和返回的终态，不能把请求成功当成任务成功。建议核心与技能一起升级到 a15；技能最低接口版本仍为 a14，但 a14 核心不含本次终态修复，单独替换技能不能解决核心占位。
 
-本次资产为核心 wheel、源码包、`asterun-skill-0.1.0a15.zip` 和 `SHA256SUMS`。修复阶段完整离线回归 2644 项通过、4 项真实后端测试跳过；独立安装的恢复专项 21 项通过，CLI/MCP、重启与备份恢复验证通过。本机修复构建已实际对账并释放旧占位，原生会话、用量与无关历史记录保持不变，未新增真实模型任务。详见[现场验证](validation/skill-runtime-recovery-2026-10-03.md)，最终发行提交 CI 与资产验证见[发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a15)。
+本次资产为核心 wheel、源码包、`asterun-skill-0.1.0a15.zip` 和 `SHA256SUMS`。修复阶段完整离线回归 2644 项通过、4 项真实后端测试跳过；独立安装的恢复专项 21 项通过，CLI/MCP、重启与备份恢复验证通过。本机修复构建已实际对账并释放旧占位，原生会话、用量与无关历史记录保持不变，未新增真实模型任务。详见[现场验证](https://github.com/zonzideka/asterun/blob/v0.1.0a15/docs/validation/skill-runtime-recovery-2026-10-03.md)，最终发行提交 CI 与资产验证见[发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a15)。
 
 ## 0.1.0a14
 
