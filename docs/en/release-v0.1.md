@@ -2,11 +2,17 @@
 
 # First release notes
 
-The current public source version is `0.1.0a15`. The stable `0.1.0` release has not yet been published. See the [versioned release page](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a15) for this prerelease's installation assets and checksums. The first release's scope is frozen; preparation focuses on fixes to existing behavior, compatibility, and packaging. Asterun is licensed under [Apache-2.0](../../LICENSE).
+The current public source version is `0.1.0a16`. The stable `0.1.0` release has not yet been published. See the [versioned release page](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a16) for this prerelease's installation assets and checksums. The first release's scope is frozen; preparation focuses on fixes to existing behavior, compatibility, and packaging. Asterun is licensed under [Apache-2.0](../../LICENSE).
 
-## Not in the published packages
+## 0.1.0a16
 
-Source after a15 adds an optional Codex `approval_policy`. Omitting it still sends `untrusted` and `workspace-write`. `on-request` and `on-failure` run automatically inside the workspace sandbox and still ask on escalation or sandbox failure. `never`, granular policies, and `danger-full-access` are rejected. Fixed-scope reads are unchanged. See the [installation guide](install.md#native-approval-mode). Live Codex has not been verified, and the published a15 wheels do not include this setting.
+Adds Linux x86_64 support for the Antigravity CLI 1.2.0 profile. `webm_encoder` is checked by exact size and SHA-256 per platform: macOS still accepts only the existing 12,781,442-byte build, and Linux x86_64 accepts only the official Linux 1.2.0 build (17,056,035 bytes, `45c1b1edd50159fbd4eac95ffd82df97a79b8c345fc43408ddae09230a304ed6`). There are no wildcard entries, and encoders on Linux aarch64 remain rejected. The empty Playwright cache is `~/.cache/ms-playwright-go/1.57.0` on Linux; macOS is unchanged. agy 1.3.2 remains unsupported. Linux support applies to the core's built-in `antigravity` backend. The optional external `asterun-plugin-antigravity` is not re-released: the 1.0.0 wheel from the a13 release still carries the old profile and rejects a Linux HOME. Linux users of the external plugin must build it from `packages/asterun-plugin-antigravity` at the `v0.1.0a16` tag.
+
+The Codex backend gains an optional `approval_policy`: `untrusted`, `on-failure`, or `on-request`. `on-request` reads, writes, and runs commands automatically inside the workspace sandbox and asks only on escalation; `on-failure` asks only when the sandbox causes a failure. Omitting it still sends `untrusted` and `workspace-write` for ordinary tasks. `never`, granular objects, and `danger-full-access` are rejected during validation, and fixed-scope reads stay `never` and `read-only`. See the [installation guide](install.md#native-approval-mode). Configuration schema stays v1/v2, and SQLite is unchanged.
+
+Known notes: on Linux, a `Library` directory in the profile HOME is now rejected, which is stricter than a15. Synchronous Codex `dispatch` now explicitly sends `untrusted` and `workspace-write` by default instead of inheriting `~/.codex/config.toml`. Existing tasks resumed with `thread/resume` use the approval policy in the current configuration, not the value at creation time.
+
+Assets include the core wheel, source distribution, `asterun-skill-0.1.0a16.zip`, and `SHA256SUMS`. The standard skill's `SKILL.md`, script, and agent configuration are unchanged from a15; only the release-page link in `references/workflow.md` now points to a16, so the skill package digest differs from a15. Its minimum interface remains a14. Both change PRs passed Python 3.11/3.12 CI; live Linux agy and live Codex acceptance are recorded separately after publication, see the [release page](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a16).
 
 ## 0.1.0a15
 

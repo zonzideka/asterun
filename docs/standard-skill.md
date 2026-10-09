@@ -6,7 +6,7 @@ Grok 终态误判与旧占位恢复修复从 `0.1.0a15` 提供，建议核心与
 
 标准发行版最低需要 Asterun CLI 和常驻核心 `0.1.0a14`；接入见[安装说明](install.md)。公开标签版 `0.1.0a13` 没有本技能使用的紧凑等待与快照接口。历史主线构建仍可能报告 a13，脚本仅对该版本补充 CLI 参数与常驻核心只读接口探测，通过后兼容，不提供跳过门禁的开关。每次操作核对当前应答核心，避免提交成功后才发现无法等待；连接、超时、未知版本与确定的不兼容分别报告。
 
-从 [a15 发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a15)取得核心 wheel、`asterun-skill-0.1.0a15.zip` 和 `SHA256SUMS`，先核对下载摘要，再安装到对应位置；也可从固定源码提交构建。核心版本、源码 SHA 与 skill 清单应一起保存。GrokBot 模板仍按 `release-lock.json` 安装公开 a13，该实例不能使用本技能。模板锁和标准技能分开验证和发布。
+从 [a16 发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a16)取得核心 wheel、`asterun-skill-0.1.0a16.zip` 和 `SHA256SUMS`，先核对下载摘要，再安装到对应位置；也可从固定源码提交构建。核心版本、源码 SHA 与 skill 清单应一起保存。GrokBot 模板仍按 `release-lock.json` 安装公开 a13，该实例不能使用本技能。模板锁和标准技能分开验证和发布。
 
 将技能目录放到客户端的技能发现目录，例如 Codex 的项目 `.agents/skills/asterun` 或用户技能目录；不要覆盖同名自定义技能。复制技能不会安装核心、登录账户或停用 MCP。验证可以显式调用 `$asterun`；自动匹配和其它客户端的运行效果需在对应客户端独立确认。
 

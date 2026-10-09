@@ -2,7 +2,7 @@
 
 [中文](../development-plan.md) | [English](development-plan.md)
 
-The first release covers the capabilities implemented in `0.1.0a13`. The current source version is `0.1.0a15`. Current work focuses on defects, compatibility, live acceptance, and release documentation. The core and all three optional plugins use Apache-2.0. See the [release notes](release-v0.1.md) for scope and [STATUS](../../STATUS.en.md) for test and deployment results tied to specific revisions.
+The first release covers the capabilities implemented in `0.1.0a13`. The current source version is `0.1.0a16`. Current work focuses on defects, compatibility, live acceptance, and release documentation. The core and all three optional plugins use Apache-2.0. See the [release notes](release-v0.1.md) for scope and [STATUS](../../STATUS.en.md) for test and deployment results tied to specific revisions.
 
 On 2026-10-09 ordinary Codex tasks can set a native `approval_policy` of `untrusted`, `on-failure`, or `on-request`. Omitting it still sends `untrusted` with `workspace-write`. `never`, granular policies, and values that disable the sandbox are rejected during validation. Fixed-scope reads are unchanged. Live Codex has not been verified.
 
