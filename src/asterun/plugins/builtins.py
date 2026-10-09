@@ -12,7 +12,7 @@ BUILTINS = {
     "codex": {"plugin_id": "openai.codex", "factory": "asterun.backends.codex:CodexBackend", "options": {"bin", "desktop_projects", "approval_policy", "extra_env"}},
     "grok": {"plugin_id": "xai.grok", "factory": "asterun.backends.grok:GrokBackend", "options": {"bin", "home", "model", "execution_profile", "max_turns", "timeout_seconds", "session_sync_home", "session_policy", "quota_epoch"}},
     "claude": {"plugin_id": "anthropic.claude", "factory": "asterun.backends.claude:ClaudeBackend", "options": {"bin", "extra_env", "load_user_settings"}},
-    "antigravity": {"plugin_id": "google.antigravity-cli", "factory": "asterun.backends.antigravity:AntigravityBackend", "options": {"bin", "home", "model"}},
+    "antigravity": {"plugin_id": "google.antigravity-cli", "factory": "asterun.backends.antigravity:AntigravityBackend", "options": {"bin", "home", "model", "timeout_seconds"}},
 }
 
 GROK_EXECUTION_OPTIONS = ("execution_profile", "max_turns", "timeout_seconds", "session_sync_home", "session_policy", "quota_epoch")

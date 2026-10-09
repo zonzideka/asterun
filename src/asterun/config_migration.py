@@ -73,6 +73,8 @@ def migrate_v1_to_v2(path: str | Path) -> dict[str, Any]:
             options["extra_env"] = list(backend.extra_env)
         if backend.kind == "claude" and backend.load_user_settings:
             options["load_user_settings"] = True
+        if backend.kind == "antigravity" and backend.timeout_seconds is not None:
+            options["timeout_seconds"] = backend.timeout_seconds
         proposed["connections"][connection_ref] = {
             "plugin_id": plugin_id, "enabled": enabled, "provider_account_ref": provider_ref,
             "runtime_ref": "runtime:local" if is_fake else "runtime:configure",

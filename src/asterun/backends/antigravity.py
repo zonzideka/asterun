@@ -46,11 +46,20 @@ def discover_antigravity_bin(explicit: str | None = None) -> Path | None:
     return executable(str(Path.home() / ".local/bin/agy"))
 
 
-def build_command(binary: Path, model: str) -> list[str]:
+def build_command(binary: Path, model: str, timeout_seconds: int = 300) -> list[str]:
     if not model or model != model.strip() or "\x00" in model or model.startswith("-"):
         raise AsterunError(INVALID_CONFIG, "Antigravity 必须配置明确、有效的 model ID")
+    # 30..3600 与配置校验共用。插件按函数摘取本段，不能引用模块级名字。
+    if type(timeout_seconds) is not int or not 30 <= timeout_seconds <= 3600:
+        raise AsterunError(INVALID_CONFIG, "Antigravity timeout_seconds 必须为 30..3600 的整数")
+    print_timeout = f"{timeout_seconds // 60}m" if timeout_seconds % 60 == 0 else f"{timeout_seconds}s"
     return [str(binary), "--input-format", "stream-json", "--output-format", "stream-json",
-            "--model", model, "--disable-slash-commands", "--print-timeout", "5m"]
+            "--model", model, "--disable-slash-commands", "--print-timeout", print_timeout]
+
+
+def validate_antigravity_timeout(value: object, where: str) -> None:
+    if type(value) is not int or not 30 <= value <= 3600:
+        raise AsterunError(INVALID_CONFIG, f"{where} 必须为 30..3600 的整数")
 
 
 class AntigravityBackend:
@@ -60,13 +69,17 @@ class AntigravityBackend:
         self._runtime = None
         self._runtime_lock = Lock()
 
+    def effective_timeout_seconds(self) -> int:
+        value = self.config.timeout_seconds
+        return 300 if value is None else value
+
     @property
     def runtime(self):
         with self._runtime_lock:
             if self._runtime is None:
                 from asterun.backends.antigravity_runtime import AntigravityRuntime
 
-                self._runtime = AntigravityRuntime()
+                self._runtime = AntigravityRuntime(timeout=self.effective_timeout_seconds())
             return self._runtime
 
     @property
@@ -97,7 +110,7 @@ class AntigravityBackend:
         home = self._prepared_home()
         if not self.config.model:
             raise AsterunError(CONFIG_REQUIRED, "Antigravity 需要显式固定 model ID")
-        build_command(binary, self.config.model)
+        build_command(binary, self.config.model, self.effective_timeout_seconds())
         return binary, home, self.config.model
 
     def can_dispatch(self) -> bool:
@@ -122,7 +135,8 @@ class AntigravityBackend:
             "enabled_in_config": self.config.enabled, "execution_enabled": self.can_dispatch(),
             "binary_found": binary is not None, "binary": str(binary) if binary else None,
             "live_flag": live_antigravity_enabled(), "home": self.config.home,
-            "model": self.config.model, "execution_profile": "workspace-read-v1",
+            "model": self.config.model, "timeout_seconds": self.effective_timeout_seconds(),
+            "execution_profile": "workspace-read-v1",
             "wire_protocol": "agy-stream-json", "authentication": "not_tested",
             "authentication_mode": "native-account", "is_real_connection": False,
             "connection_display": "none", "native_resume_verified": False,
@@ -156,7 +170,7 @@ class AntigravityBackend:
             if not isinstance(text, str) or not text.strip() or "\x00" in text:
                 raise AsterunError(INVALID_CONFIG, "Antigravity prompt 必须是非空文本")
             # CLI 的 cwd 回执不等于原生项目已包含该目录；显式绑定读取根。
-            command = [*build_command(binary, model), "--add-dir", str(workspace)]
+            command = [*build_command(binary, model, self.effective_timeout_seconds()), "--add-dir", str(workspace)]
             env = build_environment(home)
         except AsterunError as exc:
             return {"status": "failed", "terminated": True, "error_code": exc.code,

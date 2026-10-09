@@ -87,6 +87,8 @@ class BackendConfig:
         }
         if self.kind in {"grok", "antigravity"}:
             result.update(home=self.home, model=self.model)
+        if self.kind == "antigravity" and self.timeout_seconds is not None:
+            result["timeout_seconds"] = self.timeout_seconds
         if self.kind == "grok":
             result.update({key: getattr(self, key) for key in GROK_EXECUTION_OPTIONS
                            if getattr(self, key) is not None})
@@ -345,6 +347,9 @@ def load_config(path: Path) -> AsterunConfig:
         extra_env = validate_extra_env(body["extra_env"], f"backends.{name}.extra_env") if "extra_env" in body else ()
         if "load_user_settings" in body and type(body["load_user_settings"]) is not bool:
             raise AsterunError(INVALID_CONFIG, f"backends.{name}.load_user_settings 必须为布尔值")
+        if kind == "antigravity" and "timeout_seconds" in body:
+            from asterun.backends.antigravity import validate_antigravity_timeout
+            validate_antigravity_timeout(body["timeout_seconds"], f"backends.{name}.timeout_seconds")
         home_value = body.get("home")
         if "home" in body and (
             not isinstance(home_value, str)
@@ -361,6 +366,9 @@ def load_config(path: Path) -> AsterunConfig:
             or "\x00" in model_value
         ):
             raise AsterunError(INVALID_CONFIG, f"backends.{name}.model 必须是非空模型 ID，且不能含首尾空白")
+        extras = {key: body[key] for key in GROK_EXECUTION_OPTIONS if key in body}
+        if kind == "antigravity" and "timeout_seconds" in body:
+            extras["timeout_seconds"] = body["timeout_seconds"]
         backends[str(name)] = BackendConfig(
             name=str(name),
             kind=str(kind),
@@ -372,7 +380,7 @@ def load_config(path: Path) -> AsterunConfig:
             approval_policy=body.get("approval_policy"),
             extra_env=extra_env,
             load_user_settings=body.get("load_user_settings", False) is True,
-            **{key: body[key] for key in GROK_EXECUTION_OPTIONS if key in body},
+            **extras,
         )
 
     default_backend = raw.get("default_backend")

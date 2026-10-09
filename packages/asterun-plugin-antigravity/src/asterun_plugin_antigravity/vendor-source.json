@@ -46,8 +46,8 @@
     {
       "source": "src/asterun/backends/antigravity.py",
       "target": "_vendor/command.py",
-      "source_sha256": "c06ecc074052620466dc7cfe1c8ea794d9d9506e577016ea4419891bfc6b4ca4",
-      "vendored_sha256": "a0d06c12fff6c9412cdb990df3f19aa86acfaab9f08627c757ddec9fb3173d76",
+      "source_sha256": "a8669e4731681c76987e8a47f2571f4e115a3eb4aba46642d6dc3e203e4ea9bd",
+      "vendored_sha256": "725c4c58ec26a80abd3892b95b505856ccbb7d9ab50faf5108bb03a1480f5be3",
       "replacements": [],
       "extract": "build_command",
       "prefix": "from pathlib import Path\nfrom .compat import AsterunError, INVALID_CONFIG\n\n"
