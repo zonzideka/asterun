@@ -128,7 +128,7 @@ Codex and Claude copy only an allowlist into the child process. The child keeps 
 
 To forward a variable that is already present in the core process, set `extra_env` on the v1 backend or the v2 connection options to a list of at most 32 names. The configuration stores names only. Values are copied from the core process at startup. Names that change loader behavior, including `LD_*`, `DYLD_*`, `PYTHONPATH`, and `NODE_OPTIONS`, are rejected. Omitting `extra_env` leaves the digest of an existing configuration unchanged.
 
-An ordinary Claude task now adds an empty MCP config, `--strict-mcp-config`, an empty `--setting-sources`, and `disableAllHooks`, so user hooks and project MCP are not loaded. Set `load_user_settings` to `true` on the backend or connection to restore that loading. Snapshot review stays isolated regardless of the switch. Organization-managed hooks can still be executed by Claude itself; see [ADR 0010](adr/0010-version-bound-quality-workflow.md). This is checked with offline command arguments and has not been revalidated against a live Claude or Codex login.
+An ordinary Claude task now adds an empty MCP config, `--strict-mcp-config`, an empty `--setting-sources`, and `disableAllHooks`, so user hooks and project MCP are not loaded. Set `load_user_settings` to `true` on the backend or connection to restore that loading. Snapshot review stays isolated regardless of the switch. Organization-managed hooks can still be executed by Claude itself; see [ADR 0010](../adr/0010-version-bound-quality-workflow.md). This is checked with offline command arguments and has not been revalidated against a live Claude or Codex login.
 
 ## Grok text configuration
 

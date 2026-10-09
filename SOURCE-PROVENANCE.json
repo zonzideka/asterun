@@ -120,11 +120,11 @@
     },
     {
       "path": "src/asterun/backends/claude.py",
-      "sha256": "27ef9f92cda4607b21d7f9b107d281d4aaf5b0ab1871ba3254e1e347a4919393"
+      "sha256": "4abd06ad006f0807c9960bd48062fa19346866af9c3a6259dcf611696510c2c3"
     },
     {
       "path": "src/asterun/backends/codex.py",
-      "sha256": "84aeaa8d5e761e86fd0fede68cec5aa35bed54dc4176997b2753a3a9771a2f18"
+      "sha256": "4777d8616492efa5e911f7c1dcbde9df69d0f17eac968f9594882612ff0147a9"
     },
     {
       "path": "src/asterun/backends/codex_desktop.py",
@@ -144,7 +144,7 @@
     },
     {
       "path": "src/asterun/backends/codex_runtime.py",
-      "sha256": "72052cb03ed031e010d3462bc4b815ed446d1ffffbc2327f425978d7bcfadeb0"
+      "sha256": "59d9950b197998c791b8e83aa8661075b6b5fc43167ae851ab9a4541fe5aee17"
     },
     {
       "path": "src/asterun/backends/fake.py",
@@ -188,15 +188,15 @@
     },
     {
       "path": "src/asterun/config.py",
-      "sha256": "cd3849068ac363b0d3ff6642ceaddad63fc68de17c4b7381792e48519a75cd7b"
+      "sha256": "b576f2610be1236fa9995c7ff468671b242c6a8e02de17194aa35809738df8ec"
     },
     {
       "path": "src/asterun/config_migration.py",
-      "sha256": "ea12a9347fd3f2894983e3e61909e058c0dbd411e50c70bcfb1a2cb913e2f536"
+      "sha256": "d074f7fd11bd2d81524be6332080b9293cc7c602469c58933e6102e9121ff25e"
     },
     {
       "path": "src/asterun/config_v2.py",
-      "sha256": "f499ab065a44d23b745dfb59c6be529b931dbf4f491031577f61bb33596b6be6"
+      "sha256": "f0265552b0f4bf2203a02f905a1320997d9a2f6688b7826e627beeaec9a9a0f1"
     },
     {
       "path": "src/asterun/connections/__init__.py",
@@ -300,7 +300,7 @@
     },
     {
       "path": "src/asterun/plugins/builtins.py",
-      "sha256": "c01b7ff0c0a77d65b394ce4cb1db5c9c28cd5b7f85524724fdb0697929250071"
+      "sha256": "ab264a5b52423e8c0dce99427e5f970ec423c1605688ea94461af48dc52a4bfa"
     },
     {
       "path": "src/asterun/plugins/core_integration.py",
@@ -312,7 +312,7 @@
     },
     {
       "path": "src/asterun/plugins/registry.py",
-      "sha256": "707161da0dcccc9f45f5566a7cedbaa2a31a6563467d203ce6d735d00c442e7c"
+      "sha256": "90c5a58250e593463eea61542dc6ec8b6365aa23042598d1e43fdeaa8891ca8e"
     },
     {
       "path": "src/asterun/plugins/worker.py",
@@ -384,7 +384,7 @@
     },
     {
       "path": "src/asterun/service_management.py",
-      "sha256": "ac28a22813361e70a466a8258a0f8dc5dd69c0068b45c0d2da0ff3376bc18b28"
+      "sha256": "67f01928787aec90e2a9aab04d7848dd23a8c682e8c8371cecf4a568f2909b2c"
     },
     {
       "path": "src/asterun/sqlite_store.py",
