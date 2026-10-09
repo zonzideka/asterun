@@ -12,9 +12,9 @@ import pytest
 from asterun.application import Application
 from asterun.backends.fake import FakeBackend
 from asterun.config import load_config
-from asterun.contracts import UNAPPLIED_RESULT_NATIVE_KEY, OperationStatus, RunStatus
+from asterun.contracts import UNAPPLIED_RESULT_NATIVE_KEY, ApprovalState, OperationStatus, RunStatus
 from asterun.errors import REMOTE_STATE_UNKNOWN
-from asterun.ids import RunId
+from asterun.ids import ApprovalId, RunId
 from asterun.policy import AllowConfiguredWorkspaces, Principal
 from asterun.sqlite_store import SqliteStore
 from tests.conftest import write_config
@@ -433,4 +433,309 @@ def test_worker_fallback_does_not_drop_unapplied_native_reference(isolated_env, 
         assert run_id not in app.scheduler.inflight_runs
     finally:
         _join(app)
+        app.close()
+
+
+class ProgressBackend(StreamBackend):
+    """返回未结束进度，重放后仍应停在待对账，不能借重启把名额占回去。"""
+
+    def dispatch_stream(self, task_id, run_id, script, text, *, cwd, native, publish, stopping, **kwargs):
+        self.dispatch_count += 1
+        self.calls.append(run_id.value)
+        return {
+            "status": "running",
+            "terminated": False,
+            "summary": "still going",
+            "native": {"backend_session_id": KEPT_SESSION, "thread_id": KEPT_SESSION},
+        }
+
+
+def _sync_app(isolated_env: Path, workspace_root: Path, store: SqliteStore) -> Application:
+    path = write_config(isolated_env / "sync-config.json", workspace_root)
+    config = load_config(path)
+    return Application(
+        config,
+        store=store,
+        backends={"fake": FakeBackend(config.backends["fake"])},
+        policy=AllowConfiguredWorkspaces({"demo"}),
+        principal=Principal("test:user", "test"),
+    )
+
+
+def test_failed_retry_remains_retryable_without_losing_result(isolated_env, workspace_root):
+    """重试再次失败也要留在内存里，写不进状态库时不能把结果丢掉，之后仍会落盘。"""
+    db = isolated_env / "retry.sqlite"
+    store = SqliteStore(db)
+    backend = StreamBackend(None, {"first": _result("first")})
+    app = _worker_app(isolated_env, workspace_root, store, backend, concurrency=1)
+    try:
+        submitted = app.task_submit({"workspace": "demo", "backend": "worker", "text": "first", "script": "first"})
+        assert submitted.ok
+        run_id = submitted.ids["run_id"]
+        _wait(lambda: app.executor.updates.qsize() >= 1, "结果没有进入执行器队列")
+        original_operation = store.save_operation
+        original_run = store.save_run
+        operation_failures = {"n": 0}
+        run_failures = {"n": 0}
+        armed = True
+
+        def fail_completed(operation):
+            if (
+                armed
+                and operation.status == OperationStatus.COMPLETED
+                and operation.run_id is not None
+                and operation.run_id.value == run_id
+                and operation_failures["n"] < 2
+            ):
+                operation_failures["n"] += 1
+                raise sqlite3.OperationalError("injected retry persist failure")
+            return original_operation(operation)
+
+        def fail_preserve(run):
+            if armed and run.id.value == run_id and run.status == RunStatus.PENDING_RECONCILE and run_failures["n"] < 2:
+                run_failures["n"] += 1
+                raise sqlite3.OperationalError("injected stash persist failure")
+            return original_run(run)
+
+        store.save_operation = fail_completed
+        store.save_run = fail_preserve
+        with pytest.raises(sqlite3.OperationalError, match="injected retry persist failure"):
+            app.poll()
+        app.poll()
+        retained = app._retained_results.get(run_id)
+        assert retained is not None
+        payload = retained.result if hasattr(retained, "result") else retained
+        assert payload["summary"] == KEPT_SUMMARY
+        run, operation_status, events, _approvals, sessions, _version = _persisted(db, run_id)
+        assert run["status"] != RunStatus.SUCCEEDED
+        assert KEPT_MARKER not in _texts(events)
+        assert UNAPPLIED_RESULT_NATIVE_KEY not in run["native"]
+        assert operation_failures["n"] == 2
+        skipped = app.poll()
+        assert skipped is None
+        assert operation_failures["n"] == 2
+        assert run_id in app._retained_results
+        armed = False
+
+        def finished() -> bool:
+            app.poll()
+            _join(app)
+            return app.store.get_run(RunId(run_id)).status == RunStatus.SUCCEEDED
+
+        _wait(finished, "退避结束后没有把保留的结果写完")
+        done = app.store.get_run(RunId(run_id))
+        assert done.summary == KEPT_SUMMARY
+        assert UNAPPLIED_RESULT_NATIVE_KEY not in done.native
+        assert KEPT_MARKER in _texts([item.to_dict() for item in app.store.list_events(done.id)])
+        session = app.store.get_session(app.store.get_task(done.task_id).conversation_id)
+        assert session.backend_session_id.value == KEPT_SESSION
+        assert backend.dispatch_count == 1
+        assert app.scheduler.inflight_for("worker") == 0
+    finally:
+        _join(app)
+        app.close()
+
+
+def test_restart_does_not_reoccupy_released_pending_reconcile(isolated_env, workspace_root):
+    """已经释放名额的待对账运行，重启后不能再被 scheduler.start 占回去。"""
+    db = isolated_env / "released-slot.sqlite"
+    store = SqliteStore(db)
+    backend = ProgressBackend(None, {})
+    app = _worker_app(isolated_env, workspace_root, store, backend, concurrency=1)
+    try:
+        submitted = app.task_submit({"workspace": "demo", "backend": "worker", "text": "hold", "script": "hold"})
+        assert submitted.ok
+        run_id = submitted.ids["run_id"]
+        _wait(lambda: app.executor.updates.qsize() >= 1, "进度没有进入执行器队列")
+        original = store.save_session
+
+        def fail_session(session):
+            if getattr(session.backend_session_id, "value", None) == KEPT_SESSION:
+                raise sqlite3.OperationalError("injected progress persist failure")
+            return original(session)
+
+        store.save_session = fail_session
+        with pytest.raises(sqlite3.OperationalError, match="injected progress persist failure"):
+            app.poll()
+        _join(app)
+        assert run_id not in app.scheduler.inflight_runs
+        assert app.store.get_run(RunId(run_id)).status == RunStatus.PENDING_RECONCILE
+    finally:
+        _join(app)
+        app.close()
+
+    restored_backend = ProgressBackend(None, {})
+    restored = _worker_app(isolated_env, workspace_root, SqliteStore(db), restored_backend, concurrency=1)
+    try:
+        run = restored.store.get_run(RunId(run_id))
+        assert run.status == RunStatus.PENDING_RECONCILE
+        assert run.error_code == REMOTE_STATE_UNKNOWN
+        assert restored.scheduler.inflight_for("worker") == 0
+        assert run_id not in restored.scheduler.inflight_runs
+        assert restored_backend.dispatch_count == 0
+        public = restored.handle("task.get", {"task_id": submitted.ids["task_id"]})
+        assert public.ok
+        assert "concurrency_released" not in public.data["run"]["native"]
+        assert UNAPPLIED_RESULT_NATIVE_KEY not in public.data["run"]["native"]
+        nxt = restored.handle("task.submit", {
+            "workspace": "demo", "backend": "worker", "text": "next", "script": "next",
+        })
+        # 后台执行器受理后立即返回，响应里有 dispatched，没有同步路径的 queued。
+        assert nxt.ok and nxt.data["dispatched"] is True and nxt.data.get("queued") is not True
+        assert nxt.ids["run_id"] in restored.scheduler.inflight_runs
+        assert run_id not in restored.scheduler.inflight_runs
+        _wait(lambda: restored_backend.dispatch_count == 1, "释放名额后的下一个任务没有派发")
+        assert restored.store.get_run(RunId(run_id)).status == RunStatus.PENDING_RECONCILE
+    finally:
+        restored.close()
+
+
+def test_sync_dispatch_result_writes_are_one_transaction(isolated_env, workspace_root):
+    """前台派发在后端返回后的运行、会话、审批和操作写入要么一起提交，要么一起回滚。"""
+    db = isolated_env / "sync-dispatch.sqlite"
+    store = SqliteStore(db)
+    app = _sync_app(isolated_env, workspace_root, store)
+    try:
+        original = store.save_operation
+        observed: dict = {}
+
+        def crash(operation):
+            if operation.status == OperationStatus.COMPLETED and operation.run_id is not None:
+                row = store._conn.execute("SELECT payload FROM runs WHERE id=?", (operation.run_id.value,)).fetchone()
+                observed["in_transaction"] = bool(store._conn.in_transaction)
+                observed["visible_status"] = json.loads(row["payload"])["status"]
+                observed["run_id"] = operation.run_id.value
+                raise sqlite3.OperationalError("injected sync dispatch persist failure")
+            return original(operation)
+
+        store.save_operation = crash
+        with pytest.raises(sqlite3.OperationalError, match="injected sync dispatch persist failure"):
+            app.handle("task.submit", {"workspace": "demo", "text": "done", "script": "success"})
+        assert observed["in_transaction"] is True
+        assert observed["visible_status"] == RunStatus.SUCCEEDED
+        run, operation_status, events, _approvals, _sessions, version = _persisted(db, observed["run_id"])
+        assert version == "6"
+        assert not (run["status"] == RunStatus.SUCCEEDED and operation_status == OperationStatus.DISPATCHED)
+        assert run["status"] != RunStatus.SUCCEEDED
+        texts = _texts(events)
+        assert "done" not in texts
+        assert "fake 开始模拟" not in texts
+        assert app.backends["fake"].dispatch_count == 1
+        store.save_operation = original
+        app.poll()
+
+        def finished() -> bool:
+            app.poll()
+            return app.store.get_run(RunId(observed["run_id"])).status == RunStatus.SUCCEEDED
+
+        _wait(finished, "同步派发回滚后的结果没有重新落盘")
+        done, operation_status, events, _approvals, _sessions, _version = _persisted(db, observed["run_id"])
+        assert done["summary"] == "done"
+        assert operation_status == OperationStatus.COMPLETED
+        texts = _texts(events)
+        assert "done" in texts
+        assert "fake 开始模拟" in texts
+        assert app.backends["fake"].dispatch_count == 1
+    finally:
+        app.close()
+
+
+def test_cancel_result_writes_are_one_transaction(isolated_env, workspace_root):
+    """取消确认后的运行和操作更新在同一个事务里，失败不能留下已取消运行配着仍在派发的操作。"""
+    db = isolated_env / "sync-cancel.sqlite"
+    store = SqliteStore(db)
+    app = _sync_app(isolated_env, workspace_root, store)
+    try:
+        held = app.handle("task.submit", {"workspace": "demo", "text": "hold", "script": "cancel_and_stop"})
+        assert held.ok and held.data["run"]["status"] == RunStatus.RUNNING
+        run_id = held.ids["run_id"]
+        original = store.save_operation
+        observed: dict = {}
+
+        def crash(operation):
+            if operation.status == OperationStatus.COMPLETED and operation.run_id is not None and operation.run_id.value == run_id:
+                row = store._conn.execute("SELECT payload FROM runs WHERE id=?", (run_id,)).fetchone()
+                observed["in_transaction"] = bool(store._conn.in_transaction)
+                observed["visible_status"] = json.loads(row["payload"])["status"]
+                raise sqlite3.OperationalError("injected cancel persist failure")
+            return original(operation)
+
+        store.save_operation = crash
+        with pytest.raises(sqlite3.OperationalError, match="injected cancel persist failure"):
+            app.handle("task.cancel", {"task_id": held.ids["task_id"]})
+        assert observed["in_transaction"] is True
+        assert observed["visible_status"] == RunStatus.CANCELLED
+        run, operation_status, events, _approvals, _sessions, _version = _persisted(db, run_id)
+        assert not (run["status"] == RunStatus.CANCELLED and operation_status == OperationStatus.DISPATCHED)
+        assert run["status"] != RunStatus.CANCELLED
+        assert run["cancel_requested"] is True
+        assert "fake 已停止运行" not in _texts(events)
+        assert sum(1 for call in app.backends["fake"].calls if call.method == "request_cancel") == 1
+        store.save_operation = original
+
+        def finished() -> bool:
+            app.poll()
+            current = app.store.get_run(RunId(run_id))
+            return current.status == RunStatus.CANCELLED
+
+        _wait(finished, "取消结果没有在事务失败后重新落盘")
+        done = app.store.get_run(RunId(run_id))
+        assert done.cancel_requested is True
+        assert app.store.find_operation_for_run(done.id).status == OperationStatus.COMPLETED
+        assert sum(1 for call in app.backends["fake"].calls if call.method == "request_cancel") == 1
+    finally:
+        app.close()
+
+
+def test_approval_result_writes_are_one_transaction(isolated_env, workspace_root):
+    """审批回复后的审批、运行和操作写入在同一个事务里，不能出现已通过审批配着仍在等待的运行。"""
+    db = isolated_env / "sync-approval.sqlite"
+    store = SqliteStore(db)
+    app = _sync_app(isolated_env, workspace_root, store)
+    try:
+        waiting = app.handle("task.submit", {"workspace": "demo", "text": "ask", "script": "wait_input"})
+        assert waiting.ok and waiting.data["run"]["status"] == RunStatus.WAITING_INPUT
+        approval_id = waiting.data["dispatch"]["approval_id"]
+        run_id = waiting.ids["run_id"]
+        original = store.save_operation
+        observed: dict = {}
+
+        def crash(operation):
+            if operation.status == OperationStatus.COMPLETED and operation.run_id is not None and operation.run_id.value == run_id:
+                run_row = store._conn.execute("SELECT payload FROM runs WHERE id=?", (run_id,)).fetchone()
+                approval_row = store._conn.execute(
+                    "SELECT payload FROM approvals WHERE id=?",
+                    (approval_id,),
+                ).fetchone()
+                observed["in_transaction"] = bool(store._conn.in_transaction)
+                observed["visible_status"] = json.loads(run_row["payload"])["status"]
+                observed["visible_approval"] = json.loads(approval_row["payload"])["state"]
+                raise sqlite3.OperationalError("injected approval persist failure")
+            return original(operation)
+
+        store.save_operation = crash
+        with pytest.raises(sqlite3.OperationalError, match="injected approval persist failure"):
+            app.handle("approval.respond", {"approval_id": approval_id, "decision": "approve"})
+        assert observed["in_transaction"] is True
+        assert observed["visible_status"] == RunStatus.SUCCEEDED
+        assert observed["visible_approval"] == ApprovalState.APPROVED
+        run, operation_status, _events, approvals, _sessions, _version = _persisted(db, run_id)
+        approval = next(item for item in approvals if item["id"] == approval_id)
+        assert not (run["status"] == RunStatus.SUCCEEDED and approval["state"] != ApprovalState.APPROVED)
+        assert not (approval["state"] == ApprovalState.APPROVED and run["status"] != RunStatus.SUCCEEDED)
+        assert run["status"] != RunStatus.SUCCEEDED
+        assert approval["state"] != ApprovalState.APPROVED
+        assert sum(1 for call in app.backends["fake"].calls if call.method == "respond_approval") == 1
+        store.save_operation = original
+
+        def finished() -> bool:
+            app.poll()
+            current = app.store.get_run(RunId(run_id))
+            stored = app.store.get_approval(ApprovalId(approval_id))
+            return current.status == RunStatus.SUCCEEDED and stored.state == ApprovalState.APPROVED
+
+        _wait(finished, "审批结果没有在事务失败后重新落盘")
+        assert app.store.find_operation_for_run(RunId(run_id)).status == OperationStatus.COMPLETED
+        assert sum(1 for call in app.backends["fake"].calls if call.method == "respond_approval") == 1
+    finally:
         app.close()

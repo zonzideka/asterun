@@ -4,7 +4,7 @@
 
 The first release covers the capabilities implemented in `0.1.0a13`. The current source version is `0.1.0a17`. Current work focuses on defects, compatibility, live acceptance, and release documentation. The core and all three optional plugins use Apache-2.0. See the [release notes](release-v0.1.md) for scope and [STATUS](../../STATUS.en.md) for test and deployment results tied to specific revisions.
 
-On 2026-10-09 result persistence no longer leaves a run dispatching while it holds a concurrency slot, multi-step result writes commit in one transaction, and a restart with no operation record releases the slot. The run becomes `pending_reconcile` with operation `unknown`, keeps the result, and is not dispatched again. SQLite schema 6 and the external protocol stay unchanged. Live backends have not been verified.
+On 2026-10-09 result persistence no longer leaves a run dispatching while it holds a concurrency slot, multi-step result writes commit in one transaction, and a restart with no operation record releases the slot. The run becomes `pending_reconcile` with operation `unknown`, keeps the result, and is not dispatched again. The same day also covers three follow-ups: a failed retry stays in memory and keeps writing with a capped backoff; a pending-reconcile run whose slot was already released does not take that slot back after restart; foreground synchronous dispatch, confirmed cancellation, and approval replies use the same result transaction. SQLite schema 6 and the external protocol stay unchanged. Live backends have not been verified.
 
 On 2026-10-09 ordinary Codex tasks can set a native `approval_policy` of `untrusted`, `on-failure`, or `on-request`. Omitting it still sends `untrusted` with `workspace-write`. `never`, granular policies, and values that disable the sandbox are rejected during validation. Fixed-scope reads are unchanged. Live Codex has not been verified.
 
@@ -58,7 +58,7 @@ Configuration v1/v2, SQLite schema 6, frozen runner-control/v1, and the separate
 |---|---|
 | Identity and resources | Use the identity established by the entry point; recheck workspace, action, account, host, authorization expiry, and configuration revision |
 | Reliable dispatch | Persist intent first; reuse an operation for the same key and input, reject changed input, and dispatch nothing if persistence fails |
-| Unknown results | Reconcile through native references, retain unknown state and budget reservations, and continue with the original operation |
+| Unknown results | Reconcile through native references, retain the unknown state, and continue with the original operation. A run still executing without a released slot keeps its budget reservation; a pending-reconcile run whose slot was explicitly released does not take it back |
 | Session recovery | Check account, host, workspace, latest native turn, and pending approvals |
 | Cancellation and takeover | Record the request and termination evidence; stop subsequent automatic steps before handing off at a safe boundary |
 | Approvals | Bind responses to the actual backend request, run, target, and operation summary; reject expired, duplicate, or mismatched replies |

@@ -61,6 +61,9 @@ TERMINAL_RUN_STATUSES = {
 
 # 结果事务回滚后暂存在运行记录里，对外视图会去掉；不是新的协议字段。
 UNAPPLIED_RESULT_NATIVE_KEY = "unapplied_result"
+UNAPPLIED_APPROVAL_NATIVE_KEY = "unapplied_approval"
+# 已明确释放并发名额。重启时不再为这条待对账运行占回名额。
+SLOT_RELEASED_NATIVE_KEY = "concurrency_released"
 
 
 class AcceptanceStatus(StrEnum):
