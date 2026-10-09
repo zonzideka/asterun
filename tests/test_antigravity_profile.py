@@ -1,6 +1,7 @@
 import hashlib
 import json
 from pathlib import Path
+import shutil
 
 import pytest
 
@@ -297,13 +298,41 @@ def test_builtin_manifest_rejects_modified_and_additional_extensions(tmp_path, m
         validate_home(home)
 
 
-def test_only_empty_observed_playwright_cache_is_accepted(tmp_path):
+def _use_platform(monkeypatch, system, machine):
+    import asterun.antigravity_profile as profile
+    monkeypatch.setattr(profile.sys, "platform", system)
+    monkeypatch.setattr(profile.platform, "machine", lambda: machine)
+    return profile
+
+
+def _encoder_pin(content: bytes) -> tuple[int, str]:
+    return len(content), hashlib.sha256(content).hexdigest()
+
+
+@pytest.mark.parametrize("system,machine,relative,foreign", [
+    ("darwin", "arm64", "Library/Caches/ms-playwright-go/1.57.0", ".cache/ms-playwright-go/1.57.0"),
+    ("darwin", "x86_64", "Library/Caches/ms-playwright-go/1.57.0", ".cache/ms-playwright-go/1.57.0"),
+    ("linux", "x86_64", ".cache/ms-playwright-go/1.57.0", "Library/Caches/ms-playwright-go/1.57.0"),
+    ("linux", "aarch64", ".cache/ms-playwright-go/1.57.0", "Library/Caches/ms-playwright-go/1.57.0"),
+])
+def test_only_empty_platform_playwright_cache_is_accepted(tmp_path, monkeypatch, system, machine, relative, foreign):
+    _use_platform(monkeypatch, system, machine)
     home = tmp_path / "native"
     prepare_home(home)
-    cache = home / "Library" / "Caches" / "ms-playwright-go" / "1.57.0"
+    cache = home.joinpath(*Path(relative).parts)
     cache.mkdir(parents=True)
     assert validate_home(home) == home
     (cache / "unverified-browser").touch()
+    with pytest.raises(AsterunError):
+        validate_home(home)
+    (cache / "unverified-browser").unlink()
+    replacement = cache.parent / "1.58.0"
+    cache.rename(replacement)
+    with pytest.raises(AsterunError):
+        validate_home(home)
+    shutil.rmtree(home / Path(relative).parts[0])
+    foreign_cache = home.joinpath(*Path(foreign).parts)
+    foreign_cache.mkdir(parents=True)
     with pytest.raises(AsterunError):
         validate_home(home)
 
@@ -357,25 +386,79 @@ def test_implicit_state_only_allows_regular_uuid_protobuf_files(tmp_path):
         validate_home(home)
 
 
-def test_native_encoder_requires_its_exact_manifest_and_no_other_binaries(tmp_path, monkeypatch):
+def test_cli_120_encoder_pins_stay_exact_per_platform():
     import asterun.antigravity_profile as profile
+    darwin = (12781442, "9cf13e875e7ffb9ef3fe1fc1a177c744bd8ee5a6651a2ec47cda307a009e8d11")
+    linux = (17056035, "45c1b1edd50159fbd4eac95ffd82df97a79b8c345fc43408ddae09230a304ed6")
+    assert profile._WEBM_ENCODER_PINS[("darwin", "arm64")] == darwin
+    assert profile._WEBM_ENCODER_PINS[("darwin", "x86_64")] == darwin
+    assert profile._WEBM_ENCODER_PINS[("linux", "x86_64")] == linux
+    assert ("linux", "aarch64") not in profile._WEBM_ENCODER_PINS
+    assert all(isinstance(key, tuple) and len(key) == 2 and isinstance(value, tuple) and len(value) == 2
+               for key, value in profile._WEBM_ENCODER_PINS.items())
+
+
+@pytest.mark.parametrize("system,machine,content,other", [
+    ("darwin", "arm64", b"macos-cli-1.2.0-encoder", b"linux-cli-1.2.0-encoder"),
+    ("darwin", "x86_64", b"macos-cli-1.2.0-encoder", b"linux-cli-1.2.0-encoder"),
+    ("linux", "x86_64", b"linux-cli-1.2.0-encoder", b"macos-cli-1.2.0-encoder"),
+    ("linux", "amd64", b"linux-cli-1.2.0-encoder", b"macos-cli-1.2.0-encoder"),
+])
+def test_platform_encoder_accepts_only_its_exact_digest(tmp_path, monkeypatch, system, machine, content, other):
+    profile = _use_platform(monkeypatch, system, machine)
+    monkeypatch.setattr(profile, "_WEBM_ENCODER_PINS", {
+        ("darwin", "arm64"): _encoder_pin(b"macos-cli-1.2.0-encoder"),
+        ("darwin", "x86_64"): _encoder_pin(b"macos-cli-1.2.0-encoder"),
+        ("linux", "x86_64"): _encoder_pin(b"linux-cli-1.2.0-encoder"),
+    })
     home = tmp_path / "native"
     prepare_home(home)
     bin_dir = home / ".gemini" / "antigravity-cli" / "bin"
     bin_dir.mkdir()
-    content = b"known upstream executable bytes"
     binary = bin_dir / "webm_encoder"
     binary.write_bytes(content)
     binary.chmod(0o755)
-    monkeypatch.setattr(profile, "_WEBM_ENCODER_SIZE", len(content))
-    monkeypatch.setattr(profile, "_WEBM_ENCODER_SHA256", hashlib.sha256(content).hexdigest())
     assert validate_home(home) == home
-    binary.write_bytes(b"x" * len(content))
+    binary.write_bytes(other)
     with pytest.raises(AsterunError):
+        validate_home(home)
+    binary.write_bytes(b"x" * len(content))
+    with pytest.raises(AsterunError, match="哈希"):
         validate_home(home)
     binary.write_bytes(content)
     (bin_dir / "additional-executable").touch()
-    with pytest.raises(AsterunError):
+    with pytest.raises(AsterunError, match="未经核验"):
+        validate_home(home)
+
+
+@pytest.mark.parametrize("system,machine", [
+    ("darwin", "arm64"),
+    ("darwin", "x86_64"),
+    ("linux", "x86_64"),
+])
+def test_official_encoder_pin_rejects_same_size_unknown_digest(tmp_path, monkeypatch, system, machine):
+    profile = _use_platform(monkeypatch, system, machine)
+    home = tmp_path / "native"
+    prepare_home(home)
+    binary = home / ".gemini" / "antigravity-cli" / "bin" / "webm_encoder"
+    binary.parent.mkdir()
+    size, expected = profile._webm_encoder_pin()
+    binary.write_bytes(b"\x01" * size)
+    binary.chmod(0o755)
+    assert hashlib.sha256(binary.read_bytes()).hexdigest() != expected
+    with pytest.raises(AsterunError, match="哈希"):
+        validate_home(home)
+
+
+def test_linux_aarch64_rejects_encoder_without_a_pin(tmp_path, monkeypatch):
+    _use_platform(monkeypatch, "linux", "aarch64")
+    home = tmp_path / "native"
+    prepare_home(home)
+    binary = home / ".gemini" / "antigravity-cli" / "bin" / "webm_encoder"
+    binary.parent.mkdir()
+    binary.write_bytes(b"linux-x86_64-bytes-are-not-a-wildcard")
+    binary.chmod(0o755)
+    with pytest.raises(AsterunError, match="固定摘要"):
         validate_home(home)
 
 

@@ -33,4 +33,4 @@ Success requires valid initialization, complete steps, a matching terminal state
 
 This preview package supports a single synchronous execution. Native resume, observation, cancellation, approval, reconciliation, and quota queries across RPC calls are not yet implemented. A lost connection may leave the result `unknown`; an operator must check native state while the budget reservation remains held. When the balance is unknown, admission follows the core's bounded policy and explicit overage configuration.
 
-The standalone wheel and protocol test doubles have been validated. Real accounts, subscription charges, official CLI execution through the external plugin, client visibility, and Linux await validation.
+The standalone wheel and protocol test doubles have been validated. The Linux x86_64 CLI 1.2.0 profile check now pins `webm_encoder` and an empty `~/.cache/ms-playwright-go/1.57.0`. Real accounts, subscription charges, official CLI execution, client visibility, and live Linux tasks still await validation.

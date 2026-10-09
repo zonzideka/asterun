@@ -4,8 +4,8 @@
     {
       "source": "src/asterun/antigravity_profile.py",
       "target": "_vendor/profile.py",
-      "source_sha256": "870267f2d11342b147d53264f895391a093c5b2a1ce189d208304257905610c9",
-      "vendored_sha256": "0ea19934ae9720f799605a12bea6fc189c793b8da79d48cac3917591d741e031",
+      "source_sha256": "fb4cfe0888eec23e56076eb488f3a265786770bdbfd216a13fcbaf4df7bc99e5",
+      "vendored_sha256": "92d754487d6eeed034bd64605dba3aa3dec419234032fa76e08f95ef0bc68d67",
       "replacements": [
         [
           "from .errors import AsterunError, INVALID_CONFIG",

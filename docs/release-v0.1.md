@@ -31,7 +31,7 @@ CLI、MCP 和 GrokBot 等入口共用核心。同机客户端通过本地 socket
 | Codex | 文件读取与编辑、命令和测试执行、原生线程续接、命令/文件审批、取消与对账、可选固定读取和项目登记 | 工具执行遵循任务权限与审批。真实文本和 PR 审查有运行记录；新固定读取的模型行为、通用续接/取消及完整新会话桌面显示待现场验收，项目登记限同机 macOS Desktop |
 | Grok | 默认文本模式；显式 `workspace-code-v1` 支持读取、编辑、测试和迭代，编码模式可选 `session_policy: "resume"` 续接受管原生会话 | 文本任务在 macOS/Linux 有运行记录；自主编码在 macOS 完成一次闭环。受管续接已通过离线协议替身，真实模型续接与原生取消/客户端显示仍待现场验证；文本模式原生续接、取消及审批桥接尚未接入 |
 | Claude | 单次任务调用、文本处理、工作区文件读取和固定快照输入 | 普通调用配置 Read/Grep/Glob，快照调用使用传入内容。已做离线验证，真实后端待验收；原生续接尚未接入 |
-| Antigravity CLI | CLI 1.2.0 的文本执行和受限工作区读取 | macOS 的文本、读取及权限拒绝检查通过；原生续接、恢复对账和审批桥接尚未接入 |
+| Antigravity CLI | CLI 1.2.0 的文本执行和受限工作区读取 | macOS 的文本、读取及权限拒绝检查通过。Linux x86_64 的 profile 接受官方 1.2.0 `webm_encoder` 固定摘要和空的 `~/.cache/ms-playwright-go/1.57.0`；该平台真实执行仍待现场验收。原生续接、恢复对账和审批桥接尚未接入 |
 | 独立插件 | Antigravity 账户、Cursor local Agent、Jules REST | 预览包；真实供应商、计费和客户端验收待完成 |
 
 任务目标、Agent 组合及执行流程由用户选择。按所选后端查阅[安装说明](install.md)、[Antigravity 用法](antigravity.md)或[插件说明](plugins.md)。用量按后端提供的原始范围记录；额度节省仍需同任务对照数据验证。
