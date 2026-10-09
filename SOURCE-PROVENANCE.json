@@ -28,7 +28,7 @@
     },
     {
       "path": "packages/asterun-plugin-antigravity/src/asterun_plugin_antigravity/manifest.json",
-      "sha256": "32c8c1edd0383085bc9279c4b82cd1aede546bd9031cfefd75855db9c6fa9e1b"
+      "sha256": "afbb961331fe4cbaff254136f1e4cae744315cb45567c4f13cdcec1329306416"
     },
     {
       "path": "packages/asterun-plugin-antigravity/src/asterun_plugin_antigravity/vendor-source.json",

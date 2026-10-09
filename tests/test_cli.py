@@ -94,7 +94,7 @@ def test_cli_rejects_self_reported_request_file(config_path: Path, isolated_env:
 
 def test_cli_version_and_missing_config(isolated_env: Path) -> None:
     version = _run(["version"])
-    assert json.loads(version.stdout)["data"]["version"] == __version__ == "0.1.0a16"
+    assert json.loads(version.stdout)["data"]["version"] == __version__ == "0.1.0a17"
     missing = _run(["--home", str(isolated_env / "empty-home"), "config-validate"])
     assert json.loads(missing.stdout)["error"]["code"] == "CONFIG_REQUIRED"
 
