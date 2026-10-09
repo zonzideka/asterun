@@ -14,6 +14,7 @@ def test_application_passes_workspace_to_native_adapter(isolated_env, workspace_
     import asterun.backends.grok as grok
 
     seen = []
+    prompts = []
 
     class Transport:
         def __init__(self, **kwargs):
@@ -25,8 +26,9 @@ def test_application_passes_workspace_to_native_adapter(isolated_env, workspace_
         def initialize(self):
             return {}
 
-        def run_text_prompt(self, *, text, cwd):
+        def run_text_prompt(self, *, text, cwd, thread_params=None):
             seen.append(Path(cwd))
+            prompts.append(thread_params)
             return CodexPromptResult(status="completed", thread_id="thread-test", turn_id="turn-test", message="已执行")
 
         def new_session(self, cwd):
@@ -72,6 +74,8 @@ def test_application_passes_workspace_to_native_adapter(isolated_env, workspace_
     result = app.handle("task.submit", {"workspace": "demo", "backend": kind, "text": "输入"})
     assert result.ok, result.error
     assert seen and all(path == workspace_root for path in seen)
+    if kind == "codex":
+        assert prompts == [{"approvalPolicy": "untrusted", "sandbox": "workspace-write"}]
     assert result.data["run"]["summary"] == "已执行"
     assert result.data["run"]["status"] == "succeeded"
     assert result.data["session"]["backend_session_id"] == ("thread-test" if kind == "codex" else "session-test")
