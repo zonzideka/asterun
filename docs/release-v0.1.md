@@ -2,7 +2,13 @@
 
 # 首版发行说明
 
-当前公开源码版本为 `0.1.0a16`，正式稳定版 `0.1.0` 尚未发布。本次预发布的安装资产和校验文件见[对应版本发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a16)。首版范围已冻结，发布准备集中在现有行为、兼容和打包修复。项目采用 [Apache-2.0](../LICENSE)。
+当前公开源码版本为 `0.1.0a17`，正式稳定版 `0.1.0` 尚未发布。本次预发布的安装资产和校验文件见[对应版本发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a17)。首版范围已冻结，发布准备集中在现有行为、兼容和打包修复。项目采用 [Apache-2.0](../LICENSE)。
+
+## 0.1.0a17
+
+发布外部 Antigravity 插件 `asterun-plugin-antigravity` `1.0.1`。a16 已把 Linux x86_64 的 CLI 1.2.0 profile 合入插件内的 `_vendor/profile.py`，但插件版本仍为 `1.0.0`，且没有发布新的插件包；外部 v2 插件用户实际加载的 a13 `1.0.0` wheel 仍会拒绝 Linux HOME。本版把插件版本与 manifest 的 `plugin_version` 升为 `1.0.1`，并在发行页提供由本标签构建的插件 wheel 与源码包。插件代码相对 a16 未变，CLI 版本门禁仍为 `upstream_version=1.2.0`。已注册 `1.0.0` 的连接在换装后 manifest 摘要变化，需按[插件说明](plugins.md)重新注册并核对准入。核心 sdist 按既有约定只含插件 README 与 LICENSE，插件以独立分发包发布。Cursor 与 Jules 插件仍为 `1.0.0`，沿用 a13 资产。
+
+核心代码相对 a16 无行为变化，仅版本号更新。本次资产为核心 wheel、源码包、`asterun-skill-0.1.0a17.zip`、`asterun_plugin_antigravity-1.0.1` 的 wheel 与源码包，以及 `SHA256SUMS`。
 
 ## 0.1.0a16
 

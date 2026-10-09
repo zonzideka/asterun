@@ -2,7 +2,13 @@
 
 # First release notes
 
-The current public source version is `0.1.0a16`. The stable `0.1.0` release has not yet been published. See the [versioned release page](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a16) for this prerelease's installation assets and checksums. The first release's scope is frozen; preparation focuses on fixes to existing behavior, compatibility, and packaging. Asterun is licensed under [Apache-2.0](../../LICENSE).
+The current public source version is `0.1.0a17`. The stable `0.1.0` release has not yet been published. See the [versioned release page](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a17) for this prerelease's installation assets and checksums. The first release's scope is frozen; preparation focuses on fixes to existing behavior, compatibility, and packaging. Asterun is licensed under [Apache-2.0](../../LICENSE).
+
+## 0.1.0a17
+
+Publishes the external Antigravity plugin `asterun-plugin-antigravity` `1.0.1`. a16 merged the Linux x86_64 CLI 1.2.0 profile into the plugin's `_vendor/profile.py`, but left the plugin at `1.0.0` without new plugin packages, so external v2 plugin users still loaded the a13 `1.0.0` wheel, which rejects a Linux HOME. This release raises the plugin version and the manifest `plugin_version` to `1.0.1` and attaches a plugin wheel and source distribution built from this tag. Plugin code is unchanged from a16, and the CLI gate remains `upstream_version=1.2.0`. Connections registered against `1.0.0` see a new manifest digest after reinstalling; re-register and check admission as described in the [plugin guide](plugins.md). By existing convention, the core sdist contains only the plugin README and LICENSE; plugins ship as separate distributions. The Cursor and Jules plugins remain at `1.0.0` and keep their a13 assets.
+
+Core behavior is unchanged from a16; only the version changes. Assets include the core wheel, source distribution, `asterun-skill-0.1.0a17.zip`, the `asterun_plugin_antigravity-1.0.1` wheel and source distribution, and `SHA256SUMS`.
 
 ## 0.1.0a16
 

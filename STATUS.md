@@ -4,7 +4,9 @@
 
 2026-10-09 为 Codex 后端增加可选 `approval_policy`。省略时普通任务仍发送 `approvalPolicy=untrusted` 与 `sandbox=workspace-write`，并继续覆盖 `~/.codex/config.toml`。可改为 `on-request` 或 `on-failure`，在工作区沙箱内自动执行，越界或沙箱失败时仍询问。`never`、granular 和 `danger-full-access` 在配置校验时拒绝。固定读取仍为 `never` 与 `read-only`。配置 schema 仍是 v1/v2，不改 SQLite。此项尚未用真实 Codex 验收，随 `0.1.0a16` 发布。
 
-当前版本为 `0.1.0a16`，采用 Apache-2.0。首版功能范围已冻结，维护集中在现有缺陷、兼容性、现场验收和发行内容。使用入口见 [README](README.md)、[用户手册](docs/user-manual.md)和[发行说明](docs/release-v0.1.md)。本次预发布的核心与标准 skill 资产及校验文件见[对应版本发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a16)；下方按日期保留各批次当时的验证和部署事实。
+2026-10-09 发布外部 Antigravity 插件 `1.0.1`：a16 已更新插件内 `_vendor/profile.py` 的 Linux x86_64 支持，但插件仍为 `1.0.0` 且未发新包。本次只升插件与 manifest 版本，并随 a17 发布插件 wheel 与源码包；插件代码与核心行为相对 a16 不变。
+
+当前版本为 `0.1.0a17`，采用 Apache-2.0。首版功能范围已冻结，维护集中在现有缺陷、兼容性、现场验收和发行内容。使用入口见 [README](README.md)、[用户手册](docs/user-manual.md)和[发行说明](docs/release-v0.1.md)。本次预发布的核心与标准 skill 资产及校验文件见[对应版本发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a17)；下方按日期保留各批次当时的验证和部署事实。
 
 2026-10-09 Antigravity profile 按平台核验 CLI 1.2.0 的 `webm_encoder`。macOS 仍只接受已核验的 12781442 字节摘要 `9cf13e875e7ffb9ef3fe1fc1a177c744bd8ee5a6651a2ec47cda307a009e8d11`。Linux x86_64 增加官方构建的 17056035 字节摘要 `45c1b1edd50159fbd4eac95ffd82df97a79b8c345fc43408ddae09230a304ed6`。Linux 的空 Playwright 缓存为 `~/.cache/ms-playwright-go/1.57.0`，macOS 仍只接受 `Library/Caches/ms-playwright-go/1.57.0`。未登记摘要、其他架构的编码器和额外二进制继续拒绝。内置技能清单未改。agy 1.3.2 因技能文件差异仍不在支持范围内；扩展方式是为该版本单独登记内置文件、各平台编码器摘要、缓存形状和 `upstream_version` 门禁。本项只改离线 profile 检查，没有调用真实 agy，也没有切换运行实例。Python 3.12.3 上 `scripts/verify-offline.sh` 的来源核验通过；pytest 收集 2659 项，2622 通过、36 跳过、1 失败。失败项是既有 `tests/test_read_scope.py::test_mutation_while_reading_rejected`：同长度覆写依赖 inode 时间变化，本机 ext4/tmpfs 在约 4ms 粒度内不更新 `st_mtime_ns`，`read_scope.py` 与该测试未改。main 的最近 GitHub CI（run 37126600286）为成功。跳过包含未开启的真实后端和缺少 bubblewrap 的 OS 沙箱用例。Antigravity profile 新增用例通过。
 

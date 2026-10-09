@@ -1,7 +1,7 @@
 {
   "schema_version": "asterun-plugin/v1",
   "plugin_id": "google.antigravity-cli",
-  "plugin_version": "1.0.0",
+  "plugin_version": "1.0.1",
   "plugin_api_major": 1,
   "distribution": "asterun-plugin-antigravity",
   "entry_point": "asterun_plugin_antigravity.worker:main",

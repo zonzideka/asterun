@@ -596,7 +596,7 @@ def test_pep440_fallback_parses_dev_and_local_builds():
 def test_current_core_meets_skill_minimum():
     from asterun import __version__
     assert skill.version_supported(__version__)
-    assert __version__ == "0.1.0a16"
+    assert __version__ == "0.1.0a17"
 
 
 def test_published_a13_fails_fast_without_watch_or_snapshot(tmp_path):

@@ -6,6 +6,8 @@
 
 ## 构建和配置
 
+当前插件版本为 `1.0.1`，包含 Linux x86_64 的 CLI 1.2.0 profile 支持；wheel、源码包与校验文件见 [a17 发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a17)。a13 发行页的 `1.0.0` wheel 仍带旧 profile，会拒绝 Linux HOME。也可按下面的步骤从固定源码构建。
+
 从完整 Git 检出核验来源，再使用已准备的构建环境打包：
 
 ```sh
