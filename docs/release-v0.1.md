@@ -6,7 +6,7 @@
 
 ## 0.1.0a16
 
-Linux x86_64 支持 Antigravity CLI 1.2.0 profile。`webm_encoder` 按平台核对精确大小和 SHA-256：macOS 仍只接受原有 12781442 字节构建，Linux x86_64 只接受官方 Linux 1.2.0 构建（17056035 字节，`45c1b1edd50159fbd4eac95ffd82df97a79b8c345fc43408ddae09230a304ed6`），没有通配项，Linux aarch64 的编码器仍被拒绝。Playwright 空缓存目录在 Linux 为 `~/.cache/ms-playwright-go/1.57.0`，macOS 不变。agy 1.3.2 仍不支持。
+Linux x86_64 支持 Antigravity CLI 1.2.0 profile。`webm_encoder` 按平台核对精确大小和 SHA-256：macOS 仍只接受原有 12781442 字节构建，Linux x86_64 只接受官方 Linux 1.2.0 构建（17056035 字节，`45c1b1edd50159fbd4eac95ffd82df97a79b8c345fc43408ddae09230a304ed6`），没有通配项，Linux aarch64 的编码器仍被拒绝。Playwright 空缓存目录在 Linux 为 `~/.cache/ms-playwright-go/1.57.0`，macOS 不变。agy 1.3.2 仍不支持。Linux 支持适用于核心内置的 `antigravity` 后端；可选的外部 `asterun-plugin-antigravity` 本次不发新版，a13 发行的 1.0.0 wheel 仍带旧 profile，会拒绝 Linux HOME。使用外部插件的 Linux 用户须从 `v0.1.0a16` 标签的 `packages/asterun-plugin-antigravity` 固定源码自行构建。
 
 Codex 后端新增可选 `approval_policy`，可取 `untrusted`、`on-failure`、`on-request`。`on-request` 在工作区沙箱内自动读写和执行命令，越界才询问；`on-failure` 仅在沙箱导致失败时询问。省略时普通任务仍发送 `untrusted` 与 `workspace-write`。`never`、granular 对象和 `danger-full-access` 在校验时拒绝，固定读取仍为 `never` 与 `read-only`。用法见[安装说明](install.md#原生审批模式)。配置 schema 仍为 v1/v2，SQLite 不变。
 
