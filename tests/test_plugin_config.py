@@ -4,7 +4,6 @@ import hashlib
 import json
 from pathlib import Path
 import stat
-import subprocess
 
 import pytest
 
@@ -12,7 +11,6 @@ from asterun.config import load_config
 from asterun.config_migration import migrate_v1_to_v2, write_v2_migration
 from asterun.errors import AsterunError
 from asterun.plugins.registry import installation_digest
-from tests.plugin_support import is_interpreter_path_probe
 
 
 def write(path, raw):
@@ -114,12 +112,7 @@ def test_v2_external_unknown_id_registers_without_loading(config_path, v2_raw, e
     }}
     connection.update(plugin_id="example.external-fake", options={"custom": "plugin-specific"})
     monkeypatch.setattr("asterun.plugins.registry.importlib.import_module", lambda *a, **k: pytest.fail("配置校验不得加载外部模块"))
-    original_popen = subprocess.Popen
-    def spawn(args, **kwargs):
-        if is_interpreter_path_probe(args):
-            return original_popen(args, **kwargs)
-        pytest.fail("配置校验不得启动 worker")
-    monkeypatch.setattr("subprocess.Popen", spawn)
+    monkeypatch.setattr("subprocess.Popen", lambda *a, **k: pytest.fail("配置校验不得启动 worker"))
     config = load_config(write(config_path, v2_raw))
     assert config.backends["fake"].kind == "example.external-fake"
     assert config.backends["fake"].options == {"custom": "plugin-specific"}

@@ -93,6 +93,14 @@ def test_version_downgrade_fails(tmp_path):
     assert "插件副本内容已变化，但插件版本未升高" in result.stderr
 
 
+def test_higher_prerelease_is_rejected(tmp_path):
+    repo = baseline(tmp_path)
+    write_plugin(repo, "1.0.2a1", "changed\n")
+    result = check(repo)
+    assert result.returncode != 0
+    assert "插件副本内容已变化，但插件版本未升高" in result.stderr
+
+
 def test_prerelease_is_not_newer_and_numeric_segments_compare(tmp_path):
     repo = baseline(tmp_path)
     write_plugin(repo, "1.0.1a2", "changed\n")

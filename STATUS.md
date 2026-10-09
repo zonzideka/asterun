@@ -2,6 +2,8 @@
 
 [中文](STATUS.md) | [English](STATUS.en.md)
 
+2026-10-09 把外部插件 runner 收成两种白名单形态：绝对路径解释器加 `-m` 模块，或单独一个绝对路径可执行文件。`-c`、其他解释器选项、相对路径和「解释器加脚本」在注册时拒绝。入口只在钉定树内查找，注册不再启动解释器，因此不会执行 `site`、`.pth` 或 `sitecustomize`。`-m` 的实际启动使用 `-I -S -B`，只注入已钉定的导入根。插件副本版本只要带预发布标记就不能通过，即使它按 PEP 440 高于基线。核心仍是 `0.1.0a17`，插件源码仍是 `1.0.2`。已经用 `python /path/worker.py`、相对路径、`-c` 或其他解释器参数写成 runner 的配置无法加载，需要改成 `-m` 或单个绝对路径可执行文件后重新注册。仍使用 `-m` 的配置可以加载，但不再读取 `PYTHONPATH`，也不再执行 site 钩子；依赖 `.pth` 或 `sitecustomize` 找代码的安装需要把模块放进钉定树。
+
 2026-10-09 把外部插件运行摘要绑到实际入口。`runtime_path` 必须覆盖 runner 将要执行或导入的代码：`python -m package.worker` 钉在该解释器导入路径上的包目录或包含该包的安装树；直接脚本钉在脚本文件或其所在目录。只钉解释器、wheel 或无关副本会在注册时拒绝。执行前重新计算这份代码的摘要，摘要变化或入口不再落在其中时拒绝启动。插件副本版本检查改为 PEP 440 严格高于基线，降版本和预发布不能通过。核心版本仍是 `0.1.0a17`，插件源码仍是 `1.0.2`。已经把解释器或无关路径写成 `runtime_path` 的配置无法加载，需要按实际安装树重新注册。Python 3.12.3 上 `scripts/verify-offline.sh` 的来源核验和插件版本检查通过（五个副本文件，`source_git_object_checked` 为 true，版本 `1.0.1 -> 1.0.2`）。pytest 收集 2745 项，进度标记为 2708 通过、36 跳过、1 失败。失败项仍是既有 `tests/test_read_scope.py::test_mutation_while_reading_rejected`，`read_scope.py` 与该测试未改。`python3 scripts/smoke-plugin-wheels.py` 通过：三个插件 wheel 安装后可以导入 worker，并用包目录摘要完成注册和复核。
 
 2026-10-09 收紧子进程环境、外部插件钉定和 Antigravity 来源核验。核心版本保持 `0.1.0a17`，协议、SQLite 和配置 schema 不变。Codex 与 Claude 子进程只接收白名单环境，保留 HOME、PATH、语言区域、代理和证书路径，以及 Codex 的 `CODEX_HOME`、Claude 的 `CLAUDE_CODE_OAUTH_TOKEN` 和 `CLAUDE_CONFIG_DIR`。`extra_env` 只追加变量名，不保存秘密值，并拒绝加载器变量。Claude 普通任务默认不加载用户 hooks 与 MCP；`load_user_settings: true` 只恢复普通任务，快照审查仍隔离。外部插件注册必须钉定 `runtime_path` 与 `runtime_sha256`。`allow_unpinned_runtime` 默认关闭，打开后也只能加载配置，不能执行。Antigravity 来源核验覆盖 `_vendor` 全部五个文件，失败时非零退出，来源提交改为本仓存在的 `9610e99`。插件源码为 `1.0.2`，尚未发布；a17 发行页的 wheel 仍是 `1.0.1`。

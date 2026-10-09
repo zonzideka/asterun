@@ -312,11 +312,11 @@
     },
     {
       "path": "src/asterun/plugins/registry.py",
-      "sha256": "379f9d585c9e679bb6602a3ed8b0136ad82153d4ee89b8047eb1a6fe691220f0"
+      "sha256": "2fb0e2a65c6a413bc19842c1bd111a32eb3be15bf5d56416d6ca8745ac02bd7a"
     },
     {
       "path": "src/asterun/plugins/worker.py",
-      "sha256": "c2498d1d9e4b4d01c38f2d0c8ac24b95d212bc1f4d980e0a68c31a73176c2f89"
+      "sha256": "b1c29a4fa209e3b0f068cab5c299b71d1d2956177264df0ebbf65d0b72b43a20"
     },
     {
       "path": "src/asterun/plugins/worker_backend.py",

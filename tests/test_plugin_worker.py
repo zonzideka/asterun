@@ -18,7 +18,7 @@ from asterun.ids import RunId, TaskId
 from asterun.plugins.registry import PluginRegistry, installation_digest
 from asterun.plugins.worker import WorkerFailure, WorkerHost, WorkerLimits
 from asterun.plugins.worker_backend import WorkerBackend
-from tests.plugin_support import build_external_fake, is_interpreter_path_probe
+from tests.plugin_support import build_external_fake
 
 
 STUB = '''import json, os, pathlib, sys, time
@@ -72,13 +72,14 @@ def manifest():
 
 def registration(root, *, source=STUB, enabled=True, pin=True):
     script = root / "worker.py"
-    script.write_text(source)
+    script.write_text(f"#!{sys.executable}\n{source}")
+    script.chmod(0o700)
     metadata = root / "manifest.json"
     metadata.write_text(json.dumps(manifest()))
     package = root / "reviewed-wheel.whl"
     package.write_bytes(b"offline reviewed artifact")
     registry = PluginRegistry()
-    item = registry.register_external(metadata, runner=[sys.executable, str(script)],
+    item = registry.register_external(metadata, runner=[str(script)],
         installation_path=package, installation_sha256=hashlib.sha256(package.read_bytes()).hexdigest(),
         enabled=enabled, runtime_path=script if pin else None,
         runtime_sha256=installation_digest(script) if pin else None,
@@ -147,8 +148,6 @@ def test_core_connection_verify_uses_zero_credentials_and_keeps_provider_report_
     original = subprocess.Popen
     spawned = []
     def spawn(args, **kwargs):
-        if is_interpreter_path_probe(args):
-            return original(args, **kwargs)
         spawned.append(True)
         assert "PROVIDER_API_KEY" not in kwargs["env"]
         return original(args, **kwargs)

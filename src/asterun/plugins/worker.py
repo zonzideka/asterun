@@ -14,6 +14,7 @@ from typing import Any
 from uuid import uuid4
 
 from asterun.errors import AsterunError, BACKEND_UNAVAILABLE, INVALID_CONFIG
+from asterun.plugins.registry import isolated_worker_argv
 from asterun.plugin_api.protocol import (
     WORKER_PROTOCOL_VERSION, json_copy, validate_worker_request, validate_worker_response,
 )
@@ -128,7 +129,8 @@ class WorkerHost:
                    "PYTHONUNBUFFERED": "1", **environment}
             # secrets 只用于内存匹配，既不入 argv，也不放在错误对象里。
             try:
-                return self._exchange(registration.runner, encoded, request_id, cwd, env,
+                argv = isolated_worker_argv(registration.runner, registration.runtime_path)
+                return self._exchange(argv, encoded, request_id, cwd, env,
                                       tuple(secrets), stopping, timeout_seconds)
             finally:
                 env.clear()

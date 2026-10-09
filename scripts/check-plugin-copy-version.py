@@ -75,9 +75,13 @@ def manifest_version(text: str) -> str:
 
 def strictly_newer(current: str, baseline: str) -> bool:
     try:
-        return Version(current) > Version(baseline)
+        current_version = Version(current)
+        baseline_version = Version(baseline)
     except InvalidVersion:
         return False
+    if current_version.is_prerelease:
+        return False
+    return current_version > baseline_version
 
 
 def changed_paths(repo: Path, base: str) -> list[str]:

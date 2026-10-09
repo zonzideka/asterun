@@ -7,14 +7,6 @@ import shutil
 import subprocess
 import sys
 
-from asterun.plugins.registry import INTERPRETER_SYS_PATH_CODE
-
-
-def is_interpreter_path_probe(args) -> bool:
-    command = list(args)
-    return len(command) >= 3 and command[1] == "-c" and command[2] == INTERPRETER_SYS_PATH_CODE
-
-
 def build_external_fake(root: Path, *, tools_only=False):
     source = root / "source"
     shutil.copytree(Path(__file__).parent / "fixtures/plugins/external_fake", source)

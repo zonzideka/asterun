@@ -5,7 +5,6 @@ import hashlib
 import json
 from pathlib import Path
 import stat
-import subprocess
 
 import pytest
 
@@ -19,7 +18,6 @@ from asterun.plugins.builtins import build_registry
 from asterun.plugins.management import LATCH_PREFIX, handle, plugin_enabled, registration_identity
 from asterun.plugins.registry import installation_digest
 from asterun.policy import DenyAll, Grant
-from tests.plugin_support import is_interpreter_path_probe
 
 
 @pytest.fixture
@@ -52,12 +50,7 @@ def registration_payload(app, tmp_path, external):
 
 
 def assert_no_worker(monkeypatch):
-    original = subprocess.Popen
-    def spawn(args, **kwargs):
-        if is_interpreter_path_probe(args):
-            return original(args, **kwargs)
-        pytest.fail("静态管理不得启动进程")
-    monkeypatch.setattr("subprocess.Popen", spawn)
+    monkeypatch.setattr("subprocess.Popen", lambda *args, **kwargs: pytest.fail("静态管理不得启动进程"))
     monkeypatch.setattr("asterun.plugins.registry.importlib.import_module", lambda *args, **kwargs: pytest.fail("静态管理不得加载插件factory"))
 
 

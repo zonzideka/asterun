@@ -5,11 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 import hashlib
 import importlib
-import json
 import os
 from pathlib import Path
 import re
-import subprocess
 from typing import Any, Sequence
 
 from asterun.errors import AsterunError, BACKEND_UNAVAILABLE, INVALID_CONFIG
@@ -62,10 +60,19 @@ def installation_digest(path: str | Path) -> str:
     return digest.hexdigest()
 
 
-INTERPRETER_SYS_PATH_CODE = "import json, sys; print(json.dumps(sys.path))"
 _ENTRY_MISMATCH = "运行摘要必须覆盖 runner 实际执行的插件入口"
 _MODULE_MISSING = "插件入口模块不在解释器的导入路径中"
 _ENTRY_SYMLINK = "插件入口不能是符号链接"
+_RUNNER_SHAPE = "插件 runner 只允许绝对路径脚本，或绝对路径解释器加 -m 模块"
+_MODULE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*\Z")
+# 固定启动代码只接收导入根和模块名两个参数，不把路径拼进源码。
+_MODULE_LAUNCH = (
+    "import sys, runpy\n"
+    "root, module = sys.argv[1], sys.argv[2]\n"
+    "sys.path.insert(0, root)\n"
+    "sys.argv = [module]\n"
+    "runpy.run_module(module, run_name='__main__')\n"
+)
 
 
 def _norm(path: Path) -> Path:
@@ -84,32 +91,20 @@ def _within(root: Path, child: Path) -> bool:
     return True
 
 
-def _interpreter_sys_path(executable: str) -> list[str]:
-    """读取 runner 解释器自己的导入路径，不继承宿主 PYTHONPATH，也不导入插件。"""
-    parent = str(Path(executable).parent)
-    env = {
-        "PATH": os.pathsep.join([parent, "/usr/bin", "/bin"]),
-        "LANG": "C.UTF-8",
-        "PYTHONSAFEPATH": "1",
-        "PYTHONNOUSERSITE": "1",
-        "PYTHONDONTWRITEBYTECODE": "1",
-    }
-    try:
-        completed = subprocess.run(
-            [executable, "-c", INTERPRETER_SYS_PATH_CODE],
-            capture_output=True, text=True, timeout=30, env=env, check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired, UnicodeError) as exc:
-        raise AsterunError(INVALID_CONFIG, "无法读取插件解释器的导入路径") from exc
-    if completed.returncode != 0 or not completed.stdout.strip():
-        _invalid("无法读取插件解释器的导入路径")
-    try:
-        paths = json.loads(completed.stdout.strip().splitlines()[-1])
-    except json.JSONDecodeError as exc:
-        raise AsterunError(INVALID_CONFIG, "无法读取插件解释器的导入路径") from exc
-    if not isinstance(paths, list) or any(not isinstance(item, str) for item in paths):
-        _invalid("无法读取插件解释器的导入路径")
-    return paths
+def _validate_runner_shape(runner: Sequence[str]) -> None:
+    """只接受绝对路径脚本，或绝对路径解释器加 -m 模块。不启动解释器。"""
+    executable = Path(runner[0])
+    if not executable.is_absolute():
+        _invalid("插件 runner 可执行文件必须为绝对路径")
+    if len(runner) == 1:
+        if executable.is_symlink():
+            _invalid(_ENTRY_SYMLINK)
+        if not executable.is_file():
+            _invalid(_RUNNER_SHAPE)
+        return
+    if (len(runner) != 3 or runner[1] != "-m" or _MODULE_NAME.fullmatch(runner[2]) is None
+            or not executable.is_file()):
+        _invalid(_RUNNER_SHAPE)
 
 
 def _module_file(root: Path, parts: list[str]) -> Path | None:
@@ -134,22 +129,6 @@ def _module_file(root: Path, parts: list[str]) -> Path | None:
     return None
 
 
-def _resolve_module(executable: str, module: str) -> Path:
-    parts = module.split(".")
-    if not parts or any(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", part) is None for part in parts):
-        _invalid("插件入口模块名无效")
-    for raw in _interpreter_sys_path(executable):
-        if not raw or not os.path.isabs(raw):
-            continue
-        root = Path(raw)
-        if not root.is_dir():
-            continue
-        found = _module_file(root, parts)
-        if found is not None:
-            return found
-    _invalid(_MODULE_MISSING)
-
-
 def _import_root(module: str, module_file: Path) -> Path:
     parts = module.split(".")
     try:
@@ -162,44 +141,46 @@ def _import_root(module: str, module_file: Path) -> Path:
         _invalid(_ENTRY_MISMATCH)
 
 
-def _runner_target(runner: Sequence[str]) -> tuple[Path, Path]:
-    """返回实际执行的文件，以及必须被 runtime_path 覆盖的包或文件。"""
-    if len(runner) == 1:
-        entry = Path(runner[0])
-        if entry.is_symlink():
-            _invalid(_ENTRY_SYMLINK)
-        if not entry.is_file():
-            _invalid(_ENTRY_MISMATCH)
-        return entry, entry
-    for index, arg in enumerate(runner[1:], start=1):
-        if arg == "-m":
-            if index + 1 >= len(runner):
-                _invalid(_ENTRY_MISMATCH)
-            module = runner[index + 1]
-            module_file = _resolve_module(runner[0], module)
-            return module_file, _import_root(module, module_file)
-        if arg.startswith("-"):
+def _module_in_pin(runtime_path: Path, module: str) -> tuple[Path, Path]:
+    """在钉定树内查找模块文件，返回该文件和导入根。不读取解释器的 sys.path。"""
+    parts = module.split(".")
+    runtime = _norm(runtime_path)
+    roots: list[Path] = []
+    if runtime.is_dir() and not runtime.is_symlink():
+        roots.append(runtime)
+        if runtime.name == parts[0]:
+            roots.append(_norm(runtime.parent))
+    for root in roots:
+        found = _module_file(root, parts)
+        if found is None:
             continue
-        entry = Path(arg)
-        if entry.is_symlink():
-            _invalid(_ENTRY_SYMLINK)
-        if not entry.is_file():
-            _invalid(_ENTRY_MISMATCH)
-        return entry, entry
+        found = _norm(found)
+        package = _norm(_import_root(module, found))
+        if _within(runtime, found) and _within(runtime, package):
+            return found, _norm(package.parent)
     _invalid(_ENTRY_MISMATCH)
 
 
 def _require_runtime_covers(runtime_path: Path, runner: Sequence[str]) -> None:
-    entry, root = _runner_target(runner)
+    _validate_runner_shape(runner)
     runtime = _norm(runtime_path)
-    entry = _norm(entry)
-    root = _norm(root)
-    if root.is_file():
+    if len(runner) == 1:
+        entry = _norm(Path(runner[0]))
         covered = runtime == entry or (runtime.is_dir() and not runtime.is_symlink() and _within(runtime, entry))
-    else:
-        covered = runtime.is_dir() and not runtime.is_symlink() and _within(runtime, root) and _within(runtime, entry)
-    if not covered:
-        _invalid(_ENTRY_MISMATCH)
+        if not covered:
+            _invalid(_ENTRY_MISMATCH)
+        return
+    _module_in_pin(runtime, runner[2])
+
+
+def isolated_worker_argv(runner: Sequence[str], runtime_path: Path) -> list[str]:
+    """执行参数与注册校验使用同一份绝对入口；-m 形式不加载 site。"""
+    _require_runtime_covers(runtime_path, runner)
+    if len(runner) == 1:
+        return [str(_norm(Path(runner[0])))]
+    _module_file_path, import_root = _module_in_pin(runtime_path, runner[2])
+    del _module_file_path
+    return [runner[0], "-I", "-S", "-B", "-c", _MODULE_LAUNCH, str(import_root), runner[2]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -264,8 +245,7 @@ class PluginRegistry:
             _invalid("插件 runner 必须为显式 argv 数组")
         if any(not isinstance(arg, str) or not arg or "\x00" in arg for arg in runner):
             _invalid("插件 runner argv 无效")
-        if not Path(runner[0]).is_absolute():
-            _invalid("插件 runner 可执行文件必须为绝对路径")
+        _validate_runner_shape(runner)
         runner_sha256 = _sha256(Path(runner[0]))
         if not isinstance(installation_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", installation_sha256):
             _invalid("插件 installation_sha256 必须为 SHA-256 小写十六进制")
