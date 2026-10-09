@@ -12,7 +12,7 @@ The Codex backend gains an optional `approval_policy`: `untrusted`, `on-failure`
 
 Known notes: on Linux, a `Library` directory in the profile HOME is now rejected, which is stricter than a15. Synchronous Codex `dispatch` now explicitly sends `untrusted` and `workspace-write` by default instead of inheriting `~/.codex/config.toml`. Existing tasks resumed with `thread/resume` use the approval policy in the current configuration, not the value at creation time.
 
-Assets include the core wheel, source distribution, `asterun-skill-0.1.0a16.zip`, and `SHA256SUMS`. The standard skill source is unchanged from a15, and its minimum interface remains a14. Both change PRs passed Python 3.11/3.12 CI; live Linux agy and live Codex acceptance are recorded separately after publication, see the [release page](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a16).
+Assets include the core wheel, source distribution, `asterun-skill-0.1.0a16.zip`, and `SHA256SUMS`. The standard skill's `SKILL.md`, script, and agent configuration are unchanged from a15; only the release-page link in `references/workflow.md` now points to a16, so the skill package digest differs from a15. Its minimum interface remains a14. Both change PRs passed Python 3.11/3.12 CI; live Linux agy and live Codex acceptance are recorded separately after publication, see the [release page](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a16).
 
 ## 0.1.0a15
 

@@ -12,7 +12,7 @@ Codex 后端新增可选 `approval_policy`，可取 `untrusted`、`on-failure`�
 
 已知说明：Linux 上 profile HOME 中出现 `Library` 目录现在会被拒绝，比 a15 更严格。同步 Codex `dispatch` 现在默认显式发送 `untrusted` 与 `workspace-write`，不再沿用 `~/.codex/config.toml`。已创建任务在续接 `thread/resume` 时使用当前配置中的审批模式，而不是创建时的值。
 
-本次资产为核心 wheel、源码包、`asterun-skill-0.1.0a16.zip` 和 `SHA256SUMS`。标准 skill 源码与 a15 相同，最低接口版本仍为 a14。两项改动的 PR 均通过 Python 3.11/3.12 CI；Linux 上真实 agy 与真实 Codex 的现场验收在发布后单独记录，见[发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a16)。
+本次资产为核心 wheel、源码包、`asterun-skill-0.1.0a16.zip` 和 `SHA256SUMS`。标准 skill 的 `SKILL.md`、脚本和代理配置与 a15 相同，仅 `references/workflow.md` 的发行页链接改为 a16，因此技能包摘要与 a15 不同；最低接口版本仍为 a14。两项改动的 PR 均通过 Python 3.11/3.12 CI；Linux 上真实 agy 与真实 Codex 的现场验收在发布后单独记录，见[发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a16)。
 
 ## 0.1.0a15
 
