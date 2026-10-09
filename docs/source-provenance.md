@@ -12,7 +12,7 @@ Antigravity 插件的 `_vendor` 必须与 `vendor-source.json` 一一对应。`p
 python3 packages/asterun-plugin-antigravity/scripts/verify-source.py
 ```
 
-`original_sources_unchanged` 表示当前源文件与钉定摘要一致。副本内容相对 main 发生变化时，插件 pyproject 与 manifest 的 `plugin_version` 必须彼此相同，并按 PEP 440 严格高于各自基线。当前版本只要带预发布标记（包括高于基线的 `1.0.2a1`）就不能通过，降版本同样不能通过。CI 还会构建并安装三个插件 wheel，做导入和注册冒烟。
+`original_sources_unchanged` 表示当前源文件与钉定摘要一致。副本内容相对 main 发生变化时，插件 pyproject 与 manifest 的 `plugin_version` 必须彼此相同，并按 PEP 440 严格高于各自基线。当前版本只要带预发布标记（包括高于基线的 `1.0.2a1`）就不能通过，降版本同样不能通过。CI 还会构建并安装三个插件 wheel，做导入、钉定注册，并经隔离启动调用 `plugin.describe`。
 
 默认离线入口为 `scripts/verify-offline.sh`，保留全部运行测试并执行插件来源核验。协议规范及固定 Schema 保留原始字节，当前实现范围见[协议实现表](protocol/IMPLEMENTATION.md)。
 

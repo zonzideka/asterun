@@ -12,7 +12,7 @@ Every file under the Antigravity plugin's `_vendor` directory must appear in `ve
 python3 packages/asterun-plugin-antigravity/scripts/verify-source.py
 ```
 
-`original_sources_unchanged` means the current source files match their pinned digests. If the copy changes relative to main, the plugin pyproject version and the manifest `plugin_version` must be identical and each must be strictly greater than its baseline under PEP 440. A prerelease does not pass even when it sorts above the baseline, such as `1.0.2a1` after `1.0.1`. A downgrade does not pass either. CI also builds and installs the three plugin wheels and smokes import plus registration.
+`original_sources_unchanged` means the current source files match their pinned digests. If the copy changes relative to main, the plugin pyproject version and the manifest `plugin_version` must be identical and each must be strictly greater than its baseline under PEP 440. A prerelease does not pass even when it sorts above the baseline, such as `1.0.2a1` after `1.0.1`. A downgrade does not pass either. CI also builds and installs the three plugin wheels, then imports them, registers a pin, and calls `plugin.describe` through the isolated launch.
 
 The default offline entry point is `scripts/verify-offline.sh`. It retains all runtime tests and verifies plugin provenance. Protocol specifications and fixed schemas retain their original bytes; see the [implementation map](protocol/IMPLEMENTATION.md) for current coverage.
 
