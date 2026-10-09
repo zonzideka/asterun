@@ -4,7 +4,7 @@
 
 Asterun runs Agent tasks on your computer or server. Submit work through the CLI, MCP, or another application; the core handles background execution, session links, approvals, results, and recovery. Backends use accounts already authorized on the execution host.
 
-The current version is `0.1.0a17`, licensed under [Apache-2.0](LICENSE). The first release's scope is frozen. See the [release notes](docs/en/release-v0.1.md) for supported features and validation status. See the [versioned release page](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a17) for this prerelease's core wheel, source distribution, standard skill ZIP, and `SHA256SUMS`.
+The current version is `0.1.0a18`, licensed under [Apache-2.0](LICENSE). The first release's scope is frozen. See the [release notes](docs/en/release-v0.1.md) for supported features and validation status. See the [versioned release page](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a18) for this prerelease's core wheel, source distribution, standard skill ZIP, and `SHA256SUMS`.
 
 ## Get started
 

@@ -2,7 +2,21 @@
 
 # 首版发行说明
 
-当前公开源码版本为 `0.1.0a17`，正式稳定版 `0.1.0` 尚未发布。本次预发布的安装资产和校验文件见[对应版本发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a17)。首版范围已冻结，发布准备集中在现有行为、兼容和打包修复。项目采用 [Apache-2.0](../LICENSE)。
+当前公开源码版本为 `0.1.0a18`，正式稳定版 `0.1.0` 尚未发布。本次预发布的安装资产和校验文件见[对应版本发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a18)。首版范围已冻结，发布准备集中在现有行为、兼容和打包修复。项目采用 [Apache-2.0](../LICENSE)。`v0.1.0a18` 标签尚未打出，发行页上的文件要等该标签进入 `main` 且发行工作流成功之后才会出现。
+
+## 0.1.0a18
+
+相对已发布的 a17，本版把 main 上的写盘事务、环境与插件钉定、自动发版流水线标成 `0.1.0a18`。协议、SQLite schema 6 和配置 schema v1/v2 不变。标准 skill 的 `SKILL.md`、脚本和代理配置与 a17 相同，最低接口仍为 `0.1.0a14`；仅 `references/workflow.md` 的发行页链接改为 a18，因此 `asterun-skill-0.1.0a18.zip` 的摘要与 a17 不同。
+
+结果的多步写入放在同一个事务里。失败则整次回滚，运行进入 `pending_reconcile`、操作进入 `unknown`，并释放本次并发名额。完整结果留在内存，状态库暂时写不进去时按有上限的退避重试落盘，不自动重派。并发名额收成运行记录上的 `slot_held`，调度器按 run id 幂等投影。审批结果写盘失败后，重试或重启即使只看到运行中的进度，也会写下审批结论。
+
+Codex 与 Claude 子进程只接收白名单环境：HOME、PATH、语言区域、代理和证书路径，以及 Codex 的 `CODEX_HOME`、Claude 的 `CLAUDE_CODE_OAUTH_TOKEN` 和 `CLAUDE_CONFIG_DIR`。`extra_env` 只追加变量名，不保存秘密值，并拒绝加载器变量。Claude 普通任务默认不加载用户 hooks 与 MCP；`load_user_settings: true` 只恢复普通任务，快照审查仍隔离。外部插件 runner 只允许绝对路径解释器加 `-m` 模块，或单独一个绝对路径可执行文件。`-m` 启动使用 `-I -S -B`。`runtime_path` 与 `runtime_sha256` 必须覆盖实际将要执行或导入的代码。`allow_unpinned_runtime` 默认关闭，打开后也只能加载配置，不能执行。
+
+推送 `v*` 标签后，发行工作流先在 Python 3.11 与 3.12 上跑完整离线校验，并要求标签提交已在 `main` 上。还没有可核对的已上传资产时才构建：`SOURCE_DATE_EPOCH` 取该提交时间，构建依赖钉为 setuptools 84.0.0 与 wheel 0.48.0。草稿续传不重建，缺的文件从同一次 `asterun-dist` workflow artifact 补上。内置 Antigravity 增加可选 `timeout_seconds`，范围 30 到 3600，省略时仍为 300 秒，同时用于 `--print-timeout` 和适配器等待。外部插件 `asterun-plugin-antigravity` 为 `1.0.3`：它不读取内置的 30 到 3600 秒字段，自己的 `timeout_seconds` 仍默认 20 秒、最多 20 秒，并同时写入 worker 期限和 `--print-timeout`。Cursor 与 Jules 插件仍为 `1.0.0`。原生 SUCCESS 但带工具错误、步骤错误或软拒绝时，仍记为 `ANTIGRAVITY_RUN_INCOMPLETE`。
+
+升级时，依赖未列入白名单的宿主变量要把变量名写入 `extra_env`，不要写入秘密值。macOS 服务的 SAFE_ENV 没有扩大，服务进程里本来没有的变量不会被 `extra_env` 找回。依赖用户 hooks 或项目 MCP 的 Claude 普通任务要显式打开 `load_user_settings`。已经用 `python /path/worker.py`、相对路径、`-c` 或解释器加脚本写成 runner 的外部插件无法加载，需改成 `-m` 或单个绝对路径可执行文件，并按实际安装树重新注册 `runtime_path` 与 `runtime_sha256`。换装 `1.0.3` 后安装树摘要变化，已注册连接需重新注册。已发布版本的工作流重跑依赖 90 天内的 `asterun-dist` 产物；产物过期后的恢复见下方发行流水线，已发布的发行不要删除。
+
+本次资产为核心 wheel、源码包、`asterun-skill-0.1.0a18.zip`、三个外部插件的 wheel 与源码包（Antigravity `1.0.3`，Cursor 与 Jules `1.0.0`），以及 `SHA256SUMS`。
 
 ## 0.1.0a17
 
@@ -60,7 +74,7 @@ Codex 固定读取按实际协议和生效权限检查兼容性。项目登记�
 
 资产为核心 wheel 与源码包、`packages/` 下每个外部插件的 wheel 与源码包、`asterun-skill-<核心版本>.zip`，以及 `SHA256SUMS`。文件名与 a15、a17 手工发行相同；校验文件每行是小写 SHA-256、两个空格和文件名，清单本身不计入。
 
-构建使用 [scripts/build-release-assets.py](../scripts/build-release-assets.py)。`SOURCE_DATE_EPOCH` 固定为该标签提交的 Unix 时间，构建依赖钉为 setuptools 84.0.0 与 wheel 0.48.0。脚本随后把 tar 与 zip 的时间戳、属主和权限归一，因此同一次提交上的两次构建逐字节一致。它先按 [打包检查脚本](../scripts/check-release-package.py) 核对 wheel 与源码包，再在干净虚拟环境一并安装这些 wheel 及其依赖，导入核心与各插件声明的依赖，执行 `asterun version` 和 Antigravity 的 `prepare --home`。每个插件 worker 先按实际安装树钉定 `runtime_path` 与 `runtime_sha256` 并注册，再经 `-I -S -B` 隔离启动调用 `plugin.describe`。工作流只用 `GITHUB_TOKEN` 和 GitHub OIDC：`actions/attest-build-provenance` 为上述文件写入构建来源证明。[scripts/publish-release-assets.py](../scripts/publish-release-assets.py) 在首次发布时上传这次构建，核对远端 SHA-256 后再标成预发布。同名草稿以已上传资产和它的来源证明为准，缺的文件只从该证明指向的同一次 `asterun-dist` workflow artifact 补上。这个 artifact 保留 90 天。过期后，续传无法下载它，也不会改用新构建覆盖已上传资产。若草稿里应有的文件已经齐全，并且和 SHA256SUMS 一致，把该草稿手动标成预发布即可。若仍缺文件，删除这个尚未发布的草稿，再重跑同一标签的工作流，让它重新构建。已经发布的发行不要删除。已发布且摘要一致时直接成功。摘要不同、多出文件或已发布后仍缺文件时失败，不覆盖、不删除已有资产。不需要维护者另行配置密钥，也不把包发到其他索引。已发布的 a15 与 a17 资产仍是当时的手工构建；这条流水线还没有对现有标签重跑。
+构建使用 [scripts/build-release-assets.py](../scripts/build-release-assets.py)。`SOURCE_DATE_EPOCH` 固定为该标签提交的 Unix 时间，构建依赖钉为 setuptools 84.0.0 与 wheel 0.48.0。脚本随后把 tar 与 zip 的时间戳、属主和权限归一，因此同一次提交上的两次构建逐字节一致。它先按 [打包检查脚本](../scripts/check-release-package.py) 核对 wheel 与源码包，再在干净虚拟环境一并安装这些 wheel 及其依赖，导入核心与各插件声明的依赖，执行 `asterun version` 和 Antigravity 的 `prepare --home`。每个插件 worker 先按实际安装树钉定 `runtime_path` 与 `runtime_sha256` 并注册，再经 `-I -S -B` 隔离启动调用 `plugin.describe`。工作流只用 `GITHUB_TOKEN` 和 GitHub OIDC：`actions/attest-build-provenance` 为上述文件写入构建来源证明。[scripts/publish-release-assets.py](../scripts/publish-release-assets.py) 在首次发布时上传这次构建，核对远端 SHA-256 后再标成预发布。同名草稿以已上传资产和它的来源证明为准，缺的文件只从该证明指向的同一次 `asterun-dist` workflow artifact 补上。这个 artifact 保留 90 天。过期后，续传无法下载它，也不会改用新构建覆盖已上传资产。若草稿里应有的文件已经齐全，并且和 SHA256SUMS 一致，把该草稿手动标成预发布即可。若仍缺文件，删除这个尚未发布的草稿，再重跑同一标签的工作流，让它重新构建。已经发布的发行不要删除。已发布且摘要一致时，只有同一次构建的 workflow 产物尚未过期，重跑才会直接成功。摘要不同、多出文件或已发布后仍缺文件时失败，不覆盖、不删除已有资产。不需要维护者另行配置密钥，也不把包发到其他索引。已发布的 a15 与 a17 资产仍是当时的手工构建；这条流水线还没有对现有标签重跑。
 
 ## 验证与升级
 

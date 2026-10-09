@@ -4,7 +4,7 @@
 
 Asterun runs agent tasks on a user's computer or server. It manages configuration, task state, native sessions, permissions, scheduling, and result evidence. The CLI, MCP clients, and applications such as GrokBot use the same application service. The core also works on its own.
 
-This document describes `0.1.0a17`. The first release's feature scope is frozen. See the [release notes](release-v0.1.md) for backend support and live validation, and the [protocol implementation](protocol/IMPLEMENTATION.md) and [capability profile](capability-profile.md) for interface details.
+This document describes `0.1.0a18`. The first release's feature scope is frozen. See the [release notes](release-v0.1.md) for backend support and live validation, and the [protocol implementation](protocol/IMPLEMENTATION.md) and [capability profile](capability-profile.md) for interface details.
 
 ## Responsibilities
 
