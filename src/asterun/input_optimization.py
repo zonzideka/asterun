@@ -135,6 +135,7 @@ def caller_result(app, task, run, data, *, compact):
         full = deepcopy(data)
         if isinstance(full.get('run'), dict):
             full['run'].get('native', {}).pop('payload_manifests', None)
+            full['run'].get('native', {}).pop('unapplied_result', None)
         record = {'baseline': manifest(full, 'caller_result'), 'candidate': manifest(candidate, 'caller_result'),
                   'sent': manifest(result, 'caller_result'), 'mode': mode, 'scope_note': 'controller_payload_only'}
         app.store.save_payload_manifest(run.id, 'caller_result', record)

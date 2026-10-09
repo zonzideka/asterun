@@ -2,6 +2,8 @@
 
 [中文](STATUS.md) | [English](STATUS.en.md)
 
+2026-10-09 修复核心结果落盘与重启对账。结果的多步写入放在同一个事务里；失败则整次回滚，运行进入 `pending_reconcile`、操作进入 `unknown`，释放本次并发名额，并把未写完的结果留在运行记录中，供下次轮询、显式对账或重启重放，不自动重派。工作线程因落盘失败中断后补发的通用待对账不会覆盖这份结果。重启时找不到操作记录的运行同样进入 `pending_reconcile` 并释放名额，不重复执行。已有操作且状态未知的运行仍保留预算占位。SQLite schema 仍为 6，协议状态和错误码不变，版本号未改。此项未部署，也未用真实后端验收。
+
 2026-10-09 为 Codex 后端增加可选 `approval_policy`。省略时普通任务仍发送 `approvalPolicy=untrusted` 与 `sandbox=workspace-write`，并继续覆盖 `~/.codex/config.toml`。可改为 `on-request` 或 `on-failure`，在工作区沙箱内自动执行，越界或沙箱失败时仍询问。`never`、granular 和 `danger-full-access` 在配置校验时拒绝。固定读取仍为 `never` 与 `read-only`。配置 schema 仍是 v1/v2，不改 SQLite。此项尚未用真实 Codex 验收，随 `0.1.0a16` 发布。
 
 2026-10-09 发布外部 Antigravity 插件 `1.0.1`：a16 已更新插件内 `_vendor/profile.py` 的 Linux x86_64 支持，但插件仍为 `1.0.0` 且未发新包。本次只升插件与 manifest 版本，并随 a17 发布插件 wheel 与源码包；插件代码与核心行为相对 a16 不变。

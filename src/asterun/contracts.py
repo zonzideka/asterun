@@ -59,6 +59,9 @@ TERMINAL_RUN_STATUSES = {
     RunStatus.CANCELLED,
 }
 
+# 结果事务回滚后暂存在运行记录里，对外视图会去掉；不是新的协议字段。
+UNAPPLIED_RESULT_NATIVE_KEY = "unapplied_result"
+
 
 class AcceptanceStatus(StrEnum):
     PENDING = "pending"

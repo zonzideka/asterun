@@ -6,6 +6,8 @@
 
 ## 当前维护顺序
 
+2026-10-09 修复结果落盘失败后卡在派发中并占用并发名额、多步写入不在同一事务，以及重启时缺少操作记录仍占名额。失败进入 `pending_reconcile` / `unknown` 并保留结果，不自动重派。SQLite schema 6 与对外协议不变。真实后端未验收。
+
 2026-10-09 Codex 普通任务可配置原生 `approval_policy`（`untrusted`、`on-failure`、`on-request`）。省略时仍发送 `untrusted` 与 `workspace-write`。`never`、granular 和关闭沙箱的值在校验时拒绝。固定读取不变。真实 Codex 尚未验收。
 
 2026-10-02 标准 skill 与已发布 `0.1.0a13` 不匹配：将源码标为 `0.1.0a14`，并在 `run.py` 用短超时 `asterun version` / `diagnose` 做失败即拒的最低版本门禁。GrokBot 模板锁仍指向已发布 a13；在 a14 发布并更新该锁之前，模板与标准 skill 不能一起使用。 历史主线构建仍报告 a13 时，仅在 CLI 与应答核心的能力探测全部通过后兼容，规则见[标准 skill](standard-skill.md)。

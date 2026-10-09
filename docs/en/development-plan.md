@@ -4,6 +4,8 @@
 
 The first release covers the capabilities implemented in `0.1.0a13`. The current source version is `0.1.0a17`. Current work focuses on defects, compatibility, live acceptance, and release documentation. The core and all three optional plugins use Apache-2.0. See the [release notes](release-v0.1.md) for scope and [STATUS](../../STATUS.en.md) for test and deployment results tied to specific revisions.
 
+On 2026-10-09 result persistence no longer leaves a run dispatching while it holds a concurrency slot, multi-step result writes commit in one transaction, and a restart with no operation record releases the slot. The run becomes `pending_reconcile` with operation `unknown`, keeps the result, and is not dispatched again. SQLite schema 6 and the external protocol stay unchanged. Live backends have not been verified.
+
 On 2026-10-09 ordinary Codex tasks can set a native `approval_policy` of `untrusted`, `on-failure`, or `on-request`. Omitting it still sends `untrusted` with `workspace-write`. `never`, granular policies, and values that disable the sandbox are rejected during validation. Fixed-scope reads are unchanged. Live Codex has not been verified.
 
 On 2026-10-02 the standard skill is gated to core `0.1.0a14` or later with a fail-closed probe. The GrokBot template lock still points at the published a13 wheel; until that wheel is replaced, the template and the standard skill cannot be used together. Historical source builds reporting a13 are accepted only after CLI and resident feature probes both pass; see the [standard skill](standard-skill.md).
