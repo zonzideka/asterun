@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
 from asterun.contracts import (
@@ -161,6 +162,14 @@ class SqliteStore:
 
     def close(self) -> None:
         self._conn.close()
+
+    @contextmanager
+    def transaction(self):
+        """把多步状态写入放进同一个立即事务；嵌套调用使用保存点。"""
+        from asterun.control_store import ControlStore
+
+        with ControlStore(self._conn, initialize=False).transaction():
+            yield
 
     def save_payload_manifest(self, run_id, scope, manifest):
         from asterun.control_store import ControlStore

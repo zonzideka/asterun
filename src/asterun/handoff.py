@@ -5,7 +5,13 @@ from copy import deepcopy
 from dataclasses import replace
 import json
 
-from asterun.contracts import TERMINAL_RUN_STATUSES
+from asterun.contracts import (
+    SLOT_HELD_NATIVE_KEY,
+    SLOT_RELEASED_NATIVE_KEY,
+    TERMINAL_RUN_STATUSES,
+    UNAPPLIED_APPROVAL_NATIVE_KEY,
+    UNAPPLIED_RESULT_NATIVE_KEY,
+)
 from asterun.errors import AsterunError
 from asterun.quality import digest, snapshot
 from asterun.policy import enforce
@@ -17,6 +23,10 @@ def state(store, task, run):
     data.pop('handoff_snapshot', None)
     current = deepcopy(run.to_dict())
     current['native'].pop('payload_manifests', None)
+    current['native'].pop(UNAPPLIED_RESULT_NATIVE_KEY, None)
+    current['native'].pop(UNAPPLIED_APPROVAL_NATIVE_KEY, None)
+    current['native'].pop(SLOT_RELEASED_NATIVE_KEY, None)
+    current['native'].pop(SLOT_HELD_NATIVE_KEY, None)
     approval = store.find_pending_approval(run.id)
     operation = store.find_operation_for_run(run.id)
     return {'operation': {'id': operation.id.value, 'status': operation.status.value} if operation else None,

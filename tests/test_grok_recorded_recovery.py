@@ -5,7 +5,12 @@ import pytest
 
 from asterun.application import Application
 from asterun.backends.grok_code import RECEIPT_KEY, reconcile_recorded_terminal
-from asterun.contracts import OperationStatus, RunStatus
+from asterun.contracts import (
+    SLOT_HELD_NATIVE_KEY,
+    SLOT_RELEASED_NATIVE_KEY,
+    OperationStatus,
+    RunStatus,
+)
 from asterun.ids import RunId, TaskId
 from tests.conftest import write_config
 from tests.test_grok_resume import options
@@ -70,6 +75,10 @@ def test_reconcile_after_restart_releases_only_proven_slot_and_drains_queue(isol
     task = app.store.get_task(TaskId(first.ids["task_id"]))
     session_id = run.native["session_id"]
     run.native.update(recorded(task.id.value, run.id.value), session_id=session_id)
+    # The submit already finished and released its slot. The paused row below is the
+    # legacy unknown state, which has no release mark.
+    run.native.pop(SLOT_HELD_NATIVE_KEY, None)
+    run.native.pop(SLOT_RELEASED_NATIVE_KEY, None)
     if not recoverable:
         run.native[RECEIPT_KEY]["failure_type"] = "runtime_timeout"
     original_native = deepcopy(run.native)
