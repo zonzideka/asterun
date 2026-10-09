@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -349,6 +350,111 @@ def test_publish_source_ignores_a_rebuild_when_the_release_exists(tmp_path, monk
     assert module.publish_source(state=empty, current=rebuilt, tag="v0.1.0a17", repo="zonzideka/asterun") == rebuilt
 
 
+def test_partial_upload_then_publish_failure_resumes_without_rebuilding(tmp_path, monkeypatch):
+    module = _loader_publish()
+    original = tmp_path / "original"
+    original.mkdir()
+    payload = {"a.whl": b"original-wheel", "SHA256SUMS": b"checksum\n"}
+    for name, data in payload.items():
+        (original / name).write_bytes(data)
+    rebuilt = tmp_path / "rebuilt"
+    rebuilt.mkdir()
+    (rebuilt / "a.whl").write_bytes(b"rebuilt-wheel")
+    (rebuilt / "SHA256SUMS").write_bytes(b"rebuilt-checksum\n")
+    (rebuilt / "extra.txt").write_bytes(b"do-not-upload")
+    release: dict[str, object] | None = None
+    uploads: list[list[str]] = []
+    publish_attempts = {"count": 0}
+    repo = "zonzideka/asterun"
+    attestation = json.dumps([{
+        "verificationResult": {
+            "statement": {
+                "predicate": {
+                    "runDetails": {
+                        "metadata": {
+                            "invocationId": f"https://github.com/{repo}/actions/runs/77/attempts/1",
+                        },
+                    },
+                },
+            },
+        },
+    }])
+
+    def finish(code: int = 0, stdout: str = "", stderr: str = ""):
+        return subprocess.CompletedProcess([], code, stdout, stderr)
+
+    def fake_gh(command: str, *args: str):
+        nonlocal release
+        if command == "gh release view":
+            if release is None:
+                return finish(1, stderr="release not found")
+            assets = release["assets"]
+            assert isinstance(assets, dict)
+            listed = [
+                {"name": name, "digest": "sha256:" + hashlib.sha256(data).hexdigest()}
+                for name, data in sorted(assets.items())
+            ]
+            return finish(stdout=json.dumps({"isDraft": release["draft"], "assets": listed}))
+        if command == "gh release create":
+            release = {"draft": True, "assets": {}}
+            return finish()
+        if command == "gh release upload":
+            names = [Path(arg).name for arg in args if Path(arg).is_file()]
+            uploads.append(names)
+            assert "extra.txt" not in names
+            assets = release["assets"]
+            assert isinstance(assets, dict)
+            if len(uploads) == 1:
+                first = Path(args[[Path(arg).is_file() for arg in args].index(True)])
+                assets[first.name] = first.read_bytes()
+                return finish(1, stderr="partial upload failed")
+            for arg in args:
+                path = Path(arg)
+                if path.is_file():
+                    assets[path.name] = path.read_bytes()
+            return finish()
+        if command == "gh release download":
+            pattern = args[args.index("--pattern") + 1]
+            dest = Path(args[args.index("--dir") + 1])
+            assets = release["assets"]
+            assert isinstance(assets, dict)
+            (dest / pattern).write_bytes(assets[pattern])
+            return finish()
+        if command == "gh attestation verify":
+            return finish(stdout=attestation)
+        if command == "gh run download":
+            dest = Path(args[args.index("--dir") + 1])
+            for name, data in payload.items():
+                (dest / name).write_bytes(data)
+            return finish()
+        if command == "gh release edit" and "--draft=false" in args:
+            publish_attempts["count"] += 1
+            if publish_attempts["count"] == 1:
+                return finish(1, stderr="publish failed")
+            release["draft"] = False
+            return finish()
+        if command == "gh release edit":
+            return finish()
+        raise AssertionError(command)
+
+    monkeypatch.setenv("GITHUB_REPOSITORY", repo)
+    monkeypatch.setattr(module, "_gh", fake_gh)
+    with pytest.raises(module.ReleaseRejected, match="partial upload failed"):
+        module.apply_release(original, "v0.1.0a17", ROOT)
+    assert uploads == [["SHA256SUMS", "a.whl"]]
+    assert set(release["assets"]) == {"SHA256SUMS"}
+    with pytest.raises(module.ReleaseRejected, match="publish failed"):
+        module.apply_release(rebuilt, "v0.1.0a17", ROOT)
+    assert uploads[1] == ["a.whl"]
+    assert release["assets"]["a.whl"] == payload["a.whl"]
+    assert release["draft"] is True
+    report = module.apply_release(rebuilt, "v0.1.0a17", ROOT)
+    assert report == {"ok": True, "action": "published", "upload": []}
+    assert len(uploads) == 2
+    assert release["draft"] is False
+    assert release["assets"] == payload
+
+
 def test_workflow_run_id_comes_from_the_attestation():
     module = _loader_publish()
     older = {
@@ -384,6 +490,7 @@ def test_resume_skips_rebuild_and_reuses_the_attested_artifact():
     publish = _publish_script()
     assert "needs.gate.outputs.mode == 'create'" in text
     assert "actions/upload-artifact@v4" in text
+    assert "retention-days: 90" in text
     assert "asterun-dist" in text
     assert "gh run download" in publish
     assert "attestation verify" in publish
@@ -404,6 +511,12 @@ def test_smoke_imports_dependencies_and_runs_entry_points(tmp_path):
         "prepare",
         "--home",
         "subprocess",
+        "register_external",
+        "runtime_sha256",
+        "isolated_worker_argv",
+        '"-I"',
+        '"-S"',
+        '"-B"',
     ):
         assert needle in probe
     assert "metadata.version(" not in probe

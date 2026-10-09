@@ -24,9 +24,9 @@ PLUGINS = ("antigravity", "cursor", "jules")
 SETUPTOOLS_VERSION = "84.0.0"
 WHEEL_VERSION = "0.48.0"
 SMOKE_MODULES = (
-    ("asterun-plugin-antigravity", "asterun_plugin_antigravity.worker", "asterun-antigravity-worker", "asterun-antigravity-plugin"),
-    ("asterun-plugin-cursor", "asterun_plugin_cursor.worker", "asterun-cursor-plugin", ""),
-    ("asterun-plugin-jules", "asterun_plugin_jules.worker", "asterun-jules-plugin", ""),
+    ("asterun-plugin-antigravity", "asterun_plugin_antigravity.worker", "asterun-antigravity-plugin", "google.antigravity-cli"),
+    ("asterun-plugin-cursor", "asterun_plugin_cursor.worker", "", "cursor.agent"),
+    ("asterun-plugin-jules", "asterun_plugin_jules.worker", "", "google.jules"),
 )
 _BUILD_SNIPPET = (
     "import sys, warnings\n"
@@ -237,8 +237,10 @@ def requirement_project(spec: str) -> str:
 
 def smoke_probe_source() -> str:
     return r"""
-import importlib, importlib.metadata as metadata, json, subprocess, sys, tempfile
+import hashlib, importlib, importlib.metadata as metadata, json, subprocess, sys, sysconfig, tempfile
 from pathlib import Path
+from asterun.plugins.registry import PluginRegistry, installation_digest, isolated_worker_argv
+from asterun.plugins.worker import WorkerHost
 
 def is_extra_requirement(spec):
     marker = spec.split(";", 1)[1] if ";" in spec else ""
@@ -293,29 +295,47 @@ version_payload = json.loads(run_entry("asterun", ["version"]))
 assert version_payload.get("ok") is True, version_payload
 assert version_payload.get("data", {}).get("version") == expected, version_payload
 
-describe = json.dumps({
-    "jsonrpc": "2.0",
-    "id": "smoke",
-    "method": "plugin.describe",
-    "params": {"protocol_version": "asterun-worker/v1", "input": {}, "context": {}},
-}) + "\n"
-
-for project, module, worker, profile in json.loads(sys.argv[2]):
+library = Path(sysconfig.get_path("purelib")).resolve()
+for item in json.loads(sys.argv[2]):
+    project = item["project"]
+    module_name = item["module"]
     dist = metadata.distribution(project)
     for req in dist.requires or []:
         if not is_extra_requirement(req):
             import_distribution(requirement_project(req))
-    importlib.import_module(module)
-    response = json.loads(run_entry(worker, [], describe))
-    result = response["result"]
+    module = importlib.import_module(module_name)
+    location = Path(module.__file__).resolve()
+    if library not in location.parents:
+        raise AssertionError(project)
+    runtime = location.parent
+    wheel = Path(item["wheel"])
+    registry = PluginRegistry()
+    registration = registry.register_external(
+        runtime / "manifest.json",
+        runner=[sys.executable, "-m", module_name],
+        installation_path=wheel,
+        installation_sha256=hashlib.sha256(wheel.read_bytes()).hexdigest(),
+        enabled=True,
+        runtime_path=runtime,
+        runtime_sha256=installation_digest(runtime),
+    )
+    checked = registry.verify_installation(registration.plugin_id)
+    if checked.runtime_path is None:
+        raise AssertionError(project)
+    argv = isolated_worker_argv(checked.runner, checked.runtime_path)
+    if argv[1:4] != ["-I", "-S", "-B"] or argv[-1] != module_name:
+        raise AssertionError(project)
+    reply = WorkerHost(registry, checked).call("plugin.describe", {}, {}, cwd=runtime)
+    result = reply.result
     assert result["protocol_version"] == "asterun-worker/v1", project
     manifest = result["manifest"]
     assert manifest["schema_version"] == "asterun-plugin/v1", project
     assert manifest["plugin_api_major"] == 1, project
+    assert manifest["plugin_id"] == item["plugin_id"], project
     assert isinstance(manifest["plugin_version"], str) and manifest["plugin_version"], project
-    if profile:
+    if item["profile"]:
         home = tempfile.mkdtemp(prefix="asterun-smoke-home-")
-        prepared = json.loads(run_entry(profile, ["prepare", "--home", home]))
+        prepared = json.loads(run_entry(item["profile"], ["prepare", "--home", home]))
         assert prepared.get("created") is True, prepared
 print("smoke-ok")
 """
@@ -333,8 +353,18 @@ def run_release_smoke(output: Path, core_version: str) -> None:
         pip = venv / "bin" / "pip"
         python = venv / "bin" / "python"
         subprocess.run(smoke_install_arguments(pip, [core[0], *plugins]), check=True, timeout=300)
+        specs = []
+        for project, module, profile, plugin_id in SMOKE_MODULES:
+            dist = project.replace("-", "_")
+            matches = [path for path in plugins if path.name.startswith(dist + "-")]
+            if len(matches) != 1:
+                raise RuntimeError(f"冒烟找不到唯一的 {project} wheel")
+            specs.append({
+                "project": project, "module": module, "profile": profile,
+                "plugin_id": plugin_id, "wheel": str(matches[0]),
+            })
         completed = subprocess.run(
-            [str(python), "-c", smoke_probe_source(), core_version, json.dumps(SMOKE_MODULES)],
+            [str(python), "-c", smoke_probe_source(), core_version, json.dumps(specs)],
             capture_output=True, text=True, timeout=180,
         )
         if completed.returncode != 0 or "smoke-ok" not in completed.stdout:
