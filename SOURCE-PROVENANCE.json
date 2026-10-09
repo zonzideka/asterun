@@ -36,7 +36,7 @@
     },
     {
       "path": "packages/asterun-plugin-antigravity/src/asterun_plugin_antigravity/worker.py",
-      "sha256": "a150ada6596a6115fb51b6242ed0f5b4b3972d57bbc12007efefd8030c84f8d4"
+      "sha256": "79e6a124f667f3485a3d7e2962c5528781c464c5f8f12ced50e8c9d932b6628a"
     },
     {
       "path": "packages/asterun-plugin-cursor/src/asterun_plugin_cursor/__init__.py",

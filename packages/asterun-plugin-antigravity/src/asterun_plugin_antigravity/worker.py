@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -125,6 +126,21 @@ def _version(binary, *, cwd, env):
                     pass
 
 
+def cli_timeout_seconds(timeout: object) -> int:
+    """插件期限仍是最多 20 秒。整数原样使用；小数向上取整后只传给 CLI。"""
+    if type(timeout) is int and 0 < timeout <= 20:
+        return timeout
+    if type(timeout) is float and 0 < timeout <= 20:
+        return min(20, math.ceil(timeout))
+    raise Rejected("invalid_timeout")
+
+
+def apply_plugin_print_timeout(command: list[str], timeout: object) -> list[str]:
+    updated = list(command)
+    updated[updated.index("--print-timeout") + 1] = f"{cli_timeout_seconds(timeout)}s"
+    return updated
+
+
 def _preflight(context):
     options = context.get("options")
     if not isinstance(options, dict) or set(options) - _OPTIONS:
@@ -162,7 +178,8 @@ def _preflight(context):
         env = build_environment(home_path, {key: value for key, value in os.environ.items()
                                            if key in {"PATH", "TMPDIR", "LANG", "LC_ALL"}})
         binary = _binary(options.get("bin"), options.get("binary_sha256"))
-        command = [*build_command(binary, model), "--add-dir", str(workspace)]
+        command = apply_plugin_print_timeout(
+            [*build_command(binary, model), "--add-dir", str(workspace)], timeout)
         _version(binary, cwd=workspace, env=env)
         _binary(options["bin"], options["binary_sha256"])
     except AsterunError:

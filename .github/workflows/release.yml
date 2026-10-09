@@ -6,41 +6,67 @@ on:
       - "v*"
 
 permissions:
-  contents: write
-  id-token: write
-  attestations: write
+  contents: read
 
 jobs:
-  release:
+  verify:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    env:
+      HOME: /tmp/asterun-ci-home
+      ASTERUN_HOME: /tmp/asterun-ci-home/asterun
+      ASTERUN_VERIFY_TMP: /tmp/asterun-release-verify
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: 核对标签提交在 main 上
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          python scripts/check-release-tag.py --tag "${GITHUB_REF_NAME}"
+      - name: 离线校验
+        run: |
+          mkdir -p "$HOME" "$ASTERUN_HOME"
+          chmod +x scripts/verify-offline.sh
+          scripts/verify-offline.sh
+
+  release:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: 核对标签与核心版本
-        shell: bash
+      - name: 再次核对标签提交在 main 上
         run: |
           set -euo pipefail
-          version="$(python - <<'PY'
-          import pathlib, re
-          text = pathlib.Path("pyproject.toml").read_text(encoding="utf-8")
-          match = re.search(r'(?m)^version = "([^"]+)"$', text)
-          if not match:
-              raise SystemExit("pyproject.toml 缺少 version")
-          print(match.group(1))
-          PY
-          )"
-          if [[ "${GITHUB_REF_NAME}" != "v${version}" ]]; then
-            echo "标签 ${GITHUB_REF_NAME} 与核心版本 v${version} 不一致" >&2
-            exit 1
-          fi
-          echo "CORE_VERSION=${version}" >> "$GITHUB_ENV"
+          git fetch origin main
+          python scripts/check-release-tag.py --tag "${GITHUB_REF_NAME}"
       - name: 安装构建工具
         run: python -m pip install --disable-pip-version-check 'setuptools>=69' wheel
       - name: 构建、检查并冒烟
         run: python scripts/build-release-assets.py --output "${RUNNER_TEMP}/asterun-dist"
+      - name: 判断已有发行
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/publish-release-assets.py --assets "${RUNNER_TEMP}/asterun-dist" --tag "${GITHUB_REF_NAME}" --phase gate
       - name: 构建来源证明
+        if: steps.gate.outputs.mode == 'publish'
         uses: actions/attest-build-provenance@v4
         with:
           subject-path: |
@@ -48,22 +74,8 @@ jobs:
             ${{ runner.temp }}/asterun-dist/*.tar.gz
             ${{ runner.temp }}/asterun-dist/*.zip
             ${{ runner.temp }}/asterun-dist/SHA256SUMS
-      - name: 创建预发布
+      - name: 上传草稿并发布
+        if: steps.gate.outputs.mode == 'publish'
         env:
           GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          notes="$(mktemp)"
-          commit="$(git rev-parse HEAD)"
-          cat > "$notes" <<EOF
-          本预发布由标签 ${GITHUB_REF_NAME} 的提交 ${commit} 构建。
-
-          资产为核心 wheel、源码包、标准 skill zip、各外部插件 wheel 与源码包，以及 SHA256SUMS。SHA256SUMS 每行是小写 SHA-256、两个空格和文件名，不含清单自身。来源证明由 actions/attest-build-provenance 写入本仓库，可用 gh attestation verify 核对。安装前先核对 SHA256SUMS。本工作流只创建 GitHub 预发布，不需要额外密钥。
-
-          说明：https://github.com/zonzideka/asterun/blob/${commit}/docs/release-v0.1.md
-          EOF
-          gh release create "${GITHUB_REF_NAME}" "${RUNNER_TEMP}/asterun-dist/"* \
-            --prerelease \
-            --title "Asterun ${CORE_VERSION}" \
-            --notes-file "$notes"
+        run: python scripts/publish-release-assets.py --assets "${RUNNER_TEMP}/asterun-dist" --tag "${GITHUB_REF_NAME}" --phase apply

@@ -50,7 +50,7 @@ def antigravity_installation(tmp_path_factory):
             "runtime_path": library, "python": python, "env": env}
 
 
-def setup_native(root, workspace, installation, mode="happy"):
+def setup_native(root, workspace, installation, mode="happy", timeout_seconds=2):
     root, workspace = root.resolve(), workspace.resolve()
     home = root / "native-home"
     profile = [str(installation["python"]), "-m", "asterun_plugin_antigravity._vendor.profile"]
@@ -63,12 +63,14 @@ def setup_native(root, workspace, installation, mode="happy"):
     binary = root / "native-fixture.py"
     wrapper = (REPO / "tests/fixtures/antigravity_plugin_cli.py").read_text()
     for old, new in (("__FIXTURE_PATH__", str(REPO / "tests/fixtures/antigravity_cli.py")),
-                     ("__MODE__", mode), ("__MARKER_PATH__", str(marker))):
+                     ("__MODE__", mode), ("__MARKER_PATH__", str(marker)),
+                     ("__PRINT_TIMEOUT__", f"{timeout_seconds}s")):
         wrapper = wrapper.replace(old, new)
     binary.write_text(f'#!{installation["python"]}\n' + wrapper)
     binary.chmod(0o700)
     options = {"bin": str(binary), "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
-               "home": str(home), "model": "fixture-model", "execution_enabled": True, "timeout_seconds": 2}
+               "home": str(home), "model": "fixture-model", "execution_enabled": True,
+               "timeout_seconds": timeout_seconds}
     context = {"plan_id": "plan-fixture", "binding_id": "binding-fixture", "task_id": "task-fixture",
         "run_id": "run-fixture", "capability": "agent.execute", "provider_account_ref": "provider-fixture",
         "auth_mode": "native_account", "upstream_version": "1.2.0", "options": options,
@@ -317,8 +319,7 @@ def test_worker_deadline_kills_actual_native_child_in_shared_group(antigravity_i
     from types import SimpleNamespace
     from asterun.plugins import worker
 
-    native = setup_native(isolated_env, workspace_root, antigravity_installation, "timeout")
-    native["options"]["timeout_seconds"] = 20
+    native = setup_native(isolated_env, workspace_root, antigravity_installation, "timeout", timeout_seconds=20)
     pid_path = native["marker"].with_suffix(".pid")
     started = []
     startup_deadline = time.monotonic() + 10

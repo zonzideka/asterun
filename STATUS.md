@@ -2,7 +2,7 @@
 
 [中文](STATUS.md) | [English](STATUS.en.md)
 
-2026-10-09 内置 Antigravity 后端增加可选 `timeout_seconds`，范围 30 到 3600，省略时仍为 300 秒，命令行仍是 `5m`。该值同时用于 `--print-timeout` 和适配器等待。v1 写在 `backends.<name>`，v2 写在内置连接的 `options`。配置 schema 仍是 v1/v2，不改 SQLite。外部插件源码升到 `1.0.2`，只为同步 vendored `build_command`；worker 仍调用默认 5 分钟，自身期限仍是最多 20 秒。`1.0.2` 尚未随标签发布，已发布包仍是 a17 的 `1.0.1`，换装后需重新注册。原生 SUCCESS 但带工具错误、步骤错误或软拒绝时，仍记为 `ANTIGRAVITY_RUN_INCOMPLETE`，证据留在 `native` 计数字段和正文里。`v*` 标签的发行工作流已进入仓库，只用 `GITHUB_TOKEN` 与 OIDC，尚未对现有标签运行。没有新标签，核心版本仍是 `0.1.0a17`。
+2026-10-09 内置 Antigravity 后端增加可选 `timeout_seconds`，范围 30 到 3600，省略时仍为 300 秒，命令行仍是 `5m`。该值同时用于 `--print-timeout` 和适配器等待。v1 写在 `backends.<name>`，v2 写在内置连接的 `options`。配置 schema 仍是 v1/v2，不改 SQLite。外部插件源码升到 `1.0.2`。它不读取内置后端 30 到 3600 秒的 `timeout_seconds`；插件自己的同名字段仍默认 20 秒、最多 20 秒，并同时写入 `--print-timeout` 和 worker 期限。`1.0.2` 尚未随标签发布，已发布包仍是 a17 的 `1.0.1`，换装后需重新注册。原生 SUCCESS 但带工具错误、步骤错误或软拒绝时，仍记为 `ANTIGRAVITY_RUN_INCOMPLETE`，证据留在 `native` 计数字段和正文里。`v*` 标签的发行工作流先在 Python 3.11 与 3.12 上跑完整离线校验，并要求标签提交已在 `main` 上，通过后才构建、证明和发布。发布先走草稿，不覆盖已有资产。只用 `GITHUB_TOKEN` 与 OIDC，尚未对现有标签运行。没有新标签，核心版本仍是 `0.1.0a17`。
 
 2026-10-09 把安全边界修改 rebase 到 `3ad783d8`。状态记录同时保留 #14 的 `slot_held` 与结果落盘段落。英文交接写上 runner 白名单、实际入口钉定，以及 `-m` 启动的 `-I -S -B`。插件 wheel 冒烟在钉定注册后经隔离启动调用 `plugin.describe`。核心仍是 `0.1.0a17`，插件源码仍是 `1.0.2`。Python 3.12.3 上 `scripts/verify-offline.sh` 的来源核验和插件版本检查通过（五个副本文件，`source_git_object_checked` 为 true，版本 `1.0.1 -> 1.0.2`）。pytest 收集 2761 项，2724 通过、36 跳过、1 失败。失败项仍是既有 `tests/test_read_scope.py::test_mutation_while_reading_rejected`，`read_scope.py` 与该测试未改。`python3 scripts/smoke-plugin-wheels.py` 通过：三个插件 wheel 安装后可以导入 worker，钉定注册，并用 `-I -S -B` 取得 `plugin.describe`。
 

@@ -97,30 +97,66 @@ def _check_skill(path: Path) -> list[str]:
     return []
 
 
-def _smoke(output: Path, core_version: str) -> None:
-    wheels = sorted(output.glob("*.whl"))
-    core = [path for path in wheels if path.name.startswith("asterun-")]
-    plugins = [path for path in wheels if path.name.startswith("asterun_plugin_")]
-    if len(core) != 1 or len(plugins) != len(PLUGINS):
-        raise RuntimeError("冒烟安装需要 1 个核心 wheel 和每个外部插件的 wheel")
-    with tempfile.TemporaryDirectory(prefix="asterun-release-smoke-") as raw:
-        venv = Path(raw) / "venv"
-        subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True)
-        pip = venv / "bin" / "pip"
-        python = venv / "bin" / "python"
-        subprocess.run([str(pip), "install", "--disable-pip-version-check", str(core[0])], check=True)
-        subprocess.run([str(pip), "install", "--disable-pip-version-check", "--no-deps", *map(str, plugins)], check=True)
-        probe = r"""
+def smoke_install_arguments(pip: Path, wheels: list[Path]) -> list[str]:
+    return [str(pip), "install", "--disable-pip-version-check", *[str(path) for path in wheels]]
+
+
+def is_extra_requirement(spec: str) -> bool:
+    marker = spec.split(";", 1)[1] if ";" in spec else ""
+    return re.search(r"\bextra\b", marker) is not None
+
+
+def requirement_project(spec: str) -> str:
+    body = spec.split(";", 1)[0].strip()
+    name = []
+    for char in body:
+        if char.isalnum() or char in "._-":
+            name.append(char)
+        else:
+            break
+    project = "".join(name)
+    if not project:
+        raise ValueError(f"无法解析依赖：{spec}")
+    return project
+
+
+def smoke_probe_source() -> str:
+    return r"""
 import importlib, importlib.metadata as metadata, json, sys
+
+def is_extra_requirement(spec):
+    marker = spec.split(";", 1)[1] if ";" in spec else ""
+    return " extra " in f" {marker} " or marker.strip().startswith("extra")
+
+def requirement_project(spec):
+    body = spec.split(";", 1)[0].strip()
+    name = []
+    for char in body:
+        if char.isalnum() or char in "._-":
+            name.append(char)
+        else:
+            break
+    project = "".join(name)
+    if not project:
+        raise AssertionError(spec)
+    return project
+
 expected = sys.argv[1]
 import asterun
 assert asterun.__version__ == expected, asterun.__version__
-scripts = {item.name for item in metadata.distribution("asterun").entry_points if item.group == "console_scripts"}
+core = metadata.distribution("asterun")
+scripts = {item.name for item in core.entry_points if item.group == "console_scripts"}
 assert "asterun" in scripts
+for req in core.requires or []:
+    if not is_extra_requirement(req):
+        metadata.version(requirement_project(req))
 providers = {item.name for item in metadata.entry_points(group="asterun.providers.v1")}
 assert "antigravity" in providers
 for project, module, script in json.loads(sys.argv[2]):
     dist = metadata.distribution(project)
+    for req in dist.requires or []:
+        if not is_extra_requirement(req):
+            metadata.version(requirement_project(req))
     manifests = [dist.locate_file(path) for path in dist.files if path.name == "manifest.json"]
     assert len(manifests) == 1, project
     body = json.loads(manifests[0].read_text(encoding="utf-8"))
@@ -132,8 +168,22 @@ for project, module, script in json.loads(sys.argv[2]):
     assert script in names, project
 print("smoke-ok")
 """
+
+
+def _smoke(output: Path, core_version: str) -> None:
+    wheels = sorted(output.glob("*.whl"))
+    core = [path for path in wheels if path.name.startswith("asterun-")]
+    plugins = [path for path in wheels if path.name.startswith("asterun_plugin_")]
+    if len(core) != 1 or len(plugins) != len(PLUGINS):
+        raise RuntimeError("冒烟安装需要 1 个核心 wheel 和每个外部插件的 wheel")
+    with tempfile.TemporaryDirectory(prefix="asterun-release-smoke-") as raw:
+        venv = Path(raw) / "venv"
+        subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True)
+        pip = venv / "bin" / "pip"
+        python = venv / "bin" / "python"
+        subprocess.run(smoke_install_arguments(pip, [core[0], *plugins]), check=True)
         subprocess.run(
-            [str(python), "-c", probe, core_version, json.dumps(SMOKE_MODULES)],
+            [str(python), "-c", smoke_probe_source(), core_version, json.dumps(SMOKE_MODULES)],
             check=True,
         )
         completed = subprocess.run([str(venv / "bin" / "asterun"), "version"], check=True, capture_output=True, text=True)

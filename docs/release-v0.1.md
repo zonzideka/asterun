@@ -56,9 +56,11 @@ Codex 固定读取按实际协议和生效权限检查兼容性。项目登记�
 
 ## 发行流水线
 
-推送匹配 `v*` 的标签后，[发行工作流](https://github.com/zonzideka/asterun/blob/main/.github/workflows/release.yml)从该标签提交构建资产：核心 wheel 与源码包、`packages/` 下每个外部插件的 wheel 与源码包、`asterun-skill-<核心版本>.zip`，以及 `SHA256SUMS`。文件名与 a15、a17 手工发行相同；校验文件每行是小写 SHA-256、两个空格和文件名，清单本身不计入。标签必须等于 `v` 加核心 `pyproject.toml` 的版本。
+推送匹配 `v*` 的标签后，[发行工作流](https://github.com/zonzideka/asterun/blob/main/.github/workflows/release.yml)先在该标签提交上跑完整离线校验，再构建资产。校验任务是 Python 3.11 与 3.12 的矩阵，两套都跑 `scripts/verify-offline.sh`（含 `verify-source.py` 与全量 pytest）。[scripts/check-release-tag.py](../scripts/check-release-tag.py) 同时要求标签等于 `v` 加核心 `pyproject.toml` 的版本，且该提交已经在 `main` 上。发布任务用 `needs: verify` 等待矩阵全部成功，然后才构建、做来源证明和上传。
 
-构建使用 [scripts/build-release-assets.py](../scripts/build-release-assets.py)。它先按 [打包检查脚本](../scripts/check-release-package.py) 核对 wheel 与源码包，再在干净虚拟环境安装这些 wheel，确认 `asterun version`、插件入口和 manifest 可加载。`SOURCE_DATE_EPOCH` 取自该提交的 Unix 时间。工作流只用 `GITHUB_TOKEN` 和 GitHub OIDC：`actions/attest-build-provenance` 为上述文件写入构建来源证明，然后创建预发布并上传。不需要维护者另行配置密钥，也不把包发到其他索引。已发布的 a15 与 a17 资产仍是当时的手工构建；这条流水线还没有对现有标签重跑。
+资产为核心 wheel 与源码包、`packages/` 下每个外部插件的 wheel 与源码包、`asterun-skill-<核心版本>.zip`，以及 `SHA256SUMS`。文件名与 a15、a17 手工发行相同；校验文件每行是小写 SHA-256、两个空格和文件名，清单本身不计入。
+
+构建使用 [scripts/build-release-assets.py](../scripts/build-release-assets.py)。它先按 [打包检查脚本](../scripts/check-release-package.py) 核对 wheel 与源码包，再在干净虚拟环境一并安装这些 wheel 及其依赖，确认 `asterun version`、依赖可导入、插件入口和 manifest 可加载。`SOURCE_DATE_EPOCH` 取自该提交的 Unix 时间。工作流只用 `GITHUB_TOKEN` 和 GitHub OIDC：`actions/attest-build-provenance` 为上述文件写入构建来源证明。[scripts/publish-release-assets.py](../scripts/publish-release-assets.py) 先建草稿，传完并核对远端 SHA-256 后再标成预发布。同名草稿只补缺失文件；已发布且摘要一致时直接成功。摘要不同、多出文件或已发布后仍缺文件时失败，不覆盖、不删除已有资产。不需要维护者另行配置密钥，也不把包发到其他索引。已发布的 a15 与 a17 资产仍是当时的手工构建；这条流水线还没有对现有标签重跑。
 
 ## 验证与升级
 

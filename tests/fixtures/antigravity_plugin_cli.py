@@ -18,7 +18,7 @@ if sys.argv[1:] == ["--version"]:
     raise SystemExit(0)
 
 expected = ["--input-format", "stream-json", "--output-format", "stream-json", "--model",
-            "fixture-model", "--disable-slash-commands", "--print-timeout", "5m", "--add-dir", os.getcwd()]
+            "fixture-model", "--disable-slash-commands", "--print-timeout", "__PRINT_TIMEOUT__", "--add-dir", os.getcwd()]
 assert sys.argv[1:] == expected
 assert not any(key in os.environ for key in ("GEMINI_API_KEY", "GOOGLE_API_KEY", "ANTIGRAVITY_PERM_GRANTS", "AGY_ADC_AUTH", "PYTHONPATH"))
 settings = json.loads((Path(os.environ["HOME"]) / ".gemini/antigravity-cli/settings.json").read_text())

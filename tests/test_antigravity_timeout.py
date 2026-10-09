@@ -21,6 +21,21 @@ from tests.test_config_grok_execution import configured_path
 FIXTURE = Path(__file__).parent / "fixtures" / "antigravity_cli.py"
 
 
+def test_plugin_print_timeout_follows_its_own_timeout_seconds():
+    import sys
+    source = Path(__file__).resolve().parents[1] / "packages/asterun-plugin-antigravity/src"
+    sys.path.insert(0, str(source))
+    from asterun_plugin_antigravity.worker import apply_plugin_print_timeout, cli_timeout_seconds
+
+    assert cli_timeout_seconds(20) == 20
+    assert cli_timeout_seconds(2) == 2
+    assert cli_timeout_seconds(1.2) == 2
+    command = apply_plugin_print_timeout(build_command(Path("/usr/bin/agy"), "fixture-model"), 2)
+    assert command[command.index("--print-timeout") + 1] == "2s"
+    longer = apply_plugin_print_timeout(build_command(Path("/usr/bin/agy"), "fixture-model"), 20)
+    assert longer[longer.index("--print-timeout") + 1] == "20s"
+
+
 def test_default_print_timeout_stays_five_minutes():
     command = build_command(Path("/usr/bin/agy"), "fixture-model")
     assert command[command.index("--print-timeout") + 1] == "5m"

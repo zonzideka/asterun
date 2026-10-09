@@ -6,7 +6,7 @@ This optional Apache-2.0 plugin uses a native account through Antigravity CLI 1.
 
 ## Build and configure
 
-The current source version is `1.0.2`. The published wheel remains `1.0.1` on the [a17 release page](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a17). The `1.0.0` wheel on the a13 release page still carries the old profile and rejects a Linux HOME. `1.0.2` only lets the vendored `build_command` accept an optional timeout; the worker still calls it with the default five-minute `--print-timeout`. Installing `1.0.2` changes the manifest digest, so registered connections must be registered again. You can also build it from a fixed source commit as shown below.
+The current source version is `1.0.2`. The published wheel remains `1.0.1` on the [a17 release page](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a17). The `1.0.0` wheel on the a13 release page still carries the old profile and rejects a Linux HOME. `1.0.2` lets the vendored `build_command` accept an optional timeout, and the worker applies its own `timeout_seconds` to both its deadline and `--print-timeout`. That field still defaults to 20 seconds and stays at most 20 seconds. It does not read the built-in backend's same-named field of 30 to 3600 seconds. Installing `1.0.2` changes the manifest digest, so registered connections must be registered again. You can also build it from a fixed source commit as shown below.
 
 Verify the source from a complete Git checkout, then build with a prepared build environment:
 
