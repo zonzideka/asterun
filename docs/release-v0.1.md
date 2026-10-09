@@ -2,11 +2,17 @@
 
 # 首版发行说明
 
-当前公开源码版本为 `0.1.0a15`，正式稳定版 `0.1.0` 尚未发布。本次预发布的安装资产和校验文件见[对应版本发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a15)。首版范围已冻结，发布准备集中在现有行为、兼容和打包修复。项目采用 [Apache-2.0](../LICENSE)。
+当前公开源码版本为 `0.1.0a16`，正式稳定版 `0.1.0` 尚未发布。本次预发布的安装资产和校验文件见[对应版本发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a16)。首版范围已冻结，发布准备集中在现有行为、兼容和打包修复。项目采用 [Apache-2.0](../LICENSE)。
 
-## 尚未进入已发布安装包
+## 0.1.0a16
 
-源码在 a15 之后为 Codex 后端增加可选 `approval_policy`。省略时普通任务仍发送 `untrusted` 与 `workspace-write`；`on-request` 和 `on-failure` 在工作区沙箱内自动执行，越界或沙箱失败时仍询问。`never`、granular 和 `danger-full-access` 会被拒绝。固定读取不变。用法见[安装说明](install.md#原生审批模式)。真实 Codex 尚未验收，已发布的 a15 wheel 不含这项设置。
+Linux x86_64 支持 Antigravity CLI 1.2.0 profile。`webm_encoder` 按平台核对精确大小和 SHA-256：macOS 仍只接受原有 12781442 字节构建，Linux x86_64 只接受官方 Linux 1.2.0 构建（17056035 字节，`45c1b1edd50159fbd4eac95ffd82df97a79b8c345fc43408ddae09230a304ed6`），没有通配项，Linux aarch64 的编码器仍被拒绝。Playwright 空缓存目录在 Linux 为 `~/.cache/ms-playwright-go/1.57.0`，macOS 不变。agy 1.3.2 仍不支持。
+
+Codex 后端新增可选 `approval_policy`，可取 `untrusted`、`on-failure`、`on-request`。`on-request` 在工作区沙箱内自动读写和执行命令，越界才询问；`on-failure` 仅在沙箱导致失败时询问。省略时普通任务仍发送 `untrusted` 与 `workspace-write`。`never`、granular 对象和 `danger-full-access` 在校验时拒绝，固定读取仍为 `never` 与 `read-only`。用法见[安装说明](install.md#原生审批模式)。配置 schema 仍为 v1/v2，SQLite 不变。
+
+已知说明：Linux 上 profile HOME 中出现 `Library` 目录现在会被拒绝，比 a15 更严格。同步 Codex `dispatch` 现在默认显式发送 `untrusted` 与 `workspace-write`，不再沿用 `~/.codex/config.toml`。已创建任务在续接 `thread/resume` 时使用当前配置中的审批模式，而不是创建时的值。
+
+本次资产为核心 wheel、源码包、`asterun-skill-0.1.0a16.zip` 和 `SHA256SUMS`。标准 skill 源码与 a15 相同，最低接口版本仍为 a14。两项改动的 PR 均通过 Python 3.11/3.12 CI；Linux 上真实 agy 与真实 Codex 的现场验收在发布后单独记录，见[发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a16)。
 
 ## 0.1.0a15
 
