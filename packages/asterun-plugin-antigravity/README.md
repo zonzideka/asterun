@@ -33,4 +33,4 @@ asterun-antigravity-plugin bind-workspace \
 
 当前预览包支持单次同步执行。跨 RPC 的原生续接、观察、取消、审批、对账和额度查询尚未接入。中途失联时结果可能保留 `unknown`，需人工核对原生状态并保留预算预留。余额未知时，核心按有界策略和显式 overage 配置决定是否准入。
 
-独立 wheel 和协议替身验证已完成。真实账户、订阅扣量、官方 CLI 经外部插件执行、客户端显示及 Linux 待验收。
+独立 wheel 和协议替身验证已完成。Linux x86_64 的 CLI 1.2.0 profile 检查已按固定摘要覆盖 `webm_encoder` 和空的 `~/.cache/ms-playwright-go/1.57.0`。真实账户、订阅扣量、官方 CLI 执行、客户端显示以及 Linux 现场任务仍待验收。

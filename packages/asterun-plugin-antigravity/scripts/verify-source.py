@@ -9,7 +9,7 @@ package = Path(__file__).resolve().parents[1]
 repo = Path(sys.argv[1]).resolve() if len(sys.argv) == 2 else package.parents[1]
 base = package / "src/asterun_plugin_antigravity"
 proof_bytes = (base / "vendor-source.json").read_bytes()
-assert hashlib.sha256(proof_bytes).hexdigest() == "01e258ce8451cbe78b1a1a39367f4e32a666055e9477980ce367ed71b08eae06", "来源清单摘要不匹配"
+assert hashlib.sha256(proof_bytes).hexdigest() == "ca002bbc0b4062c39341afe59a89f9f06be723ab0b962f459679ceb96ac27d7c", "来源清单摘要不匹配"
 proof = json.loads(proof_bytes)
 assert proof["source_commit"] == "f66fae9557ec7bdfe2b3e653b014a8908a0b1e26"
 for row in proof["files"]:
