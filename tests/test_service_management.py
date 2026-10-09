@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from asterun.contracts import Envelope
-from asterun.errors import AsterunError, INSTANCE_LOCKED, INVALID_REQUEST
+from asterun.errors import AsterunError, INSTANCE_LOCKED, INVALID_CONFIG, INVALID_REQUEST
 from asterun.service_management import (LaunchctlRunner, apply_service_plan,
                                         prepare_service_plan, rollback_service_plan)
 import asterun.service_management as management
@@ -158,6 +158,35 @@ def test_codex_service_plan_preserves_known_antigravity_gate_only(service_fixtur
     assert not any(value.startswith(("ASTERUN_RUN_UNREVIEWED=", "ANTIGRAVITY_BIN=")) for value in argv)
     assert apply(f, summary)["status"] == "applied"
     assert plistlib.loads(f.plist.read_bytes())["ProgramArguments"] == argv
+
+
+def test_service_plan_keeps_an_existing_codex_approval_policy(service_fixture):
+    f = service_fixture
+    config = json.loads(f.config.read_text())
+    config["backends"]["codex"] = {
+        "kind": "codex", "enabled": True, "bin": str(f.binary), "approval_policy": "on-request",
+    }
+    f.config.write_text(json.dumps(config))
+    summary = prepare(f)
+    candidate = json.loads((f.folder / "plan/config.candidate.json").read_text())
+    assert candidate["revision"] == 2
+    assert candidate["backends"]["codex"] == {
+        "kind": "codex", "enabled": True, "bin": str(f.binary), "approval_policy": "on-request",
+    }
+    assert summary["target_revision"] == 2
+
+
+def test_service_plan_rejects_an_unsafe_codex_approval_policy(service_fixture):
+    f = service_fixture
+    config = json.loads(f.config.read_text())
+    config["backends"]["codex"] = {
+        "kind": "codex", "enabled": True, "bin": str(f.binary), "approval_policy": "never",
+    }
+    f.config.write_text(json.dumps(config))
+    with pytest.raises(AsterunError) as captured:
+        prepare(f)
+    assert captured.value.code == INVALID_CONFIG
+    assert not (f.folder / "plan").exists()
 
 
 def test_apply_checks_lock_restarts_cas_and_explicit_handshake_without_prompt(service_fixture):

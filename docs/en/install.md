@@ -80,6 +80,25 @@ Persistent mode integrates native thread continuation, command/file approvals, a
 
 Set `desktop_projects: true` to enable [project registration](codex-projects.md). If presentation is incomplete, retry with CLI `task-present` or MCP `task_present`. Existing configurations leave this option disabled by default.
 
+### Native approval mode
+
+Ordinary Codex tasks send `approvalPolicy` and `sandbox` on every `thread/start` and on the `thread/resume` that continues that thread. Those per-run values override the same keys in `~/.codex/config.toml`. When `approval_policy` is omitted, Asterun still sends `untrusted` and `workspace-write`, matching existing instances. Setting `untrusted` explicitly only records that choice in the configuration digest; runtime behavior stays the same.
+
+Set the Codex backend's `approval_policy` to `on-request` to run automatically inside the workspace sandbox and ask only when escalating. `on-failure` also stays inside the sandbox and asks only when the sandbox causes a command to fail. The only accepted values are `untrusted`, `on-failure`, and `on-request`. `never`, a granular object, and `danger-full-access` — which would disable the sandbox — are rejected during validation. The sandbox mode cannot be changed.
+
+```json
+{
+  "kind": "codex",
+  "enabled": true,
+  "bin": "/absolute/path/to/codex",
+  "approval_policy": "on-request"
+}
+```
+
+In v2, put the field in the connection's `options`, not on the backend entry that only contains `connection_ref`. Fixed-scope reads ignore this setting and still start with `never` and `read-only`. Instance [approval rules](approval-policy.md) match a complete command and do not replace this native mode.
+
+After changing it, increment `revision` and apply it through the [configuration revision](#session-bindings-and-configuration-revisions) flow. Tasks already created keep their original binding; later ordinary Codex dispatches use the newly loaded value. Removing the field restores `untrusted` without a state-database migration. An older core does not recognize the field and rejects the configuration, so upgrade the core before writing it. `service-plan` keeps an existing `approval_policy` when it rewrites the backend named `codex`. The installed Codex must accept the selected mode; this setting has not been verified against a live Codex.
+
 ## macOS service configuration
 
 `service-plan` prepares a plan to enable Codex in an existing clean-env LaunchAgent installation. It can register a workspace at the same time. Configuration, state directory, launch file, and runtime program must belong to the current user and pass private-permission checks. Create the plan's parent directory first; the plan directory itself must not exist yet. The revision on disk must match the applied revision.

@@ -4,6 +4,10 @@
 
 The current public source version is `0.1.0a15`. The stable `0.1.0` release has not yet been published. See the [versioned release page](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a15) for this prerelease's installation assets and checksums. The first release's scope is frozen; preparation focuses on fixes to existing behavior, compatibility, and packaging. Asterun is licensed under [Apache-2.0](../../LICENSE).
 
+## Not in the published packages
+
+Source after a15 adds an optional Codex `approval_policy`. Omitting it still sends `untrusted` and `workspace-write`. `on-request` and `on-failure` run automatically inside the workspace sandbox and still ask on escalation or sandbox failure. `never`, granular policies, and `danger-full-access` are rejected. Fixed-scope reads are unchanged. See the [installation guide](install.md#native-approval-mode). Live Codex has not been verified, and the published a15 wheels do not include this setting.
+
 ## 0.1.0a15
 
 Fixes Grok coding runs incorrectly retaining an unknown state when a session-bound incomplete/cancelled end is followed by exit code 1. Only matching explicit termination evidence confirms a terminal outcome. Nonzero exits accompanying success, timeouts, mismatched sessions and malformed protocols remain unresolved. Existing misclassified runs can reconcile their persisted receipts through the original task without replacement runs or changed acceptance conclusions.

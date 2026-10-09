@@ -207,6 +207,10 @@ def _candidate_config(raw: dict, request: dict, config_path: Path) -> dict:
     if current and current.get("kind") != "codex":
         _fail("名为 codex 的后端已绑定其它 kind；拒绝覆盖", INVALID_CONFIG)
     result["backends"]["codex"] = {"kind": "codex", "enabled": True, "bin": request["codex_bin"]}
+    if isinstance(current, dict) and "approval_policy" in current:
+        from asterun.backends.codex_policy import validate_codex_approval_policy
+        result["backends"]["codex"]["approval_policy"] = validate_codex_approval_policy(
+            current["approval_policy"], "backends.codex")
     alias = request.get("workspace_alias")
     root = request.get("workspace_root")
     if bool(alias) != bool(root):

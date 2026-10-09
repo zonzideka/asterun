@@ -9,7 +9,7 @@ from asterun.plugins.registry import PluginRegistry
 
 BUILTINS = {
     "fake": {"plugin_id": "asterun.fake", "factory": "asterun.backends.fake:FakeBackend", "options": {"bin"}},
-    "codex": {"plugin_id": "openai.codex", "factory": "asterun.backends.codex:CodexBackend", "options": {"bin", "desktop_projects"}},
+    "codex": {"plugin_id": "openai.codex", "factory": "asterun.backends.codex:CodexBackend", "options": {"bin", "desktop_projects", "approval_policy"}},
     "grok": {"plugin_id": "xai.grok", "factory": "asterun.backends.grok:GrokBackend", "options": {"bin", "home", "model", "execution_profile", "max_turns", "timeout_seconds", "session_sync_home", "session_policy", "quota_epoch"}},
     "claude": {"plugin_id": "anthropic.claude", "factory": "asterun.backends.claude:ClaudeBackend", "options": {"bin"}},
     "antigravity": {"plugin_id": "google.antigravity-cli", "factory": "asterun.backends.antigravity:AntigravityBackend", "options": {"bin", "home", "model"}},

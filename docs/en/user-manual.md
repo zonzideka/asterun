@@ -41,6 +41,8 @@ After a timeout, disconnection, or unknown result, read the task and events firs
 
 Enable [project registration](codex-projects.md) to associate the same native Codex thread with its real project directory. If presentation is incomplete, retry that step with `task-present TASK_ID`.
 
+Ordinary Codex tasks still run with `untrusted` and `workspace-write` by default. To run automatically inside the workspace sandbox and ask only when escalating, set that backend's `approval_policy` to `on-request` as described in the [installation guide](install.md#native-approval-mode). This is separate from the instance approval rules.
+
 ## Configure the rest of the workflow
 
 The [installation guide](install.md) covers configuration revisions, session bindings, workflows, backups, and recovery. The [PR review guide](pr-review.md) covers snapshots, follow-up reviews, and publication. See [result delivery](review-consumer.md) for host notifications and [plugins](plugins.md) for separate plugin configuration and credential references.

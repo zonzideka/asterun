@@ -4,6 +4,10 @@
 
 当前公开源码版本为 `0.1.0a15`，正式稳定版 `0.1.0` 尚未发布。本次预发布的安装资产和校验文件见[对应版本发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a15)。首版范围已冻结，发布准备集中在现有行为、兼容和打包修复。项目采用 [Apache-2.0](../LICENSE)。
 
+## 尚未进入已发布安装包
+
+源码在 a15 之后为 Codex 后端增加可选 `approval_policy`。省略时普通任务仍发送 `untrusted` 与 `workspace-write`；`on-request` 和 `on-failure` 在工作区沙箱内自动执行，越界或沙箱失败时仍询问。`never`、granular 和 `danger-full-access` 会被拒绝。固定读取不变。用法见[安装说明](install.md#原生审批模式)。真实 Codex 尚未验收，已发布的 a15 wheel 不含这项设置。
+
 ## 0.1.0a15
 
 修复 Grok 编码运行返回已绑定会话的明确未完成/取消结束事件、同时以退出码 1 结束时被误判为未知的问题。只有匹配的明确结束证据可以确认终态；成功事件配合非零退出、超时、错会话和损坏协议仍保持未决。旧误判可通过原任务的 `task-reconcile` 显式核对持久化回执，不创建替代运行，不更改验收结论。

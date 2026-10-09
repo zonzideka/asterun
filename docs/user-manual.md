@@ -41,6 +41,8 @@ Codex 在绑定校验通过后，可通过 `task-submit --conversation-id ID` �
 
 若需在 Codex 中查看项目会话，开启[项目登记](codex-projects.md)，将同一原生线程关联到真实项目目录。展示未完成时，使用 `task-present TASK_ID` 重试展示步骤。
 
+普通 Codex 任务默认仍以 `untrusted` 和 `workspace-write` 运行。需要在工作区沙箱内自动执行、只在越界时询问时，按[安装说明](install.md#原生审批模式)把该后端的 `approval_policy` 设为 `on-request`。这与实例级审批规则是两项配置。
+
 ## 后续配置
 
 [安装说明](install.md)包含配置修订、会话绑定、工作流、备份和恢复。[PR 审查](pr-review.md)说明快照、复审与发布；[结果交付](review-consumer.md)说明宿主通知接入；[插件说明](plugins.md)说明独立插件的配置与凭据引用。

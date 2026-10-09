@@ -32,7 +32,7 @@ Installation, sign-in, authorization, actual invocation, native resume, and clie
 
 The entry point establishes the caller's identity. Before execution, the core checks the workspace, action, authorization expiry, configuration revision, and backend capability. Role policy defines the allowed scope; native permission modes control backend execution; operating-system isolation is configured separately. Tests, builds, and dependency installation count as code execution. Valid authorization can be reused within its scope.
 
-Codex retains native App Server threads and supports fixed-snapshot reads and optional desktop project registration. Grok's autonomous coding mode operates within configured workspace and command scopes. See the [user manual](user-manual.md) and backend guides for resume, approval, and cancellation conditions.
+Codex retains native App Server threads and supports fixed-snapshot reads and optional desktop project registration. Ordinary tasks can select the native approval mode `untrusted`, `on-failure`, or `on-request`; omitting it still sends `untrusted`, and the sandbox stays `workspace-write`. Fixed-scope reads remain read-only. Grok's autonomous coding mode operates within configured workspace and command scopes. See the [user manual](user-manual.md) and backend guides for resume, approval, and cancellation conditions.
 
 ## State, idempotency, and recovery
 
