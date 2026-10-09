@@ -2,7 +2,7 @@
 
 # Use the Antigravity CLI
 
-Asterun calls the official `agy` CLI through `stream-json`, using the user's native account. The current adapter targets CLI 1.2.0. Its `workspace-read-v1` profile supports text tasks and reads within a specified workspace; each Run starts a new process and native session. Text execution, file reads, and permission denials have been verified on macOS. Other platforms await validation.
+Asterun calls the official `agy` CLI through `stream-json`, using the user's native account. The current adapter targets CLI 1.2.0. Its `workspace-read-v1` profile supports text tasks and reads within a specified workspace; each Run starts a new process and native session. Text execution, file reads, and permission denials have been verified on macOS. On Linux x86_64, the official CLI 1.2.0 `webm_encoder` and `~/.cache/ms-playwright-go` are now part of the platform-pinned profile check. Live text execution, file reads, and permission denials on that platform still await acceptance. Other operating systems and other CLI versions need their own review before they can be added to the inventory.
 
 ## Prepare a native HOME
 
@@ -90,7 +90,7 @@ asterun --state-dir /private/tmp/asterun-agy-demo/state --connect \
 
 The profile uses `request-review` and grants file reads for the exact workspace. It denies file writes, commands, web reads and execution, unsandboxed operations, and MCP tools. The native CLI still writes its own logs, sessions, and cache. Native policy enforces these permissions; OS-level isolation awaits validation.
 
-The adapter uses a dedicated HOME, removes inherited authentication and configuration overrides, and validates known state structures. A fixed inventory checks the files shipped with CLI 1.2.0. When an upgrade introduces unknown files or configuration, review the differences before updating the adapter. Authentication stays with the native account, and `useG1Credits=false`.
+The adapter uses a dedicated HOME, removes inherited authentication and configuration overrides, and validates known state structures. Built-in skill files from the verified macOS and Linux x86_64 CLI 1.2.0 builds share one fixed inventory. `webm_encoder` is pinned per platform by exact size and SHA-256, and an unlisted digest is rejected. macOS keeps the previously verified 12,781,442-byte payload `9cf13e875e7ffb9ef3fe1fc1a177c744bd8ee5a6651a2ec47cda307a009e8d11`. Linux x86_64 uses the official 1.2.0 build, 17,056,035 bytes, `45c1b1edd50159fbd4eac95ffd82df97a79b8c345fc43408ddae09230a304ed6`. The Playwright cache must be an empty directory for the current platform: `Library/Caches/ms-playwright-go/1.57.0` on macOS, and `.cache/ms-playwright-go/1.57.0` on Linux. Supporting a newer CLI version means registering that version's built-in files, per-platform encoder digests, cache shape, and the plugin `upstream_version` gate. The existing 1.2.0 inventory stays exact. Authentication stays with the native account, and `useG1Credits=false`.
 
 Public results include `agent_response`, the workspace, model, permissions, and selected statistics. Success requires valid initialization, complete steps, a matching native terminal state, and a clean process exit. Tool errors and soft denials count as failures. The native conversation ID is stored in `native.backend_session_id`; `native.usage_scope=session` denotes cumulative session usage.
 
