@@ -80,3 +80,28 @@ def test_matching_version_bump_passes(tmp_path):
     write_plugin(repo, "1.0.2", "changed\n")
     result = check(repo)
     assert result.returncode == 0, result.stderr
+
+
+def test_version_downgrade_fails(tmp_path):
+    repo = baseline(tmp_path)
+    write_plugin(repo, "1.0.2", "original\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "bump")
+    write_plugin(repo, "1.0.1", "changed\n")
+    result = check(repo)
+    assert result.returncode != 0
+    assert "插件副本内容已变化，但插件版本未升高" in result.stderr
+
+
+def test_prerelease_is_not_newer_and_numeric_segments_compare(tmp_path):
+    repo = baseline(tmp_path)
+    write_plugin(repo, "1.0.1a2", "changed\n")
+    prerelease = check(repo)
+    assert prerelease.returncode != 0
+    assert "插件副本内容已变化，但插件版本未升高" in prerelease.stderr
+    numeric_root = tmp_path / "numeric"
+    numeric_root.mkdir()
+    released = baseline(numeric_root)
+    write_plugin(released, "1.0.10", "changed\n")
+    numeric = check(released)
+    assert numeric.returncode == 0, numeric.stderr

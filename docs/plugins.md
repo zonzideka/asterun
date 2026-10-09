@@ -28,7 +28,7 @@ asterun --config old.json config-migrate \
 
 ## 安装与注册
 
-外部插件条目指定 `manifest_path`、`runner` argv、`installation_path` 及 SHA-256。注册时必须同时给出 `runtime_path` 和 `runtime_sha256`，钉定已安装的代码树；未钉定默认拒绝。`allow_unpinned_runtime: true` 是显式开发开关，默认关闭，只放行配置加载，执行前仍会拒绝没有运行摘要的插件。采用独立 venv 或明确的非 Python runner，安装版本改变后重新注册并准备计划。插件运行在当前 OS 用户权限下，应使用受信任代码。
+外部插件条目指定 `manifest_path`、`runner` argv、`installation_path` 及 SHA-256。注册时必须同时给出 `runtime_path` 和 `runtime_sha256`，而且钉定的必须是 runner 将要执行或导入的那一份代码。`python -m package.worker` 要钉住该解释器导入路径上的包目录或包含该包的安装树；直接执行脚本时，可以钉住脚本文件或其父目录。只钉解释器、wheel 文件，或另一份不会被这次运行导入的副本，注册会被拒绝。未钉定默认拒绝。`allow_unpinned_runtime: true` 是显式开发开关，默认关闭，只放行配置加载，执行前仍会拒绝没有运行摘要的插件。调用前重新计算这份代码的摘要，并确认入口仍落在其中。wheel 的 `installation_sha256` 只钉发行文件，不能代替运行代码。采用独立 venv 或明确的非 Python runner，安装版本改变后重新注册并准备计划。插件运行在当前 OS 用户权限下，应使用受信任代码。
 
 `plugin-register --request registration.json` 接受 `plugin_id`、完整 `registration`、`output`、`backup` 和 `expected_source_sha256`。该命令备份原配置并生成候选。审阅后重启核心加载候选，再按[配置修订流程](install.md)应用。
 
@@ -58,7 +58,7 @@ CLI 与 MCP 共用请求定义，MCP 工具名使用下划线。`usage-inspect` 
 
 配置中使用凭据引用：`env:NAME`、`file:/absolute/path`、`native-home:/absolute/path` 或 `credential-ref:REFERENCE`。env/file 凭据须符合 manifest 认证声明；凭据文件为当前用户所有的私有单行普通文件，路径各级须可核验。原生账户使用明确的私有 HOME，不透明引用由部署方提供解析器。
 
-worker 启动环境包含固定 PATH、临时 HOME/TMPDIR 及授权连接注入的凭据。调用前重新核对 runner、manifest、wheel 和安装树；协议帧、输出和运行时间均有上限。秘密仅在启动时进入内存环境，原生 HOME 内容单独管理与备份。
+worker 启动环境包含固定 PATH、临时 HOME/TMPDIR 及授权连接注入的凭据。调用前重新核对 runner、manifest、wheel，以及将要执行的那份运行代码；协议帧、输出和运行时间均有上限。秘密仅在启动时进入内存环境，原生 HOME 内容单独管理与备份。
 
 执行请求发出后，若发生断流、超时或格式异常，保留 `pending_reconcile` 和 uncertain 预算预留。继续按原任务对账，取消结果以远端终态为准。插件事件按供应商观察记录，用量报告保留 `provider_observed` 来源。
 

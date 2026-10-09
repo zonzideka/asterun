@@ -312,7 +312,7 @@
     },
     {
       "path": "src/asterun/plugins/registry.py",
-      "sha256": "90c5a58250e593463eea61542dc6ec8b6365aa23042598d1e43fdeaa8891ca8e"
+      "sha256": "379f9d585c9e679bb6602a3ed8b0136ad82153d4ee89b8047eb1a6fe691220f0"
     },
     {
       "path": "src/asterun/plugins/worker.py",

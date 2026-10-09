@@ -5,9 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 import hashlib
 import importlib
+import json
 import os
 from pathlib import Path
 import re
+import subprocess
 from typing import Any, Sequence
 
 from asterun.errors import AsterunError, BACKEND_UNAVAILABLE, INVALID_CONFIG
@@ -58,6 +60,146 @@ def installation_digest(path: str | Path) -> str:
     except OSError as exc:
         raise AsterunError(INVALID_CONFIG, "无法遍历插件安装内容树") from exc
     return digest.hexdigest()
+
+
+INTERPRETER_SYS_PATH_CODE = "import json, sys; print(json.dumps(sys.path))"
+_ENTRY_MISMATCH = "运行摘要必须覆盖 runner 实际执行的插件入口"
+_MODULE_MISSING = "插件入口模块不在解释器的导入路径中"
+_ENTRY_SYMLINK = "插件入口不能是符号链接"
+
+
+def _norm(path: Path) -> Path:
+    return Path(os.path.normpath(os.path.abspath(path)))
+
+
+def _within(root: Path, child: Path) -> bool:
+    root = _norm(root)
+    child = _norm(child)
+    if child == root:
+        return True
+    try:
+        child.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _interpreter_sys_path(executable: str) -> list[str]:
+    """读取 runner 解释器自己的导入路径，不继承宿主 PYTHONPATH，也不导入插件。"""
+    parent = str(Path(executable).parent)
+    env = {
+        "PATH": os.pathsep.join([parent, "/usr/bin", "/bin"]),
+        "LANG": "C.UTF-8",
+        "PYTHONSAFEPATH": "1",
+        "PYTHONNOUSERSITE": "1",
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+    try:
+        completed = subprocess.run(
+            [executable, "-c", INTERPRETER_SYS_PATH_CODE],
+            capture_output=True, text=True, timeout=30, env=env, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired, UnicodeError) as exc:
+        raise AsterunError(INVALID_CONFIG, "无法读取插件解释器的导入路径") from exc
+    if completed.returncode != 0 or not completed.stdout.strip():
+        _invalid("无法读取插件解释器的导入路径")
+    try:
+        paths = json.loads(completed.stdout.strip().splitlines()[-1])
+    except json.JSONDecodeError as exc:
+        raise AsterunError(INVALID_CONFIG, "无法读取插件解释器的导入路径") from exc
+    if not isinstance(paths, list) or any(not isinstance(item, str) for item in paths):
+        _invalid("无法读取插件解释器的导入路径")
+    return paths
+
+
+def _module_file(root: Path, parts: list[str]) -> Path | None:
+    current = root
+    for index, part in enumerate(parts):
+        package = current / part
+        module_py = current / f"{part}.py"
+        init_py = package / "__init__.py"
+        if package.is_symlink() or module_py.is_symlink() or init_py.is_symlink():
+            _invalid(_ENTRY_SYMLINK)
+        last = index == len(parts) - 1
+        if last:
+            if init_py.is_file():
+                return init_py
+            if module_py.is_file():
+                return module_py
+            return None
+        if package.is_dir() and init_py.is_file():
+            current = package
+            continue
+        return None
+    return None
+
+
+def _resolve_module(executable: str, module: str) -> Path:
+    parts = module.split(".")
+    if not parts or any(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", part) is None for part in parts):
+        _invalid("插件入口模块名无效")
+    for raw in _interpreter_sys_path(executable):
+        if not raw or not os.path.isabs(raw):
+            continue
+        root = Path(raw)
+        if not root.is_dir():
+            continue
+        found = _module_file(root, parts)
+        if found is not None:
+            return found
+    _invalid(_MODULE_MISSING)
+
+
+def _import_root(module: str, module_file: Path) -> Path:
+    parts = module.split(".")
+    try:
+        if module_file.name == "__init__.py":
+            return module_file.parents[len(parts) - 1]
+        if len(parts) == 1:
+            return module_file
+        return module_file.parents[len(parts) - 2]
+    except IndexError:
+        _invalid(_ENTRY_MISMATCH)
+
+
+def _runner_target(runner: Sequence[str]) -> tuple[Path, Path]:
+    """返回实际执行的文件，以及必须被 runtime_path 覆盖的包或文件。"""
+    if len(runner) == 1:
+        entry = Path(runner[0])
+        if entry.is_symlink():
+            _invalid(_ENTRY_SYMLINK)
+        if not entry.is_file():
+            _invalid(_ENTRY_MISMATCH)
+        return entry, entry
+    for index, arg in enumerate(runner[1:], start=1):
+        if arg == "-m":
+            if index + 1 >= len(runner):
+                _invalid(_ENTRY_MISMATCH)
+            module = runner[index + 1]
+            module_file = _resolve_module(runner[0], module)
+            return module_file, _import_root(module, module_file)
+        if arg.startswith("-"):
+            continue
+        entry = Path(arg)
+        if entry.is_symlink():
+            _invalid(_ENTRY_SYMLINK)
+        if not entry.is_file():
+            _invalid(_ENTRY_MISMATCH)
+        return entry, entry
+    _invalid(_ENTRY_MISMATCH)
+
+
+def _require_runtime_covers(runtime_path: Path, runner: Sequence[str]) -> None:
+    entry, root = _runner_target(runner)
+    runtime = _norm(runtime_path)
+    entry = _norm(entry)
+    root = _norm(root)
+    if root.is_file():
+        covered = runtime == entry or (runtime.is_dir() and not runtime.is_symlink() and _within(runtime, entry))
+    else:
+        covered = runtime.is_dir() and not runtime.is_symlink() and _within(runtime, root) and _within(runtime, entry)
+    if not covered:
+        _invalid(_ENTRY_MISMATCH)
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,6 +292,7 @@ class PluginRegistry:
             runtime_path = Path(runtime_path).absolute()
             if installation_digest(runtime_path) != runtime_sha256:
                 _invalid("插件运行内容摘要不匹配")
+            _require_runtime_covers(runtime_path, runner)
         return self._add(PluginRegistration(
             manifest=manifest, enabled=enabled, source="external", runner=tuple(runner),
             installation_path=installation_path, installation_sha256=installation_sha256,
@@ -200,6 +343,8 @@ class PluginRegistry:
                     _invalid("外部插件未钉定运行代码，拒绝继续")
             elif installation_digest(registration.runtime_path) != registration.runtime_sha256:
                 _invalid("插件运行内容已改变；需要重新审阅并注册")
+            else:
+                _require_runtime_covers(registration.runtime_path, registration.runner)
         return registration
 
     def load_factory(self, plugin_id: str):

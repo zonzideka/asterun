@@ -180,10 +180,14 @@ def test_installation_pins_detect_modified_files(registration_files, field):
 def test_runtime_tree_pin_detects_installed_code_change(registration_files, tmp_path):
     runtime = tmp_path / "site-packages"
     runtime.mkdir()
+    runner = runtime / "runner"
+    runner.write_text(Path(registration_files["runner"][0]).read_text())
+    runner.chmod(0o700)
     (runtime / "worker.py").write_text("VERSION = 1\n")
     registry = PluginRegistry()
     registration = registry.register_external(
-        **registration_files, runtime_path=runtime, runtime_sha256=installation_digest(runtime),
+        **(registration_files | {"runner": [str(runner)]}),
+        runtime_path=runtime, runtime_sha256=installation_digest(runtime),
     )
     assert registry.describe(registration.plugin_id)["runtime_integrity_pinned"]
     registry.verify_installation(registration.plugin_id)

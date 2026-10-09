@@ -4,6 +4,8 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -44,13 +46,93 @@ def test_dev_mode_allows_registration_but_runtime_still_refuses_execution(tmp_pa
         WorkerHost(registry, registration).call("plugin.describe", {}, {}, cwd=tmp_path)
 
 
+def test_runtime_pin_rejects_interpreter_and_unrelated_tree(tmp_path):
+    script = tmp_path / "worker.py"
+    script.write_text("print('real worker')\n")
+    files = _files(tmp_path)
+    files["runner"] = [__import__("sys").executable, str(script)]
+    interpreter = Path(files["runner"][0])
+    with pytest.raises(AsterunError, match="入口"):
+        PluginRegistry().register_external(
+            **files, runtime_path=interpreter, runtime_sha256=installation_digest(interpreter),
+        )
+    decoy = tmp_path / "decoy"
+    decoy.mkdir()
+    (decoy / "worker.py").write_text("print('other copy')\n")
+    with pytest.raises(AsterunError, match="入口"):
+        PluginRegistry().register_external(
+            **files, runtime_path=decoy, runtime_sha256=installation_digest(decoy),
+        )
+
+
+def test_module_entry_pin_rejects_unrelated_file_and_changed_package(tmp_path, monkeypatch):
+    venv = tmp_path / "venv"
+    subprocess.check_call([sys.executable, "-m", "venv", "--without-pip", str(venv)], timeout=60)
+    python = venv / "bin" / "python"
+    purelib = Path(subprocess.check_output(
+        [str(python), "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
+        text=True, timeout=30,
+    ).strip())
+    package = purelib / "sample_plugin"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    worker = package / "worker.py"
+    worker.write_text("print('worker')\n")
+    files = _files(tmp_path)
+    files["runner"] = [str(python), "-m", "sample_plugin.worker"]
+    with pytest.raises(AsterunError, match="入口"):
+        PluginRegistry().register_external(
+            **files, runtime_path=python, runtime_sha256=installation_digest(python),
+        )
+    with pytest.raises(AsterunError, match="入口"):
+        PluginRegistry().register_external(
+            **files, runtime_path=worker, runtime_sha256=installation_digest(worker),
+        )
+    registry = PluginRegistry()
+    registration = registry.register_external(
+        **files, runtime_path=package, runtime_sha256=installation_digest(package), enabled=True,
+    )
+    worker.write_text("print('changed worker')\n")
+    monkeypatch.setattr(
+        "asterun.plugins.worker.subprocess.Popen",
+        lambda *args, **kwargs: pytest.fail("改动后的插件包不应被启动"),
+    )
+    with pytest.raises(AsterunError, match="运行内容已改变"):
+        WorkerHost(registry, registration).call("plugin.describe", {}, {}, cwd=tmp_path)
+
+
+def test_execution_rejects_changed_worker_before_spawn(tmp_path, monkeypatch):
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    script = runtime / "worker.py"
+    script.write_text("print('real worker')\n")
+    files = _files(tmp_path)
+    files["runner"] = [__import__("sys").executable, str(script)]
+    registry = PluginRegistry()
+    registration = registry.register_external(
+        **files, runtime_path=runtime, runtime_sha256=installation_digest(runtime), enabled=True,
+    )
+    script.write_text("print('changed worker')\n")
+    monkeypatch.setattr(
+        "asterun.plugins.worker.subprocess.Popen",
+        lambda *args, **kwargs: pytest.fail("改动后的 worker 不应被启动"),
+    )
+    with pytest.raises(AsterunError, match="运行内容已改变"):
+        WorkerHost(registry, registration).call("plugin.describe", {}, {}, cwd=tmp_path)
+
+
 def test_pinned_runtime_is_rechecked_before_use(tmp_path):
     runtime = tmp_path / "runtime"
     runtime.mkdir()
+    runner = runtime / "runner"
+    runner.write_text("#!/bin/sh\nexit 97\n")
+    runner.chmod(0o700)
     (runtime / "worker.py").write_text("print('ok')\n")
+    files = _files(tmp_path)
+    files["runner"] = [str(runner)]
     registry = PluginRegistry()
     registration = registry.register_external(
-        **_files(tmp_path), runtime_path=runtime, runtime_sha256=installation_digest(runtime), enabled=True,
+        **files, runtime_path=runtime, runtime_sha256=installation_digest(runtime), enabled=True,
     )
     assert registry.describe(registration.plugin_id)["runtime_integrity_pinned"] is True
     registry.verify_installation(registration.plugin_id)

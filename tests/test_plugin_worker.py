@@ -18,7 +18,7 @@ from asterun.ids import RunId, TaskId
 from asterun.plugins.registry import PluginRegistry, installation_digest
 from asterun.plugins.worker import WorkerFailure, WorkerHost, WorkerLimits
 from asterun.plugins.worker_backend import WorkerBackend
-from tests.plugin_support import build_external_fake
+from tests.plugin_support import build_external_fake, is_interpreter_path_probe
 
 
 STUB = '''import json, os, pathlib, sys, time
@@ -147,6 +147,8 @@ def test_core_connection_verify_uses_zero_credentials_and_keeps_provider_report_
     original = subprocess.Popen
     spawned = []
     def spawn(args, **kwargs):
+        if is_interpreter_path_probe(args):
+            return original(args, **kwargs)
         spawned.append(True)
         assert "PROVIDER_API_KEY" not in kwargs["env"]
         return original(args, **kwargs)

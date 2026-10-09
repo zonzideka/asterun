@@ -1,10 +1,12 @@
-"""插件副本相对基线有变化时，插件版本与 manifest 必须一起升高。"""
+"""插件副本相对基线有变化时，插件版本与 manifest 必须按 PEP 440 严格升高。"""
 from pathlib import Path
 import json
 import os
 import re
 import subprocess
 import sys
+
+from packaging.version import InvalidVersion, Version
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN = "packages/asterun-plugin-antigravity"
@@ -71,6 +73,13 @@ def manifest_version(text: str) -> str:
     return value
 
 
+def strictly_newer(current: str, baseline: str) -> bool:
+    try:
+        return Version(current) > Version(baseline)
+    except InvalidVersion:
+        return False
+
+
 def changed_paths(repo: Path, base: str) -> list[str]:
     diff = git(repo, "diff", "--name-only", base, "--", *WATCH)
     if diff.returncode != 0:
@@ -101,7 +110,8 @@ def main() -> None:
     current_manifest = manifest_version((repo / MANIFEST).read_text())
     base_version = pyproject_version(show(repo, base, PYPROJECT))
     base_manifest = manifest_version(show(repo, base, MANIFEST))
-    if current_version == base_version or current_manifest == base_manifest or current_version != current_manifest:
+    if (current_version != current_manifest or not strictly_newer(current_version, base_version)
+            or not strictly_newer(current_manifest, base_manifest)):
         fail(FAILURE)
     print(f"插件副本版本检查通过：{base_version} -> {current_version}")
 
