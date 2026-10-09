@@ -6,6 +6,8 @@ Approvals are manual by default. To apply rules, an administrator sets `approval
 
 New Codex PR reviews use [fixed-scope file access](fixed-read-scope.md), with files bound to the task. The rules below apply to native command approvals. Explicit shell wrappers remain subject to manual handling.
 
+These rules match a complete argv. Codex often wraps commands in `/bin/bash -lc`, and file-change approvals carry no paths, so the rules do not cover most prompts in an ordinary coding task. To run automatically inside the workspace sandbox and ask only when escalating, set the Codex backend's own `approval_policy`. See the [installation guide](install.md#native-approval-mode). That setting still defaults to `untrusted`, keeps the `workspace-write` sandbox, and cannot disable the sandbox or switch to never-ask.
+
 ## Configure a rule
 
 Merge this fragment into the instance configuration and replace the directory, expiry, input digest, and executable digest:

@@ -6,6 +6,8 @@
 
 ## 当前维护顺序
 
+2026-10-09 Codex 普通任务可配置原生 `approval_policy`（`untrusted`、`on-failure`、`on-request`）。省略时仍发送 `untrusted` 与 `workspace-write`。`never`、granular 和关闭沙箱的值在校验时拒绝。固定读取不变。真实 Codex 尚未验收。
+
 2026-10-02 标准 skill 与已发布 `0.1.0a13` 不匹配：将源码标为 `0.1.0a14`，并在 `run.py` 用短超时 `asterun version` / `diagnose` 做失败即拒的最低版本门禁。GrokBot 模板锁仍指向已发布 a13；在 a14 发布并更新该锁之前，模板与标准 skill 不能一起使用。 历史主线构建仍报告 a13 时，仅在 CLI 与应答核心的能力探测全部通过后兼容，规则见[标准 skill](standard-skill.md)。
 
 2026-09-30 按[标准 skill 改造计划](standard-skill-plan-2026-09-30.md)完成通用入口和脚本化机械操作。复用既有 CLI 与常驻核心，标准技能包和用户技能安装不替代核心部署。客户端触发、真实模型质量与 Token/订阅收益保持独立验收，不因离线返回字节减少而修改默认模型、压缩策略或生产配置。

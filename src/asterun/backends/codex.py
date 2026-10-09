@@ -548,6 +548,7 @@ class CodexAppServerTransport:
         model: str | None = None,
         service_tier: str | None = None,
         timeout: float = 300.0,
+        thread_params: dict[str, Any] | None = None,
     ) -> CodexPromptResult:
         started = time.time()
         done = threading.Event()
@@ -584,7 +585,8 @@ class CodexAppServerTransport:
                 done.set()
 
         self.on_message(on_msg)
-        thread = self.start_thread(build_thread_start_params(cwd=str(cwd), model=model, service_tier=service_tier))
+        thread = self.start_thread(build_thread_start_params(
+            cwd=str(cwd), model=model, service_tier=service_tier, extra=thread_params))
         thread_id = extract_thread_id(thread)
         if not thread_id:
             return CodexPromptResult(
@@ -840,7 +842,9 @@ class CodexBackend:
         try:
             transport.spawn(cwd)
             transport.initialize()
-            result = transport.run_text_prompt(text=text or "Reply with ASTERUN_CODEX_OK.", cwd=cwd)
+            from asterun.backends.codex_policy import normal_thread_params
+            result = transport.run_text_prompt(text=text or "Reply with ASTERUN_CODEX_OK.", cwd=cwd,
+                                               thread_params=normal_thread_params(self.config))
             native = result.to_dict()
         finally:
             transport.close()

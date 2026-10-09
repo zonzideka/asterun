@@ -104,7 +104,8 @@ class CodexRuntime:
         service_requests = None
         session = None
         try:
-            thread_params = {"approvalPolicy": "untrusted", "sandbox": "workspace-write"}
+            from asterun.backends.codex_policy import normal_thread_params
+            thread_params = normal_thread_params(self.backend.config)
             if read_scope is not None:
                 thread_params = {"approvalPolicy": "never", "sandbox": "read-only",
                     "config": read_scope_config(transport, cwd)}

@@ -54,6 +54,22 @@ def calls(root):
     return [json.loads(line) for line in (root / "scope-calls.jsonl").read_text().splitlines()]
 
 
+def test_fixed_read_scope_ignores_backend_approval_policy(fixture):
+    fixture[-1].config.approval_policy = "on-request"
+    result, _ = run(fixture)
+    assert result["status"] == "succeeded", result
+    rows = calls(fixture[0])
+    start = next(row["params"] for row in rows if row.get("method") == "thread/start")
+    turn = next(row["params"] for row in rows if row.get("method") == "turn/start")
+    assert start["approvalPolicy"] == turn["approvalPolicy"] == "never"
+    assert start["sandbox"] == "read-only"
+    resumed = fixture[-1].resume_native(result["native"], fixture[0], read_scope=fixture[2])
+    assert resumed["native_resumed"]
+    resume = next(row["params"] for row in calls(fixture[0]) if row.get("method") == "thread/resume")
+    assert resume["approvalPolicy"] == "never"
+    assert resume["sandbox"] == "read-only"
+
+
 def test_fixed_reader_rpc_finishes_without_approval_and_keeps_native_home(fixture):
     root, _, reader, _ = fixture
     result, updates = run(fixture)

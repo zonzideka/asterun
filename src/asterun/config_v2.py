@@ -124,6 +124,7 @@ def parse_v2(raw: dict, source_path: Path) -> tuple[dict[str, dict], dict[str, d
         GROK_EXECUTION_OPTIONS, builtin_kind, builtin_registry, compatibility_options,
         validate_grok_execution_options,
     )
+    from asterun.backends.codex_policy import validate_codex_approval_policy
     from asterun.plugins.registry import PluginRegistry
 
     try:
@@ -229,6 +230,8 @@ def parse_v2(raw: dict, source_path: Path) -> tuple[dict[str, dict], dict[str, d
                 validate_grok_execution_options(options, f"connections.{ref}.options")
             if "desktop_projects" in options:
                 flag(options["desktop_projects"], f"connections.{ref}.options.desktop_projects")
+            if "approval_policy" in options:
+                validate_codex_approval_policy(options["approval_policy"], f"connections.{ref}.options")
             for key in ("bin", "home", "model"):
                 if key in options:
                     text(options[key], f"connections.{ref}.options.{key}")
@@ -266,4 +269,6 @@ def parse_v2(raw: dict, source_path: Path) -> tuple[dict[str, dict], dict[str, d
             backends[alias].update({key: options[key] for key in GROK_EXECUTION_OPTIONS if key in options})
         if kind == "codex" and "desktop_projects" in options:
             backends[alias]["desktop_projects"] = options["desktop_projects"]
+        if kind == "codex" and "approval_policy" in options:
+            backends[alias]["approval_policy"] = options["approval_policy"]
     return backends, namespaces

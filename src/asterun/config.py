@@ -28,7 +28,7 @@ CONFIG_KEYS = {
     "approval_policy",
 }
 WORKSPACE_KEYS = {"root", "allow_non_git"}
-BACKEND_KEYS = {"kind", "enabled", "bin", "home", "model", "desktop_projects", *GROK_EXECUTION_OPTIONS}
+BACKEND_KEYS = {"kind", "enabled", "bin", "home", "model", "desktop_projects", "approval_policy", *GROK_EXECUTION_OPTIONS}
 WORKFLOW_KEYS = {"preset", "require_review", "review_backend", "approved_substitute", "max_repairs", "local_checks", "checkpoint_paths", "stage_gates", "input_optimization"}
 SCHEDULER_KEYS = {"max_queue", "per_backend_concurrency", "max_runs_per_task", "max_concurrency", "local_check_concurrency"}
 ENTRIES_KEYS = {"cli", "mcp"}
@@ -65,6 +65,7 @@ class BackendConfig:
     max_turns: int | None = None
     timeout_seconds: int | None = None
     desktop_projects: bool | None = None
+    approval_policy: str | None = None
     session_sync_home: str | None = None
     session_policy: str | None = None
     quota_epoch: str | None = None
@@ -89,6 +90,8 @@ class BackendConfig:
                            if getattr(self, key) is not None})
         if self.kind == "codex" and self.desktop_projects is not None:
             result["desktop_projects"] = self.desktop_projects
+        if self.kind == "codex" and self.approval_policy is not None:
+            result["approval_policy"] = self.approval_policy
         if self.connection_ref is not None:
             result.update(connection_ref=self.connection_ref, plugin_id=self.plugin_id, options=self.options)
         return result
@@ -329,6 +332,9 @@ def load_config(path: Path) -> AsterunConfig:
             validate_grok_execution_options(body, f"backends.{name}")
         if "desktop_projects" in body and type(body["desktop_projects"]) is not bool:
             raise AsterunError(INVALID_CONFIG, f"backends.{name}.desktop_projects 必须为布尔值")
+        if "approval_policy" in body:
+            from asterun.backends.codex_policy import validate_codex_approval_policy
+            validate_codex_approval_policy(body["approval_policy"], f"backends.{name}")
         home_value = body.get("home")
         if "home" in body and (
             not isinstance(home_value, str)
@@ -353,6 +359,7 @@ def load_config(path: Path) -> AsterunConfig:
             home=home_value,
             model=model_value,
             desktop_projects=body.get("desktop_projects"),
+            approval_policy=body.get("approval_policy"),
             **{key: body[key] for key in GROK_EXECUTION_OPTIONS if key in body},
         )
 

@@ -74,6 +74,25 @@ asterun --state-dir /path/to/state --connect task-submit \
 
 设置 `desktop_projects: true` 可启用[真实项目登记](codex-projects.md)。展示未完成时，用 CLI `task-present` 或 MCP `task_present` 重试。旧配置默认关闭该选项。
 
+### 原生审批模式
+
+普通 Codex 任务在每次 `thread/start` 和续接该线程的 `thread/resume` 上发送 `approvalPolicy` 与 `sandbox`。这两项覆盖 `~/.codex/config.toml` 里的同名设置。省略 `approval_policy` 时仍发送 `untrusted` 和 `workspace-write`，与现有实例相同。显式写成 `untrusted` 只是把该选择记入配置摘要，线上行为不变。
+
+要让任务在工作区沙箱内自动执行、只在越界时询问，把 Codex 后端的 `approval_policy` 设为 `on-request`。`on-failure` 同样留在沙箱内，仅在沙箱导致命令失败时询问。允许的值只有 `untrusted`、`on-failure` 和 `on-request`。`never`、granular 对象，以及会关闭沙箱的 `danger-full-access`，都会在校验时拒绝。沙箱不能改成其他模式。
+
+```json
+{
+  "kind": "codex",
+  "enabled": true,
+  "bin": "/absolute/path/to/codex",
+  "approval_policy": "on-request"
+}
+```
+
+v2 把该字段写在对应连接的 `options` 里，不写在只含 `connection_ref` 的后端条目上。固定文件读取不使用这项设置，仍以 `never` 和 `read-only` 启动。实例级 [审批规则](approval-policy.md) 按完整命令匹配，不能代替这里的原生模式。
+
+修改后按[配置修订](#会话绑定与配置修订)递增 `revision` 并应用。已创建的任务保留原绑定；之后的普通 Codex 派发使用新加载的值。删除该字段即恢复为 `untrusted`，不必迁移状态库。旧核心不认识这个字段，会在校验时拒绝，所以先升级核心再写入。`service-plan` 重写名为 `codex` 的后端时会保留已经配置的 `approval_policy`。安装的 Codex 必须接受所选模式；此项尚未用真实 Codex 验收。
+
 ## macOS 服务配置
 
 `service-plan` 为现有安装中的 clean-env LaunchAgent 准备 Codex 启用计划，也可同时登记工作区。配置、状态目录、启动文件和运行程序须属于当前用户，并通过私有权限检查。先创建计划的父目录，保留计划目录为未创建状态；磁盘 revision 应等于已应用值。
