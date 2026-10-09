@@ -78,10 +78,19 @@ def test_grok_execution_limits_reject_invalid_or_implicitly_relaxed_options(isol
 @pytest.mark.parametrize("kind", ["fake", "codex", "claude", "antigravity"])
 @pytest.mark.parametrize("field,value", [
     ("session_sync_home", "/test-only/usage-home"),
-    ("execution_profile", "workspace-code-v1"), ("max_turns", 1), ("timeout_seconds", 180),
+    ("execution_profile", "workspace-code-v1"), ("max_turns", 1),
 ])
 def test_grok_execution_options_do_not_expand_other_builtin_backends(isolated_env, workspace_root, version, kind, field, value):
     path = configured_path(isolated_env, workspace_root, version, {field: value}, kind)
+    with pytest.raises(AsterunError) as captured:
+        load_config(path)
+    assert captured.value.code == (INVALID_CONFIG if version == 1 else UNKNOWN_FIELD)
+
+
+@pytest.mark.parametrize("version", [1, 2])
+@pytest.mark.parametrize("kind", ["fake", "codex", "claude"])
+def test_antigravity_timeout_does_not_apply_to_other_builtin_backends(isolated_env, workspace_root, version, kind):
+    path = configured_path(isolated_env, workspace_root, version, {"timeout_seconds": 180}, kind)
     with pytest.raises(AsterunError) as captured:
         load_config(path)
     assert captured.value.code == (INVALID_CONFIG if version == 1 else UNKNOWN_FIELD)

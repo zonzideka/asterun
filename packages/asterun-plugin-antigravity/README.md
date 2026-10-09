@@ -6,7 +6,7 @@
 
 ## 构建和配置
 
-当前源码中的插件版本为 `1.0.2`。已发布的 [a17 发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a17) 仍是 `1.0.1` wheel；`1.0.2` 尚未随核心发行。这一版补上全部 `_vendor` 文件的来源钉定，profile 行为与 `1.0.1` 相同。`vendor-source.json` 属于安装内容，换装后运行树摘要会变，已注册的 `1.0.1` 需要重新注册。a13 发行页的 `1.0.0` wheel 仍带旧 profile，会拒绝 Linux HOME。也可按下面的步骤从固定源码构建。
+当前源码版本为 `1.0.3`。已发布的 wheel 仍是 [a17 发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a17) 上的 `1.0.1`；a13 的 `1.0.0` wheel 仍带旧 profile，会拒绝 Linux HOME。`1.0.2` 补上全部 `_vendor` 文件的来源钉定，profile 行为与 `1.0.1` 相同。`1.0.3` 让 vendored `build_command` 接受可选超时，并把 worker 自己的 `timeout_seconds` 同时用于运行期限和 `--print-timeout`。该字段仍默认 20 秒、最多 20 秒，不读取内置后端 30 到 3600 秒的同名字段。`vendor-source.json` 属于安装内容，换装后运行树摘要会变，已注册连接需重新注册。也可按下面的步骤从固定源码构建。
 
 从完整 Git 检出核验来源，再使用已准备的构建环境打包：
 

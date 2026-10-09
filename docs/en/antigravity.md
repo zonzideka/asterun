@@ -66,6 +66,8 @@ Save this example as `/private/tmp/asterun-agy-demo/config.json`, replacing `bin
 }
 ```
 
+Optional `timeout_seconds` limits both the native `--print-timeout` and the adapter wait. Omitting it keeps 300 seconds, and the command line stays `5m`. The value must be an integer from 30 to 3600. Multiples of 60 are passed to the CLI in minutes, so 600 seconds becomes `10m`; other values use seconds, so 90 becomes `90s`. In v1, put it on `backends.<name>`. In v2, put it in the built-in `google.antigravity-cli` connection's `options`. The external plugin does not read this built-in field. The plugin's own `timeout_seconds` defaults to 20 seconds, must be greater than 0 and at most 20, and sets both the worker deadline and `--print-timeout`. Omitting it makes the plugin command line `20s`. A fractional value is rounded up only for the CLI; the worker still stops at the original fraction.
+
 Once the installation, profile, and model are configured, enable execution in the core service process. These operations consume native account quota:
 
 ```sh

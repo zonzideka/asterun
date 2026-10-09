@@ -1,0 +1,132 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    env:
+      HOME: /tmp/asterun-ci-home
+      ASTERUN_HOME: /tmp/asterun-ci-home/asterun
+      ASTERUN_VERIFY_TMP: /tmp/asterun-release-verify
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: 核对标签提交在 main 上
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          python scripts/check-release-tag.py --tag "${GITHUB_REF_NAME}"
+      - name: 离线校验
+        run: |
+          mkdir -p "$HOME" "$ASTERUN_HOME"
+          chmod +x scripts/verify-offline.sh
+          scripts/verify-offline.sh
+
+  gate:
+    needs: verify
+    runs-on: ubuntu-latest
+    outputs:
+      mode: ${{ steps.gate.outputs.mode }}
+      run_id: ${{ steps.gate.outputs.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 再次核对标签提交在 main 上
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          python scripts/check-release-tag.py --tag "${GITHUB_REF_NAME}"
+      - name: 判断已有发行
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/publish-release-assets.py --tag "${GITHUB_REF_NAME}" --phase gate
+
+  build:
+    needs: gate
+    if: needs.gate.outputs.mode == 'create'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 再次核对标签提交在 main 上
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          python scripts/check-release-tag.py --tag "${GITHUB_REF_NAME}"
+      - name: 安装钉死的构建工具
+        run: python -m pip install --disable-pip-version-check setuptools==84.0.0 wheel==0.48.0
+      - name: 构建、检查并冒烟
+        run: python scripts/build-release-assets.py --output "${RUNNER_TEMP}/asterun-dist"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: asterun-dist
+          path: ${{ runner.temp }}/asterun-dist/*
+          if-no-files-found: error
+          retention-days: 90
+      - name: 构建来源证明
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: |
+            ${{ runner.temp }}/asterun-dist/*.whl
+            ${{ runner.temp }}/asterun-dist/*.tar.gz
+            ${{ runner.temp }}/asterun-dist/*.zip
+            ${{ runner.temp }}/asterun-dist/SHA256SUMS
+
+  publish:
+    needs: [gate, build]
+    if: always() && needs.gate.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+      attestations: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 再次核对标签提交在 main 上
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          python scripts/check-release-tag.py --tag "${GITHUB_REF_NAME}"
+      - name: 取回本次构建
+        if: needs.gate.outputs.mode == 'create'
+        uses: actions/download-artifact@v4
+        with:
+          name: asterun-dist
+          path: ${{ runner.temp }}/asterun-dist
+      - name: 上传草稿并发布
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/publish-release-assets.py --assets "${RUNNER_TEMP}/asterun-dist" --tag "${GITHUB_REF_NAME}" --phase apply

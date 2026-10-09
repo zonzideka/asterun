@@ -244,6 +244,9 @@ def parse_v2(raw: dict, source_path: Path) -> tuple[dict[str, dict], dict[str, d
                 validate_extra_env(options["extra_env"], f"connections.{ref}.options.extra_env")
             if "load_user_settings" in options:
                 flag(options["load_user_settings"], f"connections.{ref}.options.load_user_settings")
+            if kind == "antigravity" and "timeout_seconds" in options:
+                from asterun.backends.antigravity import validate_antigravity_timeout
+                validate_antigravity_timeout(options["timeout_seconds"], f"connections.{ref}.options.timeout_seconds")
             for key in ("bin", "home", "model"):
                 if key in options:
                     text(options[key], f"connections.{ref}.options.{key}")
@@ -288,4 +291,6 @@ def parse_v2(raw: dict, source_path: Path) -> tuple[dict[str, dict], dict[str, d
             backends[alias]["extra_env"] = validate_extra_env(options["extra_env"], f"connections.{ref}.options.extra_env")
         if kind == "claude" and options.get("load_user_settings") is True:
             backends[alias]["load_user_settings"] = True
+        if kind == "antigravity" and "timeout_seconds" in options:
+            backends[alias]["timeout_seconds"] = options["timeout_seconds"]
     return backends, namespaces

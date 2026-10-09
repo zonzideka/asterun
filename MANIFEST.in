@@ -50,6 +50,9 @@ include scripts/restore-state.sh
 include scripts/check-release-package.py
 include scripts/verify-installed-control.py
 include scripts/package-standard-skill.py
+include scripts/build-release-assets.py
+include scripts/check-release-tag.py
+include scripts/publish-release-assets.py
 include integrations/skills/asterun/SKILL.md
 include integrations/skills/asterun/LICENSE
 include integrations/skills/asterun/scripts/run.py

@@ -66,6 +66,8 @@ asterun-antigravity bind-workspace \
 }
 ```
 
+可选字段 `timeout_seconds` 同时限制原生 `--print-timeout` 和适配器等待时间。省略时为 300 秒，命令行仍是 `5m`。允许 30 到 3600 的整数；能被 60 整除时传给 CLI 的是分钟，例如 600 秒为 `10m`，否则是秒，例如 90 秒为 `90s`。v1 写在 `backends.<name>`，v2 写在内置 `google.antigravity-cli` 连接的 `options`。外部插件不读取这个内置字段。插件自己的 `timeout_seconds` 默认 20 秒，必须大于 0 且不超过 20，同时用于 worker 期限和 `--print-timeout`。省略时插件命令行是 `20s`。小数向上取整后只传给 CLI，worker 仍按原小数截止。
+
 确认安装、profile 和模型后，在核心服务进程中开启执行。以下操作会使用原生账户额度：
 
 ```sh

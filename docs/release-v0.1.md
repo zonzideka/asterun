@@ -54,6 +54,14 @@ CLI、MCP 和 GrokBot 等入口共用核心。同机客户端通过本地 socket
 
 Codex 固定读取按实际协议和生效权限检查兼容性。项目登记根据真实目录及 Git worktree 关系关联原线程，展示重试使用 `task-present`。Grok 编码模式需显式启用，原文本配置沿用原权限。
 
+## 发行流水线
+
+推送匹配 `v*` 的标签后，[发行工作流](https://github.com/zonzideka/asterun/blob/main/.github/workflows/release.yml)先在该标签提交上跑完整离线校验。校验任务是 Python 3.11 与 3.12 的矩阵，两套都跑 `scripts/verify-offline.sh`（含 `verify-source.py` 与全量 pytest）。[scripts/check-release-tag.py](../scripts/check-release-tag.py) 同时要求标签等于 `v` 加核心 `pyproject.toml` 的版本，且该提交已经在 `main` 上。后续任务用 `needs: verify` 等待矩阵全部成功。还没有可核对的已上传资产时才构建，并把产物存成名为 `asterun-dist` 的 workflow artifact，再写来源证明。
+
+资产为核心 wheel 与源码包、`packages/` 下每个外部插件的 wheel 与源码包、`asterun-skill-<核心版本>.zip`，以及 `SHA256SUMS`。文件名与 a15、a17 手工发行相同；校验文件每行是小写 SHA-256、两个空格和文件名，清单本身不计入。
+
+构建使用 [scripts/build-release-assets.py](../scripts/build-release-assets.py)。`SOURCE_DATE_EPOCH` 固定为该标签提交的 Unix 时间，构建依赖钉为 setuptools 84.0.0 与 wheel 0.48.0。脚本随后把 tar 与 zip 的时间戳、属主和权限归一，因此同一次提交上的两次构建逐字节一致。它先按 [打包检查脚本](../scripts/check-release-package.py) 核对 wheel 与源码包，再在干净虚拟环境一并安装这些 wheel 及其依赖，导入核心与各插件声明的依赖，执行 `asterun version` 和 Antigravity 的 `prepare --home`。每个插件 worker 先按实际安装树钉定 `runtime_path` 与 `runtime_sha256` 并注册，再经 `-I -S -B` 隔离启动调用 `plugin.describe`。工作流只用 `GITHUB_TOKEN` 和 GitHub OIDC：`actions/attest-build-provenance` 为上述文件写入构建来源证明。[scripts/publish-release-assets.py](../scripts/publish-release-assets.py) 在首次发布时上传这次构建，核对远端 SHA-256 后再标成预发布。同名草稿以已上传资产和它的来源证明为准，缺的文件只从该证明指向的同一次 `asterun-dist` workflow artifact 补上。这个 artifact 保留 90 天。过期后，续传无法下载它，也不会改用新构建覆盖已上传资产。若草稿里应有的文件已经齐全，并且和 SHA256SUMS 一致，把该草稿手动标成预发布即可。若仍缺文件，删除这个尚未发布的草稿，再重跑同一标签的工作流，让它重新构建。已经发布的发行不要删除。已发布且摘要一致时直接成功。摘要不同、多出文件或已发布后仍缺文件时失败，不覆盖、不删除已有资产。不需要维护者另行配置密钥，也不把包发到其他索引。已发布的 a15 与 a17 资产仍是当时的手工构建；这条流水线还没有对现有标签重跑。
+
 ## 验证与升级
 
 2026-10-03 标准 skill 修复阶段的完整本机离线回归记录为 2610 项通过、4 项真实后端测试跳过、1 项版本探测超时失败；同一失败场景随后连续三次隔离复测通过，原整套命令并非全绿。五组合兼容矩阵、独立消费者流程及两项独立 wheel 端到端验收通过，wheel/sdist 的 102 个运行文件与固定源码一致。范围与原始失败见[本次修复验收记录](https://github.com/zonzideka/asterun/blob/v0.1.0a14/docs/validation/standard-skill-repair-2026-10-03.md)。最终发行提交的 CI 和资产校验结果以[对应版本发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a14)为准，不以历史快照的结果代替。本轮没有新增真实模型任务；真实产出、原生客户端与 Token 收益仍需分别验收。

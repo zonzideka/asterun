@@ -1,5 +1,5 @@
 {
-  "source_commit": "9610e99f95a5614f6f8e1b0f10bf87d9d4f67f71",
+  "source_commit": "a9b4d63ebb95a56448db535e31281347e9b30ec4",
   "files": [
     {
       "source": "src/asterun/antigravity_profile.py",
@@ -46,8 +46,8 @@
     {
       "source": "src/asterun/backends/antigravity.py",
       "target": "_vendor/command.py",
-      "source_sha256": "c06ecc074052620466dc7cfe1c8ea794d9d9506e577016ea4419891bfc6b4ca4",
-      "vendored_sha256": "a0d06c12fff6c9412cdb990df3f19aa86acfaab9f08627c757ddec9fb3173d76",
+      "source_sha256": "a8669e4731681c76987e8a47f2571f4e115a3eb4aba46642d6dc3e203e4ea9bd",
+      "vendored_sha256": "725c4c58ec26a80abd3892b95b505856ccbb7d9ab50faf5108bb03a1480f5be3",
       "replacements": [],
       "extract": "build_command",
       "prefix": "from pathlib import Path\nfrom .compat import AsterunError, INVALID_CONFIG\n\n"
@@ -70,7 +70,7 @@
     }
   ],
   "notes": [
-    "profile、runtime、command 由当前仓库提交 9610e99 机械复制；compat 与 __init__ 是插件本地副本，同样钉定摘要。",
+    "profile、runtime、command 由当前仓库提交 a9b4d63ebb95a56448db535e31281347e9b30ec4 机械复制；compat 与 __init__ 是插件本地副本，同样钉定摘要。",
     "清单必须覆盖 _vendor 下的全部文件。来源提交须能在本仓库历史中解析。",
     "仅机械修改导入、独立 profile 命令名与 worker 所有的进程组；原始核心文件不修改。",
     "CLI 留在 worker 进程组；本地 child 信号只用 PID，host 最终负责组内剩余子孙。远端是否终止仍未知。"
