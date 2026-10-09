@@ -2,7 +2,7 @@
 
 [中文](STATUS.md) | [English](STATUS.en.md)
 
-2026-10-09 修复核心结果落盘与重启对账。结果的多步写入放在同一个事务里；失败则整次回滚，运行进入 `pending_reconcile`、操作进入 `unknown`，释放本次并发名额。完整结果留在内存，并尽量写入运行记录；状态库暂时写不进去时，后续轮询按有上限的退避继续重试，直到落盘，不自动重派。工作线程因落盘失败中断后补发的通用待对账不会覆盖这份结果。前台同步派发、取消确认和审批回复的结果写入走同一事务。重启时，已标记释放名额或找不到操作记录的运行不再占回名额，也不重复执行。进程关闭时仍在执行、且没有释放标记的未知运行，重启后继续保留预算占位。SQLite schema 仍为 6，协议状态和错误码不变，版本号未改。Python 3.12.3 上 `scripts/verify-offline.sh` 的来源核验通过；pytest 收集 2730 项，2693 通过、36 跳过、1 失败。失败项仍是既有 `tests/test_read_scope.py::test_mutation_while_reading_rejected`：同长度覆写依赖 inode 时间变化，本机 tmpfs 在约 4ms 粒度内不更新 `st_mtime_ns`。`read_scope.py` 与该测试未改。此项未部署，也未用真实后端验收。
+2026-10-09 修复核心结果落盘与重启对账。结果的多步写入放在同一个事务里；失败则整次回滚，运行进入 `pending_reconcile`、操作进入 `unknown`，释放本次并发名额。完整结果留在内存，并尽量写入运行记录；状态库暂时写不进去时，后续轮询按有上限的退避继续重试，直到落盘，不自动重派。工作线程因落盘失败中断后补发的通用待对账不会覆盖这份结果。前台同步派发、取消确认和审批回复的结果写入走同一事务。重启时，已标记释放名额或找不到操作记录的运行不再占回名额，也不重复执行。进程关闭时仍在执行、且没有释放标记的未知运行，重启后继续保留预算占位。终态检查点没写上时同样整次回滚；重启只重放已保留结果，检查点在写入成功后才算捕获，不重新调用后端。SQLite schema 仍为 6，协议状态和错误码不变，版本号未改。Python 3.12.3 上 `scripts/verify-offline.sh` 的来源核验通过；pytest 收集 2735 项，2698 通过、36 跳过、1 失败。失败项仍是既有 `tests/test_read_scope.py::test_mutation_while_reading_rejected`：同长度覆写依赖 inode 时间变化，本机 tmpfs 在约 4ms 粒度内不更新 `st_mtime_ns`。`read_scope.py` 与该测试未改。此项未部署，也未用真实后端验收。
 
 2026-10-09 为 Codex 后端增加可选 `approval_policy`。省略时普通任务仍发送 `approvalPolicy=untrusted` 与 `sandbox=workspace-write`，并继续覆盖 `~/.codex/config.toml`。可改为 `on-request` 或 `on-failure`，在工作区沙箱内自动执行，越界或沙箱失败时仍询问。`never`、granular 和 `danger-full-access` 在配置校验时拒绝。固定读取仍为 `never` 与 `read-only`。配置 schema 仍是 v1/v2，不改 SQLite。此项尚未用真实 Codex 验收，随 `0.1.0a16` 发布。
 
