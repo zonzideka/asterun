@@ -9,9 +9,9 @@ from asterun.plugins.registry import PluginRegistry
 
 BUILTINS = {
     "fake": {"plugin_id": "asterun.fake", "factory": "asterun.backends.fake:FakeBackend", "options": {"bin"}},
-    "codex": {"plugin_id": "openai.codex", "factory": "asterun.backends.codex:CodexBackend", "options": {"bin", "desktop_projects", "approval_policy"}},
+    "codex": {"plugin_id": "openai.codex", "factory": "asterun.backends.codex:CodexBackend", "options": {"bin", "desktop_projects", "approval_policy", "extra_env"}},
     "grok": {"plugin_id": "xai.grok", "factory": "asterun.backends.grok:GrokBackend", "options": {"bin", "home", "model", "execution_profile", "max_turns", "timeout_seconds", "session_sync_home", "session_policy", "quota_epoch"}},
-    "claude": {"plugin_id": "anthropic.claude", "factory": "asterun.backends.claude:ClaudeBackend", "options": {"bin"}},
+    "claude": {"plugin_id": "anthropic.claude", "factory": "asterun.backends.claude:ClaudeBackend", "options": {"bin", "extra_env", "load_user_settings"}},
     "antigravity": {"plugin_id": "google.antigravity-cli", "factory": "asterun.backends.antigravity:AntigravityBackend", "options": {"bin", "home", "model"}},
 }
 
@@ -97,6 +97,7 @@ def build_registry(config):
                 options["manifest_path"], runner=options["runner"],
                 installation_path=options["installation_path"], installation_sha256=options["installation_sha256"],
                 enabled=options["enabled"], runtime_path=options.get("runtime_path"), runtime_sha256=options.get("runtime_sha256"),
+                allow_unpinned_runtime=options.get("allow_unpinned_runtime", False),
             )
             if registration.plugin_id != plugin_id:
                 raise AsterunError(INVALID_CONFIG, "配置插件 ID 与 manifest 不匹配")

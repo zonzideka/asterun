@@ -74,7 +74,7 @@
 
 每项提交说明具体变更、实际命令和结果、兼容处理及未验证项。测试按纯逻辑、临时目录与协议替身、真实后端、原生客户端四层记录；启动进程、执行项目代码和消费额度的情况一并注明。
 
-默认入口为 `scripts/verify-offline.sh`。针对局部缺陷先运行相关回归，发行内容变更检查 wheel/sdist 成员、正文链接、从 sdist 重建和安装结果。插件来源使用 `python3 packages/asterun-plugin-antigravity/scripts/verify-source.py` 核对。
+默认入口为 `scripts/verify-offline.sh`。针对局部缺陷先运行相关回归，发行内容变更检查 wheel/sdist 成员、正文链接、从 sdist 重建和安装结果。插件来源使用 `python3 packages/asterun-plugin-antigravity/scripts/verify-source.py` 核对。离线入口同时检查 Antigravity 副本是否在未升插件版本时改动。GitHub CI 使用完整历史核对来源提交，并安装插件 wheel 做导入、钉定注册和隔离启动冒烟。
 
 新旧实例切换单独记录任务归属、未决操作、状态快照和回退步骤。调用方应用在各自仓库接线；涉及接口变化时，本仓先提供可复现的参数、返回和交接说明。
 

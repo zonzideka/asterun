@@ -60,6 +60,129 @@ def installation_digest(path: str | Path) -> str:
     return digest.hexdigest()
 
 
+_ENTRY_MISMATCH = "运行摘要必须覆盖 runner 实际执行的插件入口"
+_MODULE_MISSING = "插件入口模块不在解释器的导入路径中"
+_ENTRY_SYMLINK = "插件入口不能是符号链接"
+_RUNNER_SHAPE = "插件 runner 只允许绝对路径脚本，或绝对路径解释器加 -m 模块"
+_MODULE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*\Z")
+# 固定启动代码只接收导入根和模块名两个参数，不把路径拼进源码。
+_MODULE_LAUNCH = (
+    "import sys, runpy\n"
+    "root, module = sys.argv[1], sys.argv[2]\n"
+    "sys.path.insert(0, root)\n"
+    "sys.argv = [module]\n"
+    "runpy.run_module(module, run_name='__main__')\n"
+)
+
+
+def _norm(path: Path) -> Path:
+    return Path(os.path.normpath(os.path.abspath(path)))
+
+
+def _within(root: Path, child: Path) -> bool:
+    root = _norm(root)
+    child = _norm(child)
+    if child == root:
+        return True
+    try:
+        child.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _validate_runner_shape(runner: Sequence[str]) -> None:
+    """只接受绝对路径脚本，或绝对路径解释器加 -m 模块。不启动解释器。"""
+    executable = Path(runner[0])
+    if not executable.is_absolute():
+        _invalid("插件 runner 可执行文件必须为绝对路径")
+    if len(runner) == 1:
+        if executable.is_symlink():
+            _invalid(_ENTRY_SYMLINK)
+        if not executable.is_file():
+            _invalid(_RUNNER_SHAPE)
+        return
+    if (len(runner) != 3 or runner[1] != "-m" or _MODULE_NAME.fullmatch(runner[2]) is None
+            or not executable.is_file()):
+        _invalid(_RUNNER_SHAPE)
+
+
+def _module_file(root: Path, parts: list[str]) -> Path | None:
+    current = root
+    for index, part in enumerate(parts):
+        package = current / part
+        module_py = current / f"{part}.py"
+        init_py = package / "__init__.py"
+        if package.is_symlink() or module_py.is_symlink() or init_py.is_symlink():
+            _invalid(_ENTRY_SYMLINK)
+        last = index == len(parts) - 1
+        if last:
+            if init_py.is_file():
+                return init_py
+            if module_py.is_file():
+                return module_py
+            return None
+        if package.is_dir() and init_py.is_file():
+            current = package
+            continue
+        return None
+    return None
+
+
+def _import_root(module: str, module_file: Path) -> Path:
+    parts = module.split(".")
+    try:
+        if module_file.name == "__init__.py":
+            return module_file.parents[len(parts) - 1]
+        if len(parts) == 1:
+            return module_file
+        return module_file.parents[len(parts) - 2]
+    except IndexError:
+        _invalid(_ENTRY_MISMATCH)
+
+
+def _module_in_pin(runtime_path: Path, module: str) -> tuple[Path, Path]:
+    """在钉定树内查找模块文件，返回该文件和导入根。不读取解释器的 sys.path。"""
+    parts = module.split(".")
+    runtime = _norm(runtime_path)
+    roots: list[Path] = []
+    if runtime.is_dir() and not runtime.is_symlink():
+        roots.append(runtime)
+        if runtime.name == parts[0]:
+            roots.append(_norm(runtime.parent))
+    for root in roots:
+        found = _module_file(root, parts)
+        if found is None:
+            continue
+        found = _norm(found)
+        package = _norm(_import_root(module, found))
+        if _within(runtime, found) and _within(runtime, package):
+            return found, _norm(package.parent)
+    _invalid(_ENTRY_MISMATCH)
+
+
+def _require_runtime_covers(runtime_path: Path, runner: Sequence[str]) -> None:
+    _validate_runner_shape(runner)
+    runtime = _norm(runtime_path)
+    if len(runner) == 1:
+        entry = _norm(Path(runner[0]))
+        covered = runtime == entry or (runtime.is_dir() and not runtime.is_symlink() and _within(runtime, entry))
+        if not covered:
+            _invalid(_ENTRY_MISMATCH)
+        return
+    _module_in_pin(runtime, runner[2])
+
+
+def isolated_worker_argv(runner: Sequence[str], runtime_path: Path) -> list[str]:
+    """执行参数与注册校验使用同一份绝对入口；-m 形式不加载 site。"""
+    _require_runtime_covers(runtime_path, runner)
+    if len(runner) == 1:
+        return [str(_norm(Path(runner[0])))]
+    _module_file_path, import_root = _module_in_pin(runtime_path, runner[2])
+    del _module_file_path
+    return [runner[0], "-I", "-S", "-B", "-c", _MODULE_LAUNCH, str(import_root), runner[2]]
+
+
 @dataclass(frozen=True, slots=True)
 class PluginRegistration:
     manifest: PluginManifest
@@ -74,6 +197,7 @@ class PluginRegistration:
     runner_sha256: str | None = None
     runtime_path: Path | None = None
     runtime_sha256: str | None = None
+    allow_unpinned_runtime: bool = False
 
     @property
     def plugin_id(self) -> str:
@@ -87,6 +211,7 @@ class PluginRegistration:
             "runner": list(self.runner), "installation_sha256": self.installation_sha256,
             "runner_sha256": self.runner_sha256, "runtime_sha256": self.runtime_sha256,
             "runtime_integrity_pinned": self.source == "builtin" or self.runtime_path is not None,
+            "allow_unpinned_runtime": self.allow_unpinned_runtime,
             "runtime_integrity_verified": False,
             "installation_evidence_scope": "distribution_artifact_and_explicit_runtime_pins",
             "manifest": self.manifest.to_dict(),
@@ -114,13 +239,13 @@ class PluginRegistry:
     def register_external(self, manifest_path: str | Path, *, runner: Sequence[str],
                           installation_path: str | Path, installation_sha256: str,
                           enabled: bool = False, runtime_path: str | Path | None = None,
-                          runtime_sha256: str | None = None) -> PluginRegistration:
+                          runtime_sha256: str | None = None,
+                          allow_unpinned_runtime: bool = False) -> PluginRegistration:
         if isinstance(runner, (str, bytes)) or not isinstance(runner, Sequence) or not runner:
             _invalid("插件 runner 必须为显式 argv 数组")
         if any(not isinstance(arg, str) or not arg or "\x00" in arg for arg in runner):
             _invalid("插件 runner argv 无效")
-        if not Path(runner[0]).is_absolute():
-            _invalid("插件 runner 可执行文件必须为绝对路径")
+        _validate_runner_shape(runner)
         runner_sha256 = _sha256(Path(runner[0]))
         if not isinstance(installation_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", installation_sha256):
             _invalid("插件 installation_sha256 必须为 SHA-256 小写十六进制")
@@ -137,17 +262,23 @@ class PluginRegistry:
             _invalid("读取期间插件 manifest 已改变")
         if _sha256(installation_path) != installation_sha256:
             _invalid("插件安装摘要不匹配")
+        if type(allow_unpinned_runtime) is not bool:
+            _invalid("allow_unpinned_runtime 必须为布尔值")
         if (runtime_path is None) != (runtime_sha256 is None):
             _invalid("运行内容路径与摘要必须同时提供")
+        if runtime_path is None and not allow_unpinned_runtime:
+            _invalid("外部插件必须钉定运行代码摘要；开发注册需显式 allow_unpinned_runtime")
         if runtime_path is not None:
             runtime_path = Path(runtime_path).absolute()
             if installation_digest(runtime_path) != runtime_sha256:
                 _invalid("插件运行内容摘要不匹配")
+            _require_runtime_covers(runtime_path, runner)
         return self._add(PluginRegistration(
             manifest=manifest, enabled=enabled, source="external", runner=tuple(runner),
             installation_path=installation_path, installation_sha256=installation_sha256,
             manifest_path=manifest_path, manifest_file_sha256=before,
             runner_sha256=runner_sha256, runtime_path=runtime_path, runtime_sha256=runtime_sha256,
+            allow_unpinned_runtime=allow_unpinned_runtime,
         ))
 
     def register_builtin(self, manifest: PluginManifest | dict, *, factory: str,
@@ -187,8 +318,13 @@ class PluginRegistry:
                 _invalid("插件 manifest 已改变；需要重新审阅并注册")
             if _sha256(registration.installation_path) != registration.installation_sha256:
                 _invalid("插件安装文件已改变；需要重新审阅并注册")
-            if registration.runtime_path is not None and installation_digest(registration.runtime_path) != registration.runtime_sha256:
+            if registration.runtime_path is None:
+                if not registration.allow_unpinned_runtime:
+                    _invalid("外部插件未钉定运行代码，拒绝继续")
+            elif installation_digest(registration.runtime_path) != registration.runtime_sha256:
                 _invalid("插件运行内容已改变；需要重新审阅并注册")
+            else:
+                _require_runtime_covers(registration.runtime_path, registration.runner)
         return registration
 
     def load_factory(self, plugin_id: str):

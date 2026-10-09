@@ -17,6 +17,10 @@ jobs:
       ASTERUN_VERIFY_TMP: /tmp/asterun-ci-verify
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: 取得 main 基线
+        run: git fetch origin main
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
@@ -25,3 +29,5 @@ jobs:
           mkdir -p "$HOME" "$ASTERUN_HOME"
           chmod +x scripts/verify-offline.sh
           scripts/verify-offline.sh
+      - name: 插件 wheel 导入与注册冒烟
+        run: python3 scripts/smoke-plugin-wheels.py

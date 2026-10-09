@@ -7,7 +7,6 @@ import shutil
 import subprocess
 import sys
 
-
 def build_external_fake(root: Path, *, tools_only=False):
     source = root / "source"
     shutil.copytree(Path(__file__).parent / "fixtures/plugins/external_fake", source)

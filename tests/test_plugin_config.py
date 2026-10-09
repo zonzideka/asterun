@@ -10,6 +10,7 @@ import pytest
 from asterun.config import load_config
 from asterun.config_migration import migrate_v1_to_v2, write_v2_migration
 from asterun.errors import AsterunError
+from asterun.plugins.registry import installation_digest
 
 
 def write(path, raw):
@@ -107,6 +108,7 @@ def test_v2_external_unknown_id_registers_without_loading(config_path, v2_raw, e
     v2_raw["plugins"] = {"example.external-fake": {
         "enabled": False, "manifest_path": str(plugin["manifest"]), "runner": plugin["runner"],
         "installation_path": str(plugin["wheel"]), "installation_sha256": plugin["sha256"],
+        "runtime_path": str(plugin["runtime_path"]), "runtime_sha256": installation_digest(plugin["runtime_path"]),
     }}
     connection.update(plugin_id="example.external-fake", options={"custom": "plugin-specific"})
     monkeypatch.setattr("asterun.plugins.registry.importlib.import_module", lambda *a, **k: pytest.fail("配置校验不得加载外部模块"))
@@ -125,6 +127,7 @@ def test_v2_explicit_external_manifest_can_replace_builtin_id(config_path, v2_ra
     v2_raw["plugins"] = {"google.antigravity-cli": {
         "enabled": False, "manifest_path": str(manifest_path), "runner": plugin["runner"],
         "installation_path": str(plugin["wheel"]), "installation_sha256": plugin["sha256"],
+        "runtime_path": str(plugin["runtime_path"]), "runtime_sha256": installation_digest(plugin["runtime_path"]),
     }}
     first_connection(v2_raw).update(plugin_id="google.antigravity-cli", options={"external_version_pin": "fake-test"})
     config = load_config(write(config_path, v2_raw))
@@ -333,6 +336,7 @@ def test_external_plugin_options_cannot_smuggle_env_or_credentials(config_path, 
     v2_raw["plugins"] = {"example.external-fake": {
         "enabled": False, "manifest_path": str(plugin["manifest"]), "runner": plugin["runner"],
         "installation_path": str(plugin["wheel"]), "installation_sha256": plugin["sha256"],
+        "runtime_path": str(plugin["runtime_path"]), "runtime_sha256": installation_digest(plugin["runtime_path"]),
     }}
     first_connection(v2_raw).update(plugin_id="example.external-fake", options=options)
     with pytest.raises(AsterunError, match="明文凭据字段"):

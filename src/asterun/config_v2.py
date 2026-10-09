@@ -19,7 +19,7 @@ POOL_KEYS = {
 }
 POOL_METERS = {"requests", "turns", "tokens", "micro_usd", "wall_ms", "tool_actions", "bytes"}
 CONNECTION_KEYS = {"plugin_id", "enabled", "provider_account_ref", "runtime_ref", "auth_mode", "billing_pool_refs", "options", "credential_ref", "upstream_version"}
-EXTERNAL_KEYS = {"enabled", "manifest_path", "runner", "installation_path", "installation_sha256", "runtime_path", "runtime_sha256"}
+EXTERNAL_KEYS = {"enabled", "manifest_path", "runner", "installation_path", "installation_sha256", "runtime_path", "runtime_sha256", "allow_unpinned_runtime"}
 ROUTING_KEYS = {"automatic_paid_fallback", "automatic_account_switch", "default_order", "rules"}
 
 
@@ -147,8 +147,15 @@ def parse_v2(raw: dict, source_path: Path) -> tuple[dict[str, dict], dict[str, d
         if kind:
             manifests[plugin_id] = builtins.get(plugin_id).manifest
             continue
+        if "allow_unpinned_runtime" in settings:
+            flag(settings["allow_unpinned_runtime"], f"plugins.{plugin_id}.allow_unpinned_runtime")
         required = {"manifest_path", "runner", "installation_path", "installation_sha256"}
-        if required - set(settings):
+        if settings.get("allow_unpinned_runtime") is not True:
+            required |= {"runtime_path", "runtime_sha256"}
+        missing = required - set(settings)
+        if missing & {"runtime_path", "runtime_sha256"}:
+            invalid(f"外部插件 {plugin_id} 必须钉定运行代码摘要")
+        if missing:
             invalid(f"外部插件 {plugin_id} 缺少显式注册信息")
         for key in ("manifest_path", "installation_path", "runtime_path"):
             if key in settings:
@@ -232,6 +239,11 @@ def parse_v2(raw: dict, source_path: Path) -> tuple[dict[str, dict], dict[str, d
                 flag(options["desktop_projects"], f"connections.{ref}.options.desktop_projects")
             if "approval_policy" in options:
                 validate_codex_approval_policy(options["approval_policy"], f"connections.{ref}.options")
+            if "extra_env" in options:
+                from asterun.child_env import validate_extra_env
+                validate_extra_env(options["extra_env"], f"connections.{ref}.options.extra_env")
+            if "load_user_settings" in options:
+                flag(options["load_user_settings"], f"connections.{ref}.options.load_user_settings")
             for key in ("bin", "home", "model"):
                 if key in options:
                     text(options[key], f"connections.{ref}.options.{key}")
@@ -271,4 +283,9 @@ def parse_v2(raw: dict, source_path: Path) -> tuple[dict[str, dict], dict[str, d
             backends[alias]["desktop_projects"] = options["desktop_projects"]
         if kind == "codex" and "approval_policy" in options:
             backends[alias]["approval_policy"] = options["approval_policy"]
+        if kind in {"codex", "claude"} and "extra_env" in options:
+            from asterun.child_env import validate_extra_env
+            backends[alias]["extra_env"] = validate_extra_env(options["extra_env"], f"connections.{ref}.options.extra_env")
+        if kind == "claude" and options.get("load_user_settings") is True:
+            backends[alias]["load_user_settings"] = True
     return backends, namespaces

@@ -33,7 +33,7 @@ def antigravity_installation(tmp_path_factory):
         assert result.returncode == 0, result.stdout + result.stderr
         return result.stdout
     proof = json.loads(run([sys.executable, str(PACKAGE / "scripts/verify-source.py")]))
-    assert proof["original_sources_unchanged"] and proof["verified_files"] == 3
+    assert proof["original_sources_unchanged"] and proof["verified_files"] == 5
     source = root / "source"
     shutil.copytree(PACKAGE, source)
     run([sys.executable, "-m", "pip", "wheel", "--no-build-isolation", "--no-deps", "-w", str(root / "wheels"), str(source)])
@@ -108,6 +108,36 @@ def submit(app):
     result = app.handle("task.submit", {"workspace": "demo", "text": "offline prompt"})
     assert result.ok, result.error
     return result
+
+
+SOURCE_COMMIT = "9610e99f95a5614f6f8e1b0f10bf87d9d4f67f71"
+
+
+def test_verify_source_covers_every_vendor_file_without_assert(tmp_path):
+    proof = json.loads(subprocess.run(
+        [sys.executable, "-O", str(PACKAGE / "scripts/verify-source.py")],
+        check=True, capture_output=True, text=True,
+    ).stdout)
+    assert proof["source_commit"] == SOURCE_COMMIT
+    assert proof["source_git_object_checked"] is True
+    assert proof["verified_files"] == 5
+    vendor = PACKAGE / "src/asterun_plugin_antigravity/_vendor"
+    listed = {row["target"] for row in json.loads((PACKAGE / "src/asterun_plugin_antigravity/vendor-source.json").read_text())["files"]}
+    present = {f"_vendor/{path.relative_to(vendor).as_posix()}" for path in vendor.rglob("*")
+               if path.is_file() and "__pycache__" not in path.parts and path.suffix != ".pyc"}
+    assert listed == present
+    mutated = tmp_path / "plugin"
+    shutil.copytree(PACKAGE, mutated)
+    (mutated / "src/asterun_plugin_antigravity/_vendor/extra.py").write_text("unlisted\n")
+    extra = subprocess.run([sys.executable, "-O", str(mutated / "scripts/verify-source.py"), str(REPO)],
+                           capture_output=True, text=True)
+    assert extra.returncode != 0
+    assert "assert" not in extra.stderr.lower() or "AssertionError" not in extra.stderr
+    (mutated / "src/asterun_plugin_antigravity/_vendor/extra.py").unlink()
+    (mutated / "src/asterun_plugin_antigravity/_vendor/compat.py").write_text("changed\n")
+    changed = subprocess.run([sys.executable, "-O", str(mutated / "scripts/verify-source.py"), str(REPO)],
+                             capture_output=True, text=True)
+    assert changed.returncode != 0
 
 
 def test_standalone_manifest_describe_and_no_native_discovery(antigravity_installation, tmp_path):

@@ -6,7 +6,7 @@ This optional Apache-2.0 plugin uses a native account through Antigravity CLI 1.
 
 ## Build and configure
 
-The current plugin version is `1.0.1`, which includes the Linux x86_64 CLI 1.2.0 profile. Its wheel, source distribution, and checksums are on the [a17 release page](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a17). The `1.0.0` wheel on the a13 release page still carries the old profile and rejects a Linux HOME. You can also build it from a fixed source commit as shown below.
+The plugin version in this source tree is `1.0.2`. The published [a17 release page](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a17) still carries the `1.0.1` wheel; `1.0.2` has not been published with a core release. This version pins every `_vendor` file. Profile behavior matches `1.0.1`. `vendor-source.json` is part of the installed tree, so replacing the package changes the runtime digest and a registered `1.0.1` installation must be registered again. The `1.0.0` wheel on the a13 release page still carries the old profile and rejects a Linux HOME. You can also build it from a fixed source commit as shown below.
 
 Verify the source from a complete Git checkout, then build with a prepared build environment:
 

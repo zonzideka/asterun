@@ -13,6 +13,7 @@ from asterun.backends.fake import FakeBackend
 from asterun.config import load_config
 from asterun.config_migration import migrate_v1_to_v2
 from asterun.errors import SCOPE_DENIED
+from asterun.plugins.registry import installation_digest
 from asterun.ids import RunId
 from asterun.policy import Decision, Principal
 from asterun.sqlite_store import SqliteStore
@@ -181,6 +182,7 @@ def test_external_plugin_with_builtin_brand_keeps_its_declared_policy(isolated_e
     raw["plugins"]["xai.grok"] = {
         "enabled": True, "manifest_path": str(manifest_path), "runner": plugin["runner"],
         "installation_path": str(plugin["wheel"]), "installation_sha256": plugin["sha256"],
+        "runtime_path": str(plugin["runtime_path"]), "runtime_sha256": installation_digest(plugin["runtime_path"]),
     }
     connection = raw["connections"][raw["backends"]["worker"]["connection_ref"]]
     connection["auth_mode"] = "none"

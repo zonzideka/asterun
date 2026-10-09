@@ -72,16 +72,18 @@ def manifest():
 
 def registration(root, *, source=STUB, enabled=True, pin=True):
     script = root / "worker.py"
-    script.write_text(source)
+    script.write_text(f"#!{sys.executable}\n{source}")
+    script.chmod(0o700)
     metadata = root / "manifest.json"
     metadata.write_text(json.dumps(manifest()))
     package = root / "reviewed-wheel.whl"
     package.write_bytes(b"offline reviewed artifact")
     registry = PluginRegistry()
-    item = registry.register_external(metadata, runner=[sys.executable, str(script)],
+    item = registry.register_external(metadata, runner=[str(script)],
         installation_path=package, installation_sha256=hashlib.sha256(package.read_bytes()).hexdigest(),
         enabled=enabled, runtime_path=script if pin else None,
-        runtime_sha256=installation_digest(script) if pin else None)
+        runtime_sha256=installation_digest(script) if pin else None,
+        allow_unpinned_runtime=not pin)
     return registry, item
 
 

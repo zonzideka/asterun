@@ -116,6 +116,14 @@ v2 把该字段写在对应连接的 `options` 里，不写在只含 `connection
 
 Claude 通过 `claude -p` 执行一次任务。Grok 提供文本和编码两种模式，均使用用户独立授权的原生 HOME。
 
+## 子进程环境
+
+Codex 与 Claude 启动时只向子进程复制白名单环境，不再继承宿主的全部变量。保留 `HOME`、`USER`、`PATH`、`TMPDIR`、语言与区域变量、常见代理变量，以及证书包路径。Codex 另外保留 `CODEX_HOME`，因此现有 `~/.codex` 或 `CODEX_HOME` 指向的 ChatGPT 登录仍然可读。Claude 另外保留 `CLAUDE_CODE_OAUTH_TOKEN` 和 `CLAUDE_CONFIG_DIR`，登录文件仍在 `HOME/.claude` 或该配置目录。`ANTHROPIC_API_KEY` 和其他未列出的密钥不会传入。
+
+需要把某个已在核心进程中的变量传给这两个后端时，在 v1 后端或 v2 连接 options 里写 `extra_env`，值为变量名数组，最多 32 个。配置只保存名字，值在启动时从核心进程环境复制。`LD_*`、`DYLD_*`、`PYTHONPATH`、`NODE_OPTIONS` 等会改变加载行为的名字会被拒绝。省略 `extra_env` 时，已有配置的摘要不变。
+
+Claude 普通任务默认附加空 MCP、`--strict-mcp-config`、空 `--setting-sources` 和 `disableAllHooks`，因此不加载用户 hooks 与项目 MCP。把后端或连接的 `load_user_settings` 设为 `true` 可恢复加载；快照审查始终隔离，不受该开关影响。组织托管的 hooks 仍可能由 Claude 自身执行，见 [ADR 0010](adr/0010-version-bound-quality-workflow.md)。此项用离线参数检查验证，尚未用真实 Claude 或 Codex 复测登录。
+
 ## Grok 文本配置
 
 在执行主机安装 Grok CLI，再准备私有 HOME 并完成设备授权：

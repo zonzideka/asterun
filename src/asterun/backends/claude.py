@@ -23,8 +23,10 @@ LIVE_ENV = "ASTERUN_RUN_CLAUDE"
 DEFAULT_CLAUDE_BIN = None
 DEPTH_ENV = "ASTERUN_DEPTH"
 PARENT_ENV = "ASTERUN_PARENT_RUN_ID"
-_SCRUB_PREFIXES = ("CODEX_", "CLAUDE_CODE_", "NODE_REPL_")
-_SCRUB_KEEP = {"CLAUDE_CODE_OAUTH_TOKEN"}
+_USER_CONFIG_ISOLATION = (
+    "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
+    "--setting-sources", "", "--settings", '{"disableAllHooks":true}',
+)
 
 Runner = Callable[[list[str], str, dict[str, str], float], tuple[str, str, int]]
 
@@ -109,6 +111,7 @@ def build_command(
     append_system_prompt: str | None = None,
     model: str | None = None,
     snapshot_only: bool = False,
+    load_user_settings: bool = False,
 ) -> list[str]:
     cmd = [claude_bin, "-p", prompt, "--output-format", "json"]
     if permission_mode:
@@ -119,12 +122,13 @@ def build_command(
         cmd += ["--model", model]
     if disallowed_tools:
         cmd += ["--disallowed-tools", *disallowed_tools]
+    # 快照审查始终隔离。普通任务默认也不加载用户 hooks 与 MCP，登录文件仍由 HOME 定位。
+    if snapshot_only or not load_user_settings:
+        cmd += list(_USER_CONFIG_ISOLATION)
     if allowed_tools:
         cmd += ["--allowed-tools", *allowed_tools]
     if snapshot_only:
-        cmd += ["--tools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
-                "--disallowed-tools", "*", "--permission-mode", "dontAsk",
-                "--setting-sources", "", "--settings", '{"disableAllHooks":true}',
+        cmd += ["--tools", "", "--disallowed-tools", "*", "--permission-mode", "dontAsk",
                 "--disable-slash-commands", "--no-chrome", "--no-session-persistence"]
     return cmd
 
@@ -134,13 +138,11 @@ def build_env(
     depth: int = 1,
     parent_run_id: str = "",
     base_env: dict[str, str] | None = None,
-    extra_scrub: tuple[str, ...] = ("ANTHROPIC_API_KEY",),
+    extra: tuple[str, ...] | list[str] = (),
 ) -> dict[str, str]:
-    env = dict(os.environ if base_env is None else base_env)
-    for var in extra_scrub:
-        env.pop(var, None)
-    for key in [item for item in env if item.startswith(_SCRUB_PREFIXES) and item not in _SCRUB_KEEP]:
-        env.pop(key, None)
+    from asterun.child_env import CLAUDE_AUTH_ENV, build_child_env
+
+    env = build_child_env(base_env, keep=CLAUDE_AUTH_ENV, extra=extra)
     env[DEPTH_ENV] = str(depth)
     if parent_run_id:
         env[PARENT_ENV] = parent_run_id
@@ -204,6 +206,8 @@ def run_claude_blocking(
     parent_run_id: str = "",
     base_env: dict[str, str] | None = None,
     snapshot_only: bool = False,
+    load_user_settings: bool = False,
+    extra: tuple[str, ...] | list[str] = (),
 ) -> None:
     cmd = build_command(
         claude_bin,
@@ -214,8 +218,9 @@ def run_claude_blocking(
         append_system_prompt=append_system_prompt,
         model=model,
         snapshot_only=snapshot_only,
+        load_user_settings=load_user_settings,
     )
-    env = build_env(depth=depth, parent_run_id=parent_run_id, base_env=base_env)
+    env = build_env(depth=depth, parent_run_id=parent_run_id, base_env=base_env, extra=extra)
     try:
         if session.status == "cancelled":
             return
@@ -389,7 +394,8 @@ class ClaudeBackend:
             run_claude_blocking(
                 str(binary), session, text or "Reply with ASTERUN_CLAUDE_OK.", str(cwd),
                 allowed_tools=() if snapshot_only else ("Read", "Grep", "Glob"), runner=self.runner,
-                snapshot_only=snapshot_only,
+                snapshot_only=snapshot_only, load_user_settings=self.config.load_user_settings,
+                extra=self.config.extra_env,
             )
         finally:
             self._sessions.pop(run_id.value, None)

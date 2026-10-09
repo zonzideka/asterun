@@ -394,19 +394,24 @@ class CodexAppServerTransport:
         client_version: str = __version__,
         experimental_api: bool = True,
         config_overrides: dict[str, Any] | None = None,
+        extra_env: tuple[str, ...] | list[str] = (),
     ):
         self.codex_bin = codex_bin
         self.client_name = client_name
         self.client_version = client_version
         self.experimental_api = experimental_api
         self.config_overrides = config_overrides
+        self.extra_env = tuple(extra_env)
         self._transport = LineJsonRpcTransport(include_jsonrpc=True)
         self.initialize_result: dict[str, Any] | None = None
 
     def spawn(self, cwd: str | Path) -> None:
         if not self.codex_bin:
             raise RuntimeError("未配置 Codex 可执行文件")
-        child_env = os.environ.copy()
+        from asterun.child_env import CODEX_AUTH_ENV, build_child_env
+
+        # 保留 HOME/CODEX_HOME，使 ~/.codex 的 ChatGPT 登录仍可被 App Server 读到。
+        child_env = build_child_env(keep=CODEX_AUTH_ENV, extra=self.extra_env)
         self.native_home = Path(child_env.get("CODEX_HOME") or
             str(Path(child_env.get("HOME") or str(Path.home())) / ".codex")).resolve()
         self._transport.spawn(
@@ -798,7 +803,7 @@ class CodexBackend:
             return report
         if binary is None:
             raise self.unavailable_error()
-        transport = CodexAppServerTransport(codex_bin=str(binary))
+        transport = CodexAppServerTransport(codex_bin=str(binary), extra_env=self.config.extra_env)
         try:
             transport.spawn(Path.cwd())
             init = transport.initialize()
@@ -838,7 +843,7 @@ class CodexBackend:
         cwd = require_dispatch_cwd(cwd)
         binary = self.discover_bin()
         assert binary is not None
-        transport = CodexAppServerTransport(codex_bin=str(binary))
+        transport = CodexAppServerTransport(codex_bin=str(binary), extra_env=self.config.extra_env)
         try:
             transport.spawn(cwd)
             transport.initialize()

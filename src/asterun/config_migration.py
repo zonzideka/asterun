@@ -69,6 +69,10 @@ def migrate_v1_to_v2(path: str | Path) -> dict[str, Any]:
             options["desktop_projects"] = backend.desktop_projects
         if backend.kind == "codex" and backend.approval_policy is not None:
             options["approval_policy"] = backend.approval_policy
+        if backend.extra_env:
+            options["extra_env"] = list(backend.extra_env)
+        if backend.kind == "claude" and backend.load_user_settings:
+            options["load_user_settings"] = True
         proposed["connections"][connection_ref] = {
             "plugin_id": plugin_id, "enabled": enabled, "provider_account_ref": provider_ref,
             "runtime_ref": "runtime:local" if is_fake else "runtime:configure",
