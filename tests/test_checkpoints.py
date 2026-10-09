@@ -107,6 +107,11 @@ def test_terminal_persistence_failure_restarts_without_redelivery(isolated_env, 
     assert not response.ok
     task_id = app.store.list_task_ids()[0]
     run_id = app.store.get_task(task_id).current_run_id
+    failed = app.store.get_run(run_id)
+    # 终态检查点没写上时，不能提交成功运行；结果留着，重启后重放，不重新调用后端。
+    assert failed.status.value == 'pending_reconcile'
+    assert failed.native['unapplied_result']['status'] == 'succeeded'
+    assert failed.native['checkpoint']['status'] == 'baseline'
     app.close()
     restored = Application(load_config(isolated_env / 'config.json'), store=SqliteStore(state / 'asterun.sqlite'), state_dir=state)
     calls = []
@@ -114,9 +119,11 @@ def test_terminal_persistence_failure_restarts_without_redelivery(isolated_env, 
     try:
         restored.poll()
         run = restored.store.get_run(run_id)
-        assert run.status.value == 'pending_reconcile' and not calls
+        assert run.status.value == 'succeeded' and not calls
+        assert 'unapplied_result' not in run.native
+        assert run.native['checkpoint']['status'] == 'captured'
         data = restored.handle('workflow.checkpoint', {'task_id':task_id.value, 'expected_run_id':run_id.value})
-        assert data.ok and not data.data['recovery_ready']
+        assert data.ok and data.data['recovery_ready']
     finally:
         restored.close()
 
