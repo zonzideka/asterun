@@ -28,6 +28,7 @@ from asterun.contracts import (
     SessionBinding,
     Task,
     TERMINAL_RUN_STATUSES,
+    SLOT_HELD_NATIVE_KEY,
     SLOT_RELEASED_NATIVE_KEY,
     UNAPPLIED_APPROVAL_NATIVE_KEY,
     UNAPPLIED_RESULT_NATIVE_KEY,
@@ -150,7 +151,9 @@ _HIDDEN_NATIVE_KEYS = frozenset({
     UNAPPLIED_RESULT_NATIVE_KEY,
     UNAPPLIED_APPROVAL_NATIVE_KEY,
     SLOT_RELEASED_NATIVE_KEY,
+    SLOT_HELD_NATIVE_KEY,
 })
+_NATIVE_SLOT_KEYS = frozenset({SLOT_HELD_NATIVE_KEY, SLOT_RELEASED_NATIVE_KEY})
 _RETRY_BACKOFF_CAP = 8
 
 
@@ -1234,7 +1237,7 @@ class Application:
         self._require_applied_config()
         self._assert_task_binding(task)
         run = self.store.get_run(task.current_run_id) if task.current_run_id else None
-        if run is None or not run.native:
+        if run is None or not _public_native(run.native if isinstance(run.native, dict) else {}):
             raise AsterunError(REMOTE_STATE_UNKNOWN, "任务没有已持久化的原生引用，不能创建替代会话")
         worker = self.executor.workers.get(run.id.value) if self.executor else None
         if worker is not None and worker.is_alive():
@@ -1288,7 +1291,9 @@ class Application:
                 bind_execution(self, run, scoped_task, existing=True)
                 if not self.executor or run.id.value not in self.executor.workers:
                     self._record_result(run.id, backend.reconcile_execution(run.id, cwd=self.config.get_workspace(scoped_task.workspace).root))
-            if run and run.status not in TERMINAL_RUN_STATUSES and run.native and hasattr(backend, "reconcile_native"):
+            if (run and run.status not in TERMINAL_RUN_STATUSES
+                    and _public_native(run.native if isinstance(run.native, dict) else {})
+                    and hasattr(backend, "reconcile_native")):
                 if not self.executor or run.id.value not in self.executor.workers:
                     result = backend.reconcile_native(run.native, self.config.get_workspace(scoped_task.workspace).root)
                     self._record_result(run.id, result)
@@ -1813,11 +1818,12 @@ class Application:
         bind_dependencies(self, task, run)
         from asterun.checkpoints import before_dispatch
         before_dispatch(self, task, run)
-        self.scheduler.start(backend_name, run.id, str(self.config.get_workspace(task.workspace).root.resolve()))
+        self._assign_slot(run, held=True)
         self._set_run(run, RunStatus.DISPATCHING)
         self._event(run.id, EventType.RUN_DISPATCHING, "core", {"backend": backend_name})
         operation.status = OperationStatus.DISPATCHED
         self.store.save_operation(operation)
+        self._project_slot(run)
         native = {"backend_session_id": session.backend_session_id.value if session and session.backend_session_id else None,
                   "turn_id": session.latest_turn_id if session else None,
                   "asterun_identity": {"account": self.account_ref.value, "runtime": self.runtime_ref.value}}
@@ -1878,7 +1884,8 @@ class Application:
         if pending is not None and result.get("needs_approval"):
             result = {**result, "approval_id": pending.id.value}
         if (getattr(backend.config, "desktop_projects", None) is True
-                and hasattr(backend, "present_native") and run.native):
+                and hasattr(backend, "present_native")
+                and _public_native(run.native if isinstance(run.native, dict) else {})):
             # 同步兼容入口也必须先保存原生引用与执行结果，再做客户端展示。
             try:
                 report = backend.present_native(run.native, self.config.get_workspace(task.workspace).root)
@@ -2009,16 +2016,53 @@ class Application:
             approval=kept_approval,
         )
 
+    def _assign_slot(self, run: Run, *, held: bool) -> None:
+        """唯一写入名额标记的地方。调度器要等事务提交后，用 _project_slot 投影。
+
+        终态本身表示不再占用。这时去掉标记，避免内部记账被当成已保存的原生引用。
+        """
+        if run.status in TERMINAL_RUN_STATUSES:
+            run.native.pop(SLOT_HELD_NATIVE_KEY, None)
+            run.native.pop(SLOT_RELEASED_NATIVE_KEY, None)
+            return
+        run.native[SLOT_HELD_NATIVE_KEY] = bool(held)
+        if held:
+            run.native.pop(SLOT_RELEASED_NATIVE_KEY, None)
+        else:
+            run.native[SLOT_RELEASED_NATIVE_KEY] = True
+
+    def _persisted_slot_held(self, run: Run, operation) -> bool:
+        if run.status in TERMINAL_RUN_STATUSES:
+            return False
+        native = run.native if isinstance(run.native, dict) else {}
+        if SLOT_HELD_NATIVE_KEY in native:
+            return bool(native[SLOT_HELD_NATIVE_KEY])
+        if operation is None or operation.status == OperationStatus.INTENDED:
+            return False
+        if native.get(SLOT_RELEASED_NATIVE_KEY):
+            return False
+        return True
+
+    def _project_slot(self, run: Run) -> None:
+        """把持久化的名额标记投影到调度器。同一 run id 重复调用不会多占。"""
+        operation = self.store.find_operation_for_run(run.id)
+        if self._persisted_slot_held(run, operation):
+            task = self.store.get_task(run.task_id)
+            self.scheduler.start(run.backend.value, run.id, self._workspace_key(task))
+        else:
+            self.scheduler.finish(run.backend.value, run.id)
+
     def _record_result(self, run_id, result, *, remember: bool = True, approval: dict[str, Any] | None = None):
         if not remember and _is_progress_snapshot(result):
             backend_name = None
             try:
                 backend_name = self.store.get_run(run_id).backend.value
-                self._commit_retained_progress(run_id, result)
+                self._commit_retained_progress(run_id, result, approval=approval)
             except Exception:
                 self._preserve_failed_result(run_id, result, backend_name, remember=False, approval=approval)
                 return
             self._retained_results.pop(run_id.value, None)
+            self._project_slot(self.store.get_run(run_id))
             return
         backend_name = None
         try:
@@ -2046,7 +2090,10 @@ class Application:
             (isinstance(stashed, dict) and not _is_worker_fallback(stashed))
             or (retained is not None and not _is_worker_fallback(retained.result))
         )
-        if _is_worker_fallback(result) and richer_retained:
+        released = run.native.get(SLOT_HELD_NATIVE_KEY) is False or bool(run.native.get(SLOT_RELEASED_NATIVE_KEY))
+        if _is_worker_fallback(result) and (
+            richer_retained or run.status == RunStatus.PENDING_RECONCILE or released
+        ):
             return {"ignored_fallback": True}
         backend_kind = self.config.get_backend(run.backend.value).kind
         native = result.get("native")
@@ -2065,6 +2112,7 @@ class Application:
             stashed_approval = run.native.pop(UNAPPLIED_APPROVAL_NATIVE_KEY, None)
             run.native.pop(UNAPPLIED_RESULT_NATIVE_KEY, None)
             run.native.pop(SLOT_RELEASED_NATIVE_KEY, None)
+            run.native.pop(SLOT_HELD_NATIVE_KEY, None)
             approval_payload = approval if approval is not None else stashed_approval
             if isinstance(approval_payload, dict) and approval_payload.get("id"):
                 self._write_approval_outcome(run, approval_payload)
@@ -2101,6 +2149,8 @@ class Application:
                     OperationStatus.COMPLETED if run.status in TERMINAL_RUN_STATUSES else
                     OperationStatus.UNKNOWN if run.status == RunStatus.PENDING_RECONCILE else OperationStatus.DISPATCHED)
                 self.store.save_operation(operation)
+            self._assign_slot(run, held=run.status not in TERMINAL_RUN_STATUSES)
+            self.store.save_run(run)
         return {"run": run, "has_presentation": has_presentation, "presentation": presentation}
 
     def _write_approval_outcome(self, run: Run, payload: dict[str, Any]) -> None:
@@ -2124,12 +2174,9 @@ class Application:
 
     def _finish_recorded_result(self, outcome: dict[str, Any]) -> None:
         run = outcome["run"]
+        self._project_slot(run)
         if run.status in TERMINAL_RUN_STATUSES:
-            self.scheduler.finish(run.backend.value, run.id)
             self._drain_queue()
-        elif run.id.value not in self.scheduler.inflight_runs:
-            task = self.store.get_task(run.task_id)
-            self.scheduler.start(run.backend.value, run.id, self._workspace_key(task))
         if outcome["has_presentation"]:
             self._persist_native_presentation(run, outcome["presentation"])
 
@@ -2156,7 +2203,7 @@ class Application:
                     copied = existing
                 else:
                     copied = _json_result(result)
-                run.native[SLOT_RELEASED_NATIVE_KEY] = True
+                self._assign_slot(run, held=False)
                 if approval is not None:
                     run.native[UNAPPLIED_APPROVAL_NATIVE_KEY] = approval
                 elif isinstance(run.native.get(UNAPPLIED_APPROVAL_NATIVE_KEY), dict):
@@ -2202,7 +2249,7 @@ class Application:
         for key, item in due:
             self._record_result(RunId(key), item.result, remember=False, approval=item.approval)
 
-    def _commit_retained_progress(self, run_id, result) -> None:
+    def _commit_retained_progress(self, run_id, result, approval: dict[str, Any] | None = None) -> None:
         """进度未能落盘时只补上原生引用，运行保持待对账，不恢复成派发中。"""
         run = self.store.get_run(run_id)
         backend_kind = self.config.get_backend(run.backend.value).kind
@@ -2215,13 +2262,17 @@ class Application:
             if run.status in TERMINAL_RUN_STATUSES or task.current_run_id != run.id:
                 return
             run.native.pop(UNAPPLIED_RESULT_NATIVE_KEY, None)
+            stashed_approval = run.native.pop(UNAPPLIED_APPROVAL_NATIVE_KEY, None)
+            approval_payload = approval if approval is not None else stashed_approval
+            if isinstance(approval_payload, dict) and approval_payload.get("id"):
+                self._write_approval_outcome(run, approval_payload)
             if native:
                 run.native.update({
                     key: value for key, value in native.items()
                     if key not in {
                         "checkpoint", "local_checks", "stage_attestations", "dependency_bindings",
                         "payload_manifests", "desktop_project", UNAPPLIED_RESULT_NATIVE_KEY,
-                        UNAPPLIED_APPROVAL_NATIVE_KEY, SLOT_RELEASED_NATIVE_KEY,
+                        UNAPPLIED_APPROVAL_NATIVE_KEY, SLOT_RELEASED_NATIVE_KEY, SLOT_HELD_NATIVE_KEY,
                     }
                 })
             for raw in result.get("events") or []:
@@ -2234,6 +2285,7 @@ class Application:
                 session = self.store.get_session(session_id)
                 self._record_session_after_dispatch(session, task, {"native": native}, utc_now())
             already = run.status == RunStatus.PENDING_RECONCILE
+            self._assign_slot(run, held=False)
             if not already:
                 self._set_run(
                     run,
@@ -2279,30 +2331,35 @@ class Application:
         )
 
     def _release_untracked_run(self, run: Run) -> Run:
-        self.scheduler.finish(run.backend.value, run.id)
-        if run.status in TERMINAL_RUN_STATUSES or run.status == RunStatus.PENDING_RECONCILE:
+        if run.status in TERMINAL_RUN_STATUSES:
+            self._project_slot(run)
             return run
         with self._state_transaction():
             current = self.store.get_run(run.id)
-            if current.status in TERMINAL_RUN_STATUSES or current.status == RunStatus.PENDING_RECONCILE:
+            if current.status in TERMINAL_RUN_STATUSES:
                 return current
             if self.store.find_operation_for_run(current.id) is not None:
                 return current
-            current.native[SLOT_RELEASED_NATIVE_KEY] = True
-            self._set_run(
-                current,
-                RunStatus.PENDING_RECONCILE,
-                terminated=False,
-                error_code=REMOTE_STATE_UNKNOWN,
-                summary="找不到操作记录，已释放并发名额，不会自动重派",
-            )
-            self._event(
-                current.id,
-                EventType.RECONCILED,
-                "core",
-                {"re_dispatched": False, "error_code": REMOTE_STATE_UNKNOWN, "reason": "operation_missing"},
-            )
-            return self.store.get_run(current.id)
+            self._assign_slot(current, held=False)
+            if current.status != RunStatus.PENDING_RECONCILE:
+                self._set_run(
+                    current,
+                    RunStatus.PENDING_RECONCILE,
+                    terminated=False,
+                    error_code=REMOTE_STATE_UNKNOWN,
+                    summary="找不到操作记录，已释放并发名额，不会自动重派",
+                )
+                self._event(
+                    current.id,
+                    EventType.RECONCILED,
+                    "core",
+                    {"re_dispatched": False, "error_code": REMOTE_STATE_UNKNOWN, "reason": "operation_missing"},
+                )
+            else:
+                self.store.save_run(current)
+            current = self.store.get_run(current.id)
+        self._project_slot(current)
+        return current
 
     def _persist_native_presentation(self, run: Run, report: Any) -> tuple[Run, dict[str, Any]]:
         receipt = {"report": report, "receipt_persistence": "persisted"}
@@ -2331,17 +2388,18 @@ class Application:
             self._apply_retained_result_if_any(run)
             run = self.store.get_run(run.id)
             if run.status in TERMINAL_RUN_STATUSES:
+                self._project_slot(run)
                 continue
             operation = self.store.find_operation_for_run(run.id)
             if operation is not None and operation.status == OperationStatus.INTENDED:
+                self.scheduler.finish(run.backend.value, run.id)
                 self.scheduler.enqueue(run.backend.value, task.id, run.id,
                                        self._workspace_key(task))
-            elif operation is None or run.native.get(SLOT_RELEASED_NATIVE_KEY):
-                # 没有操作记录，或名额已经明确释放：不占回名额，也不重派。
+            elif operation is None:
                 self._reconcile_one(task.id)
             else:
-                self.scheduler.start(run.backend.value, run.id,
-                                     self._workspace_key(task))
+                # 重放结果时可能已经投影过一次；这里再投影仍然按 run id 幂等。
+                self._project_slot(run)
                 self._reconcile_one(task.id)
 
     def _assert_task_binding(self, task: Task) -> None:
@@ -2618,7 +2676,10 @@ class Application:
             from asterun.plugins.core_integration import ingest_result
             ingest_result(self, run, result)
         if result.get("native"):
-            run.native.update({k: v for k, v in result["native"].items() if k not in {"checkpoint", "local_checks", "stage_attestations", "dependency_bindings", "payload_manifests"}})
+            run.native.update({k: v for k, v in result["native"].items() if k not in {
+                "checkpoint", "local_checks", "stage_attestations", "dependency_bindings", "payload_manifests",
+                * _NATIVE_SLOT_KEYS, UNAPPLIED_RESULT_NATIVE_KEY, UNAPPLIED_APPROVAL_NATIVE_KEY,
+            }})
         for raw in result.get("events") or []:
             event_type = EventType(raw["type"]) if raw.get("type") in set(EventType) else EventType.MESSAGE
             self._event(run.id, event_type, source, {k: v for k, v in raw.items() if k != "type"})

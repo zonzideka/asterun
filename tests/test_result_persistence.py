@@ -12,7 +12,14 @@ import pytest
 from asterun.application import Application
 from asterun.backends.fake import FakeBackend
 from asterun.config import load_config
-from asterun.contracts import UNAPPLIED_RESULT_NATIVE_KEY, ApprovalState, OperationStatus, RunStatus
+from asterun.contracts import (
+    TERMINAL_RUN_STATUSES,
+    UNAPPLIED_APPROVAL_NATIVE_KEY,
+    UNAPPLIED_RESULT_NATIVE_KEY,
+    ApprovalState,
+    OperationStatus,
+    RunStatus,
+)
 from asterun.errors import REMOTE_STATE_UNKNOWN
 from asterun.ids import ApprovalId, RunId
 from asterun.policy import AllowConfiguredWorkspaces, Principal
@@ -739,3 +746,209 @@ def test_approval_result_writes_are_one_transaction(isolated_env, workspace_root
         assert sum(1 for call in app.backends["fake"].calls if call.method == "respond_approval") == 1
     finally:
         app.close()
+
+
+def _assert_slot_invariant(app: Application) -> None:
+    """占用计数、运行 id 集合，以及持久化的名额标记必须是同一件事。"""
+    occupied = set(app.scheduler.inflight_runs)
+    assert sum(app.scheduler.inflight.values()) == len(occupied)
+    for backend, count in app.scheduler.inflight.items():
+        assert count == sum(
+            1 for run_id in occupied if app.store.get_run(RunId(run_id)).backend.value == backend
+        )
+    for task_id in app.store.list_task_ids():
+        task = app.store.get_task(task_id)
+        if task.current_run_id is None:
+            continue
+        run = app.store.get_run(task.current_run_id)
+        operation = app.store.find_operation_for_run(run.id)
+        if run.status in TERMINAL_RUN_STATUSES:
+            should_hold = False
+        elif "slot_held" in run.native:
+            should_hold = bool(run.native["slot_held"])
+        elif operation is None or operation.status == OperationStatus.INTENDED or run.native.get("concurrency_released"):
+            should_hold = False
+        else:
+            should_hold = True
+        assert (run.id.value in occupied) is should_hold
+
+
+def test_running_approval_retry_is_not_dropped(isolated_env, workspace_root):
+    """审批已经返回运行中，写盘失败后的重试和重启都不能把审批留在转发中。"""
+    db = isolated_env / "approval-running.sqlite"
+    store = SqliteStore(db)
+    app = _sync_app(isolated_env, workspace_root, store)
+    try:
+        waiting = app.handle("task.submit", {"workspace": "demo", "text": "ask", "script": "wait_input"})
+        assert waiting.ok and waiting.data["run"]["status"] == RunStatus.WAITING_INPUT
+        approval_id = waiting.data["dispatch"]["approval_id"]
+        run_id = waiting.ids["run_id"]
+
+        calls = {"n": 0}
+
+        def running_after_approval(run_id_arg, decision, **kwargs):
+            del run_id_arg, decision, kwargs
+            calls["n"] += 1
+            return {"status": "running", "terminated": False, "summary": "codex still running"}
+
+        app.backends["fake"].respond_approval = running_after_approval
+        original = store.save_approval
+
+        def crash_approved(approval):
+            if approval.id.value == approval_id and approval.state == ApprovalState.APPROVED:
+                raise sqlite3.OperationalError("injected approval outcome failure")
+            return original(approval)
+
+        store.save_approval = crash_approved
+        with pytest.raises(sqlite3.OperationalError, match="injected approval outcome failure"):
+            app.handle("approval.respond", {"approval_id": approval_id, "decision": "approve"})
+        stored = app.store.get_approval(ApprovalId(approval_id))
+        assert stored.state == ApprovalState.FORWARDING
+        assert calls["n"] == 1
+    finally:
+        app.close()
+
+    restored = _sync_app(isolated_env, workspace_root, SqliteStore(db))
+    try:
+        approval = restored.store.get_approval(ApprovalId(approval_id))
+        assert approval.state == ApprovalState.APPROVED
+        assert approval.response_status
+        assert sum(1 for call in restored.backends["fake"].calls if call.method == "respond_approval") == 0
+        run = restored.store.get_run(RunId(run_id))
+        assert UNAPPLIED_APPROVAL_NATIVE_KEY not in run.native
+        _assert_slot_invariant(restored)
+    finally:
+        restored.close()
+
+
+def test_restart_replay_books_slot_once(isolated_env, workspace_root):
+    """重放未结束结果后再恢复调度，同一条运行只能占一个名额。"""
+    db = isolated_env / "double-slot.sqlite"
+    store = SqliteStore(db)
+    app = _sync_app(isolated_env, workspace_root, store)
+    try:
+        original = store.save_run
+
+        def crash_waiting(run):
+            if run.status == RunStatus.WAITING_INPUT:
+                raise sqlite3.OperationalError("injected waiting persist failure")
+            return original(run)
+
+        store.save_run = crash_waiting
+        with pytest.raises(sqlite3.OperationalError, match="injected waiting persist failure"):
+            app.handle("task.submit", {"workspace": "demo", "text": "ask", "script": "wait_input"})
+        run_id = app.store.list_task_ids()[0]
+        task = app.store.get_task(run_id)
+        run_id = task.current_run_id.value
+        assert app.store.get_run(RunId(run_id)).status == RunStatus.PENDING_RECONCILE
+    finally:
+        app.close()
+
+    restored = _sync_app(isolated_env, workspace_root, SqliteStore(db))
+    try:
+        assert restored.scheduler.inflight_for("fake") == len(restored.scheduler.inflight_runs)
+        assert restored.scheduler.inflight_for("fake") == 1
+        assert run_id in restored.scheduler.inflight_runs
+        _assert_slot_invariant(restored)
+    finally:
+        restored.close()
+
+
+def test_retry_after_double_write_failure_keeps_slot_released(isolated_env, workspace_root):
+    """结果和保留副本都没写上，之后重试成功也要把已释放的名额留在状态库里。"""
+    db = isolated_env / "slot-flag.sqlite"
+    store = SqliteStore(db)
+    backend = ProgressBackend(None, {})
+    app = _worker_app(isolated_env, workspace_root, store, backend, concurrency=1)
+    try:
+        submitted = app.task_submit({"workspace": "demo", "backend": "worker", "text": "hold", "script": "hold"})
+        assert submitted.ok
+        run_id = submitted.ids["run_id"]
+        _wait(lambda: app.executor.updates.qsize() >= 1, "进度没有进入执行器队列")
+        original_session = store.save_session
+        original_run = store.save_run
+        session_failures = {"n": 0}
+        preserve_failures = {"n": 0}
+
+        def fail_session(session):
+            if session_failures["n"] < 1 and getattr(session.backend_session_id, "value", None) == KEPT_SESSION:
+                session_failures["n"] += 1
+                raise sqlite3.OperationalError("injected session persist failure")
+            return original_session(session)
+
+        def fail_preserve(run):
+            if preserve_failures["n"] < 1 and run.id.value == run_id and run.status == RunStatus.PENDING_RECONCILE:
+                preserve_failures["n"] += 1
+                raise sqlite3.OperationalError("injected preserve failure")
+            return original_run(run)
+
+        store.save_session = fail_session
+        store.save_run = fail_preserve
+        with pytest.raises(sqlite3.OperationalError, match="injected session persist failure"):
+            app.poll()
+
+        def salvaged() -> bool:
+            app.poll()
+            current = app.store.get_run(RunId(run_id))
+            return current.status == RunStatus.PENDING_RECONCILE and (
+                current.native.get("slot_held") is False or current.native.get("concurrency_released") is True
+            )
+
+        _wait(salvaged, "重试成功后没有把已释放的名额写入状态库")
+        assert app.scheduler.inflight_for("worker") == 0
+        assert run_id not in app.scheduler.inflight_runs
+        _assert_slot_invariant(app)
+    finally:
+        _join(app)
+        app.close()
+
+    restored = _worker_app(isolated_env, workspace_root, SqliteStore(db), ProgressBackend(None, {}), concurrency=1)
+    try:
+        assert restored.store.get_run(RunId(run_id)).status == RunStatus.PENDING_RECONCILE
+        assert restored.scheduler.inflight_for("worker") == 0
+        assert run_id not in restored.scheduler.inflight_runs
+        _assert_slot_invariant(restored)
+    finally:
+        restored.close()
+
+
+def test_slot_count_matches_live_runs_after_faults_and_restart(isolated_env, workspace_root):
+    """任意一次落盘失败和重启之后，名额计数都等于仍被标记为占用的运行数。"""
+    db = isolated_env / "slot-invariant.sqlite"
+    app = _sync_app(isolated_env, workspace_root, SqliteStore(db))
+    try:
+        held = app.handle("task.submit", {"workspace": "demo", "text": "hold", "script": "cancel_and_stop"})
+        assert held.ok and held.data["run"]["status"] == RunStatus.RUNNING
+        _assert_slot_invariant(app)
+        run_id = held.ids["run_id"]
+    finally:
+        app.close()
+
+    restored = _sync_app(isolated_env, workspace_root, SqliteStore(db))
+    try:
+        assert restored.scheduler.inflight_for("fake") == 1
+        assert restored.scheduler.inflight_runs == {run_id}
+        _assert_slot_invariant(restored)
+        cancelled = restored.handle("task.cancel", {"task_id": held.ids["task_id"]})
+        assert cancelled.ok and cancelled.data["terminated"] is True
+        assert restored.scheduler.inflight_for("fake") == 0
+        _assert_slot_invariant(restored)
+        original = restored.store.save_run
+
+        def crash_waiting(run):
+            if run.status == RunStatus.WAITING_INPUT:
+                raise sqlite3.OperationalError("injected waiting persist failure")
+            return original(run)
+
+        restored.store.save_run = crash_waiting
+        with pytest.raises(sqlite3.OperationalError, match="injected waiting persist failure"):
+            restored.handle("task.submit", {"workspace": "demo", "text": "ask", "script": "wait_input"})
+    finally:
+        restored.close()
+
+    replayed = _sync_app(isolated_env, workspace_root, SqliteStore(db))
+    try:
+        _assert_slot_invariant(replayed)
+        assert replayed.scheduler.inflight_for("fake") == len(replayed.scheduler.inflight_runs)
+    finally:
+        replayed.close()

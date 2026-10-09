@@ -138,6 +138,7 @@ def caller_result(app, task, run, data, *, compact):
             full['run'].get('native', {}).pop('unapplied_result', None)
             full['run'].get('native', {}).pop('unapplied_approval', None)
             full['run'].get('native', {}).pop('concurrency_released', None)
+            full['run'].get('native', {}).pop('slot_held', None)
         record = {'baseline': manifest(full, 'caller_result'), 'candidate': manifest(candidate, 'caller_result'),
                   'sent': manifest(result, 'caller_result'), 'mode': mode, 'scope_note': 'controller_payload_only'}
         app.store.save_payload_manifest(run.id, 'caller_result', record)

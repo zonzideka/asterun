@@ -56,6 +56,11 @@ class Scheduler:
         )
 
     def start(self, backend: str, run_id: RunId | None = None, workspace: str | None = None) -> None:
+        """按 run id 幂等。同一条运行重复进入不会把计数加两次。"""
+        if run_id is not None and run_id.value in self.inflight_runs:
+            if workspace is not None and run_id.value not in self.workspaces:
+                self.workspaces[run_id.value] = workspace
+            return
         self.inflight[backend] = self.inflight_for(backend) + 1
         if run_id is not None:
             self.inflight_runs.add(run_id.value)
