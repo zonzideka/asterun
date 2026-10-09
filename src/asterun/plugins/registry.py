@@ -74,6 +74,7 @@ class PluginRegistration:
     runner_sha256: str | None = None
     runtime_path: Path | None = None
     runtime_sha256: str | None = None
+    allow_unpinned_runtime: bool = False
 
     @property
     def plugin_id(self) -> str:
@@ -87,6 +88,7 @@ class PluginRegistration:
             "runner": list(self.runner), "installation_sha256": self.installation_sha256,
             "runner_sha256": self.runner_sha256, "runtime_sha256": self.runtime_sha256,
             "runtime_integrity_pinned": self.source == "builtin" or self.runtime_path is not None,
+            "allow_unpinned_runtime": self.allow_unpinned_runtime,
             "runtime_integrity_verified": False,
             "installation_evidence_scope": "distribution_artifact_and_explicit_runtime_pins",
             "manifest": self.manifest.to_dict(),
@@ -114,7 +116,8 @@ class PluginRegistry:
     def register_external(self, manifest_path: str | Path, *, runner: Sequence[str],
                           installation_path: str | Path, installation_sha256: str,
                           enabled: bool = False, runtime_path: str | Path | None = None,
-                          runtime_sha256: str | None = None) -> PluginRegistration:
+                          runtime_sha256: str | None = None,
+                          allow_unpinned_runtime: bool = False) -> PluginRegistration:
         if isinstance(runner, (str, bytes)) or not isinstance(runner, Sequence) or not runner:
             _invalid("插件 runner 必须为显式 argv 数组")
         if any(not isinstance(arg, str) or not arg or "\x00" in arg for arg in runner):
@@ -137,8 +140,12 @@ class PluginRegistry:
             _invalid("读取期间插件 manifest 已改变")
         if _sha256(installation_path) != installation_sha256:
             _invalid("插件安装摘要不匹配")
+        if type(allow_unpinned_runtime) is not bool:
+            _invalid("allow_unpinned_runtime 必须为布尔值")
         if (runtime_path is None) != (runtime_sha256 is None):
             _invalid("运行内容路径与摘要必须同时提供")
+        if runtime_path is None and not allow_unpinned_runtime:
+            _invalid("外部插件必须钉定运行代码摘要；开发注册需显式 allow_unpinned_runtime")
         if runtime_path is not None:
             runtime_path = Path(runtime_path).absolute()
             if installation_digest(runtime_path) != runtime_sha256:
@@ -148,6 +155,7 @@ class PluginRegistry:
             installation_path=installation_path, installation_sha256=installation_sha256,
             manifest_path=manifest_path, manifest_file_sha256=before,
             runner_sha256=runner_sha256, runtime_path=runtime_path, runtime_sha256=runtime_sha256,
+            allow_unpinned_runtime=allow_unpinned_runtime,
         ))
 
     def register_builtin(self, manifest: PluginManifest | dict, *, factory: str,
@@ -187,7 +195,10 @@ class PluginRegistry:
                 _invalid("插件 manifest 已改变；需要重新审阅并注册")
             if _sha256(registration.installation_path) != registration.installation_sha256:
                 _invalid("插件安装文件已改变；需要重新审阅并注册")
-            if registration.runtime_path is not None and installation_digest(registration.runtime_path) != registration.runtime_sha256:
+            if registration.runtime_path is None:
+                if not registration.allow_unpinned_runtime:
+                    _invalid("外部插件未钉定运行代码，拒绝继续")
+            elif installation_digest(registration.runtime_path) != registration.runtime_sha256:
                 _invalid("插件运行内容已改变；需要重新审阅并注册")
         return registration
 

@@ -81,7 +81,8 @@ def registration(root, *, source=STUB, enabled=True, pin=True):
     item = registry.register_external(metadata, runner=[sys.executable, str(script)],
         installation_path=package, installation_sha256=hashlib.sha256(package.read_bytes()).hexdigest(),
         enabled=enabled, runtime_path=script if pin else None,
-        runtime_sha256=installation_digest(script) if pin else None)
+        runtime_sha256=installation_digest(script) if pin else None,
+        allow_unpinned_runtime=not pin)
     return registry, item
 
 

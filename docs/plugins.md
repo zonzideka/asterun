@@ -28,7 +28,7 @@ asterun --config old.json config-migrate \
 
 ## 安装与注册
 
-外部插件条目指定 `manifest_path`、`runner` argv、`installation_path` 及 SHA-256，并用 `runtime_path`/`runtime_sha256` 固定实际安装内容。采用独立 venv 或明确的非 Python runner，安装版本改变后重新注册并准备计划。插件运行在当前 OS 用户权限下，应使用受信任代码。
+外部插件条目指定 `manifest_path`、`runner` argv、`installation_path` 及 SHA-256。注册时必须同时给出 `runtime_path` 和 `runtime_sha256`，钉定已安装的代码树；未钉定默认拒绝。`allow_unpinned_runtime: true` 是显式开发开关，默认关闭，只放行配置加载，执行前仍会拒绝没有运行摘要的插件。采用独立 venv 或明确的非 Python runner，安装版本改变后重新注册并准备计划。插件运行在当前 OS 用户权限下，应使用受信任代码。
 
 `plugin-register --request registration.json` 接受 `plugin_id`、完整 `registration`、`output`、`backup` 和 `expected_source_sha256`。该命令备份原配置并生成候选。审阅后重启核心加载候选，再按[配置修订流程](install.md)应用。
 

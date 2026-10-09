@@ -4,15 +4,15 @@
 
 The initial source snapshot contains the current core, optional plugins, tests, configuration examples, and Chinese and English documentation. Earlier development branches, runtime records, and migration material are archived separately by the maintainer. The public snapshot starts from the current implementation.
 
-The 102 runtime files in the core and plugins retain their source-version bytes. Paths and SHA-256 values are listed in [SOURCE-PROVENANCE.json](../../SOURCE-PROVENANCE.json). The manifest records content provenance; update it with the relevant test results when runtime code changes.
+The 102 runtime files in the core and plugins are listed in [SOURCE-PROVENANCE.json](../../SOURCE-PROVENANCE.json), each with its path and SHA-256. The manifest records content provenance; when a runtime file changes, update its digest together with the relevant test results. `runtime_source_revision` remains the public snapshot `37bc705`. The digests for the Antigravity `manifest.json` and `vendor-source.json` now match the current `1.0.2` source and no longer match that revision.
 
-Three vendored Antigravity files can be reproduced from the core source in this checkout. `vendor-source.json` records the original source identifier, source digests, mechanical transformations, and target digests. The verifier also pins the manifest's own digest, checks the current files, and reapplies each transformation:
+Every file under the Antigravity plugin's `_vendor` directory must appear in `vendor-source.json`. `profile.py`, `runtime.py`, and `command.py` are mechanical transforms of the core source at commit `9610e99f95a5614f6f8e1b0f10bf87d9d4f67f71`. `compat.py` and `__init__.py` are local plugin copies pinned by their target digests. The verifier pins the manifest's own digest, covers every file in the directory, and, when the checkout contains `.git`, confirms that commit and its source blobs. A failed check exits nonzero and does not rely on `assert`. Without Git metadata it still checks the working tree against the pinned digests, and `source_git_object_checked` is then false.
 
 ```sh
 python3 packages/asterun-plugin-antigravity/scripts/verify-source.py
 ```
 
-Verification uses the current source and fixed digests, without requiring old Git objects. In its output, `source_commit` retains the historical source identifier and `source_git_object_checked=false` identifies content-based verification. `original_sources_unchanged` means the current source files match their pinned digests.
+`original_sources_unchanged` means the current source files match their pinned digests. If the copy changes relative to main, the plugin version and the manifest `plugin_version` must both increase. CI also builds and installs the three plugin wheels and smokes import plus registration.
 
 The default offline entry point is `scripts/verify-offline.sh`. It retains all runtime tests and verifies plugin provenance. Protocol specifications and fixed schemas retain their original bytes; see the [implementation map](protocol/IMPLEMENTATION.md) for current coverage.
 

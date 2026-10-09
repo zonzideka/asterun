@@ -28,7 +28,7 @@ Built-in compatibility plugins are `asterun.fake`, `openai.codex`, `xai.grok`, `
 
 ## Install and register
 
-External plugin entries specify `manifest_path`, runner argv, `installation_path`, and SHA-256 values. `runtime_path` and `runtime_sha256` pin the installed runtime contents. Use a separate venv or an explicit non-Python runner. After changing the installed version, register it again and prepare new plans. Plugins run with the current OS user's permissions, so use trusted code.
+External plugin entries specify `manifest_path`, runner argv, `installation_path`, and SHA-256 values. Registration must also supply `runtime_path` and `runtime_sha256` to pin the installed code tree. An unpinned plugin is rejected by default. `allow_unpinned_runtime: true` is an explicit development switch, off by default; it only allows the configuration to load, and execution still refuses a plugin without a runtime digest. Use a separate venv or an explicit non-Python runner. After changing the installed version, register it again and prepare new plans. Plugins run with the current OS user's permissions, so use trusted code.
 
 `plugin-register --request registration.json` accepts `plugin_id`, the complete `registration`, `output`, `backup`, and `expected_source_sha256`. It backs up the original configuration and writes a candidate. Review it, restart the core with the candidate, and apply its revision as described in [installation and configuration](install.md).
 

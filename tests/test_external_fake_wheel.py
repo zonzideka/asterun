@@ -1,6 +1,8 @@
 import json
 import subprocess
 
+from asterun.plugins.registry import installation_digest
+
 
 def test_external_wheel_executes_without_core(external_fake_installation, tmp_path):
     plugin = external_fake_installation
@@ -25,7 +27,8 @@ def test_static_external_registration_never_imports(external_fake_installation, 
     monkeypatch.setenv("EXTERNAL_FAKE_IMPORT_TRAP", str(trap))
     registry = PluginRegistry()
     registry.register_external(plugin["manifest"], runner=plugin["runner"],
-                               installation_path=plugin["wheel"], installation_sha256=plugin["sha256"])
+                               installation_path=plugin["wheel"], installation_sha256=plugin["sha256"],
+                               runtime_path=plugin["runtime_path"], runtime_sha256=installation_digest(plugin["runtime_path"]))
     assert registry.describe()
     assert not trap.exists()
     registry.verify_installation("example.external-fake")

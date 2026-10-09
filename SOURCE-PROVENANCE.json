@@ -28,11 +28,11 @@
     },
     {
       "path": "packages/asterun-plugin-antigravity/src/asterun_plugin_antigravity/manifest.json",
-      "sha256": "afbb961331fe4cbaff254136f1e4cae744315cb45567c4f13cdcec1329306416"
+      "sha256": "11567444bd469d697a56d2127f087cf6e770b8e2f7caa7c0a6eeb523903e447f"
     },
     {
       "path": "packages/asterun-plugin-antigravity/src/asterun_plugin_antigravity/vendor-source.json",
-      "sha256": "ca002bbc0b4062c39341afe59a89f9f06be723ab0b962f459679ceb96ac27d7c"
+      "sha256": "3011594370b7b1d899cecfad99713efa8f496777472a5a35f5c8a67798515267"
     },
     {
       "path": "packages/asterun-plugin-antigravity/src/asterun_plugin_antigravity/worker.py",

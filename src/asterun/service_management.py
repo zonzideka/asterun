@@ -211,6 +211,9 @@ def _candidate_config(raw: dict, request: dict, config_path: Path) -> dict:
         from asterun.backends.codex_policy import validate_codex_approval_policy
         result["backends"]["codex"]["approval_policy"] = validate_codex_approval_policy(
             current["approval_policy"], "backends.codex")
+    if isinstance(current, dict) and "extra_env" in current:
+        from asterun.child_env import validate_extra_env
+        result["backends"]["codex"]["extra_env"] = list(validate_extra_env(current["extra_env"], "backends.codex.extra_env"))
     alias = request.get("workspace_alias")
     root = request.get("workspace_root")
     if bool(alias) != bool(root):

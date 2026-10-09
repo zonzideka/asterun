@@ -2,6 +2,10 @@
 
 [中文](STATUS.md) | [English](STATUS.en.md)
 
+2026-10-09 收紧子进程环境、外部插件钉定和 Antigravity 来源核验。核心版本保持 `0.1.0a17`，协议、SQLite 和配置 schema 不变。Codex 与 Claude 子进程只接收白名单环境，保留 HOME、PATH、语言区域、代理和证书路径，以及 Codex 的 `CODEX_HOME`、Claude 的 `CLAUDE_CODE_OAUTH_TOKEN` 和 `CLAUDE_CONFIG_DIR`。`extra_env` 只追加变量名，不保存秘密值，并拒绝加载器变量。Claude 普通任务默认不加载用户 hooks 与 MCP；`load_user_settings: true` 只恢复普通任务，快照审查仍隔离。外部插件注册必须钉定 `runtime_path` 与 `runtime_sha256`。`allow_unpinned_runtime` 默认关闭，打开后也只能加载配置，不能执行。Antigravity 来源核验覆盖 `_vendor` 全部五个文件，失败时非零退出，来源提交改为本仓存在的 `9610e99`。插件源码为 `1.0.2`，尚未发布；a17 发行页的 wheel 仍是 `1.0.1`。
+
+已部署实例升级核心后，Codex/Claude 不再继承未列入白名单的宿主变量；依赖这些变量时要把名字写入 `extra_env`。依赖用户 hooks 或项目 MCP 的 Claude 任务要显式打开 `load_user_settings`。没有运行摘要的外部插件配置无法加载。换装 `1.0.2` 后安装树摘要变化，须重新注册。macOS 服务的 SAFE_ENV 没有扩大，服务进程里本来没有的变量不会被 `extra_env` 找回。真实 Codex、Claude 登录和原生客户端尚未复测。全量离线结果在验证完成后补记。
+
 2026-10-09 把并发名额收成运行记录上的 `slot_held`，由调度器按 run id 幂等投影。审批结果写盘失败后，重试或重启即使只看到运行中的进度，也会写下审批结论，不再停在转发中。结果和保留副本都没写上时，随后成功的重试仍把已释放名额写入状态库，重启不会把名额占回去。同一条运行重放结果后再恢复，只占一个名额。终态去掉该标记，对外视图不包含它。没有该标记的旧记录仍按操作是否已派发、以及有没有释放标记来判断。SQLite schema 仍为 6，协议状态和错误码不变，版本号未改。Python 3.12.3 上 `scripts/verify-offline.sh` 的来源核验通过；pytest 收集 2739 项，2702 通过、36 跳过、1 失败。失败项仍是既有 `tests/test_read_scope.py::test_mutation_while_reading_rejected`：同长度覆写依赖 inode 时间变化，本机 tmpfs 在约 4ms 粒度内不更新 `st_mtime_ns`。`read_scope.py` 与该测试未改。此项未部署，也未用真实后端验收。
 
 2026-10-09 修复核心结果落盘与重启对账。结果的多步写入放在同一个事务里；失败则整次回滚，运行进入 `pending_reconcile`、操作进入 `unknown`，释放本次并发名额。完整结果留在内存，并尽量写入运行记录；状态库暂时写不进去时，后续轮询按有上限的退避继续重试，直到落盘，不自动重派。工作线程因落盘失败中断后补发的通用待对账不会覆盖这份结果。前台同步派发、取消确认和审批回复的结果写入走同一事务。重启时，已标记释放名额或找不到操作记录的运行不再占回名额，也不重复执行。进程关闭时仍在执行、且没有释放标记的未知运行，重启后继续保留预算占位。终态检查点没写上时同样整次回滚；重启只重放已保留结果，检查点在写入成功后才算捕获，不重新调用后端。SQLite schema 仍为 6，协议状态和错误码不变，版本号未改。Python 3.12.3 上 `scripts/verify-offline.sh` 的来源核验通过；pytest 收集 2735 项，2698 通过、36 跳过、1 失败。失败项仍是既有 `tests/test_read_scope.py::test_mutation_while_reading_rejected`：同长度覆写依赖 inode 时间变化，本机 tmpfs 在约 4ms 粒度内不更新 `st_mtime_ns`。`read_scope.py` 与该测试未改。此项未部署，也未用真实后端验收。

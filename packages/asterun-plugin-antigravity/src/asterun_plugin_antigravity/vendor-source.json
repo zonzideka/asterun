@@ -1,5 +1,5 @@
 {
-  "source_commit": "f66fae9557ec7bdfe2b3e653b014a8908a0b1e26",
+  "source_commit": "9610e99f95a5614f6f8e1b0f10bf87d9d4f67f71",
   "files": [
     {
       "source": "src/asterun/antigravity_profile.py",
@@ -51,10 +51,28 @@
       "replacements": [],
       "extract": "build_command",
       "prefix": "from pathlib import Path\nfrom .compat import AsterunError, INVALID_CONFIG\n\n"
+    },
+    {
+      "source": null,
+      "target": "_vendor/compat.py",
+      "source_sha256": null,
+      "vendored_sha256": "fe6bfe2a4fb1895f64f37007afe25a1b84efd2b0241720bd9a3f8196991c7f20",
+      "replacements": [],
+      "extract": null
+    },
+    {
+      "source": null,
+      "target": "_vendor/__init__.py",
+      "source_sha256": null,
+      "vendored_sha256": "184ca299c286ee1237dd0b765d20c8d61b67f553b7a0d3c162066b34a8f70f61",
+      "replacements": [],
+      "extract": null
     }
   ],
   "notes": [
-    "仅机械修改导入、独立 profile 命令名与 worker 所有的进程组；原始 a8 文件不修改。",
+    "profile、runtime、command 由当前仓库提交 9610e99 机械复制；compat 与 __init__ 是插件本地副本，同样钉定摘要。",
+    "清单必须覆盖 _vendor 下的全部文件。来源提交须能在本仓库历史中解析。",
+    "仅机械修改导入、独立 profile 命令名与 worker 所有的进程组；原始核心文件不修改。",
     "CLI 留在 worker 进程组；本地 child 信号只用 PID，host 最终负责组内剩余子孙。远端是否终止仍未知。"
   ]
 }

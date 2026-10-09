@@ -72,6 +72,6 @@ Tests, builds, and dependency installation are code execution. Valid authorizati
 
 Each commit records the change, commands and actual results, compatibility handling, and unverified items. Evidence distinguishes pure logic, temporary directories and protocol fixtures, real backends, and native clients. It also identifies process launches, project code execution, and quota consumption.
 
-The default entry point is `scripts/verify-offline.sh`. Run relevant regressions for a local defect. Release changes require wheel/sdist content checks, document links, sdist rebuilds, and installation checks. Verify plugin source with `python3 packages/asterun-plugin-antigravity/scripts/verify-source.py`.
+The default entry point is `scripts/verify-offline.sh`. Run relevant regressions for a local defect. Release changes require wheel/sdist content checks, document links, sdist rebuilds, and installation checks. Verify plugin source with `python3 packages/asterun-plugin-antigravity/scripts/verify-source.py`. The offline entry also fails when the Antigravity copy changes without a plugin version bump. GitHub CI uses full history to check the source commit, then installs the plugin wheels and smokes import and registration.
 
 Instance switching has its own record of task ownership, unresolved operations, snapshots, and rollback steps. Caller applications are wired in their own repositories. For interface changes, this repository supplies reproducible inputs, outputs, and handoff instructions.

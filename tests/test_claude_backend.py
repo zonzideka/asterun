@@ -36,10 +36,12 @@ def test_build_command_without_tool_restriction() -> None:
 
 
 def test_build_env_inherits_scrubs_and_stamps_depth() -> None:
-    env = build_env(depth=1, base_env={"ANTHROPIC_API_KEY": "", "FOO": "bar", "HOME": "/h"})
+    env = build_env(depth=1, base_env={"ANTHROPIC_API_KEY": "", "FOO": "bar", "HOME": "/h", "PATH": "/bin", "LANG": "C"})
     assert "ANTHROPIC_API_KEY" not in env
-    assert env["FOO"] == "bar"
+    assert "FOO" not in env
     assert env["HOME"] == "/h"
+    assert env["PATH"] == "/bin"
+    assert env["LANG"] == "C"
     assert env[DEPTH_ENV] == "1"
 
 
@@ -59,8 +61,9 @@ def test_build_env_scrubs_agent_runtime_vars_and_sets_parent() -> None:
     assert "CODEX_HOME" not in env
     assert "CLAUDE_CODE_ENTRYPOINT" not in env
     assert "NODE_REPL_FOO" not in env
+    assert "KEEPME" not in env
     assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "tok"
-    assert env["KEEPME"] == "1"
+    assert env["HOME"] == "/h"
     assert env[DEPTH_ENV] == "2"
     assert env[PARENT_ENV] == "run-parent"
 

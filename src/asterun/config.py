@@ -28,7 +28,7 @@ CONFIG_KEYS = {
     "approval_policy",
 }
 WORKSPACE_KEYS = {"root", "allow_non_git"}
-BACKEND_KEYS = {"kind", "enabled", "bin", "home", "model", "desktop_projects", "approval_policy", *GROK_EXECUTION_OPTIONS}
+BACKEND_KEYS = {"kind", "enabled", "bin", "home", "model", "desktop_projects", "approval_policy", "extra_env", "load_user_settings", *GROK_EXECUTION_OPTIONS}
 WORKFLOW_KEYS = {"preset", "require_review", "review_backend", "approved_substitute", "max_repairs", "local_checks", "checkpoint_paths", "stage_gates", "input_optimization"}
 SCHEDULER_KEYS = {"max_queue", "per_backend_concurrency", "max_runs_per_task", "max_concurrency", "local_check_concurrency"}
 ENTRIES_KEYS = {"cli", "mcp"}
@@ -66,6 +66,8 @@ class BackendConfig:
     timeout_seconds: int | None = None
     desktop_projects: bool | None = None
     approval_policy: str | None = None
+    extra_env: tuple[str, ...] = ()
+    load_user_settings: bool = False
     session_sync_home: str | None = None
     session_policy: str | None = None
     quota_epoch: str | None = None
@@ -92,6 +94,10 @@ class BackendConfig:
             result["desktop_projects"] = self.desktop_projects
         if self.kind == "codex" and self.approval_policy is not None:
             result["approval_policy"] = self.approval_policy
+        if self.extra_env:
+            result["extra_env"] = list(self.extra_env)
+        if self.kind == "claude" and self.load_user_settings:
+            result["load_user_settings"] = True
         if self.connection_ref is not None:
             result.update(connection_ref=self.connection_ref, plugin_id=self.plugin_id, options=self.options)
         return result
@@ -335,6 +341,10 @@ def load_config(path: Path) -> AsterunConfig:
         if "approval_policy" in body:
             from asterun.backends.codex_policy import validate_codex_approval_policy
             validate_codex_approval_policy(body["approval_policy"], f"backends.{name}")
+        from asterun.child_env import validate_extra_env
+        extra_env = validate_extra_env(body["extra_env"], f"backends.{name}.extra_env") if "extra_env" in body else ()
+        if "load_user_settings" in body and type(body["load_user_settings"]) is not bool:
+            raise AsterunError(INVALID_CONFIG, f"backends.{name}.load_user_settings 必须为布尔值")
         home_value = body.get("home")
         if "home" in body and (
             not isinstance(home_value, str)
@@ -360,6 +370,8 @@ def load_config(path: Path) -> AsterunConfig:
             model=model_value,
             desktop_projects=body.get("desktop_projects"),
             approval_policy=body.get("approval_policy"),
+            extra_env=extra_env,
+            load_user_settings=body.get("load_user_settings", False) is True,
             **{key: body[key] for key in GROK_EXECUTION_OPTIONS if key in body},
         )
 

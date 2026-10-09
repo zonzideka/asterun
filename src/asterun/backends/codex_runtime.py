@@ -41,7 +41,8 @@ class CodexRuntime:
         if scoped:
             preflight_codex_read_scope(binary)
         transport = CodexAppServerTransport(codex_bin=binary,
-            config_overrides=READ_SCOPE_CONFIG if scoped else None)
+            config_overrides=READ_SCOPE_CONFIG if scoped else None,
+            extra_env=tuple(self.backend.config.extra_env))
         if run_key:
             with self.lock:
                 self.transports[run_key] = transport

@@ -34,6 +34,7 @@ def registration_files(tmp_path, manifest_raw):
     return {
         "manifest_path": manifest, "runner": [str(runner)],
         "installation_path": artifact, "installation_sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
+        "allow_unpinned_runtime": True,
     }
 
 
