@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""按草稿续传 GitHub 预发布。已发布且摘要一致时直接成功，摘要不同则拒绝覆盖。"""
+"""按草稿续传 GitHub 预发布。已有资产以来源证明指向的那次构建为准，不覆盖已发布文件。"""
 from __future__ import annotations
 
 import argparse
@@ -13,7 +13,10 @@ import tempfile
 
 
 class ReleaseRejected(RuntimeError):
-    """已有资产与本次构建不一致，或已发布的发行不完整。"""
+    """已有资产与原构建不一致，或已发布的发行不完整。"""
+
+
+RELEASE_ARTIFACT = "asterun-dist"
 
 
 def plan_release(*, exists: bool, draft: bool, remote: dict[str, str], local: dict[str, str]) -> dict[str, object]:
@@ -21,10 +24,10 @@ def plan_release(*, exists: bool, draft: bool, remote: dict[str, str], local: di
         raise ReleaseRejected("没有本地发行资产")
     extra = sorted(set(remote) - set(local))
     if extra:
-        raise ReleaseRejected("远端含有本地构建没有的资产，拒绝删除或覆盖：" + ", ".join(extra))
+        raise ReleaseRejected("远端含有构建产物没有的资产，拒绝删除或覆盖：" + ", ".join(extra))
     mismatched = sorted(name for name, digest in remote.items() if local.get(name) != digest)
     if mismatched:
-        raise ReleaseRejected("已有资产与本次构建不一致，拒绝覆盖：" + ", ".join(mismatched))
+        raise ReleaseRejected("已有资产与构建产物不一致，拒绝覆盖：" + ", ".join(mismatched))
     missing = sorted(name for name in local if name not in remote)
     if not exists:
         return {"action": "create", "upload": sorted(local)}
@@ -35,6 +38,15 @@ def plan_release(*, exists: bool, draft: bool, remote: dict[str, str], local: di
     if missing:
         return {"action": "resume", "upload": missing}
     return {"action": "publish", "upload": []}
+
+
+def choose_resume_files(*, exists: bool, draft: bool, remote: dict[str, str], artifact: dict[str, str], rebuilt: dict[str, str] | None = None) -> dict[str, object]:
+    """artifact 来自来源证明指向的 workflow artifact。发行已经存在时忽略 rebuilt。"""
+    if exists:
+        rebuilt = None
+    elif rebuilt not in (None, artifact):
+        raise ReleaseRejected("首次发布的目录与构建产物不一致")
+    return plan_release(exists=exists, draft=draft, remote=remote, local=artifact)
 
 
 def local_digests(directory: Path) -> dict[str, str]:
@@ -56,6 +68,10 @@ def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(args, check=False, capture_output=True, text=True)
 
 
+def _gh(command: str, *args: str) -> subprocess.CompletedProcess[str]:
+    return _run([*command.split(), *args])
+
+
 def _digest(raw: object) -> str:
     text = str(raw or "")
     if text.startswith("sha256:"):
@@ -65,8 +81,30 @@ def _digest(raw: object) -> str:
     return ""
 
 
+def workflow_run_id(payload: object, repo: str = "") -> str:
+    found: list[str] = []
+
+    def walk(node: object) -> None:
+        if isinstance(node, dict):
+            invocation = node.get("invocationId")
+            if isinstance(invocation, str) and (not repo or f"/{repo}/actions/runs/" in invocation):
+                match = re.search(r"/actions/runs/(\d+)", invocation)
+                if match:
+                    found.append(match.group(1))
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(payload)
+    if not found:
+        raise ReleaseRejected("来源证明缺少构建运行编号")
+    return min(found, key=int)
+
+
 def view_release(tag: str) -> dict[str, object] | None:
-    result = _run(["gh", "release", "view", tag, "--json", "isDraft,assets"])
+    result = _gh("gh release view", tag, "--json", "isDraft,assets")
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
         if detail.lower() == "release not found":
@@ -83,6 +121,63 @@ def view_release(tag: str) -> dict[str, object] | None:
     if missing:
         raise ReleaseRejected("发行资产缺少 sha256 digest：" + ", ".join(missing))
     return {"draft": bool(payload.get("isDraft")), "assets": remote}
+
+
+def _artifact_root(directory: Path) -> Path:
+    entries = list(directory.iterdir())
+    if len(entries) == 1 and entries[0].is_dir():
+        return entries[0]
+    return directory
+
+
+def fetch_original_artifact(tag: str, state: dict[str, object], repo: str) -> Path:
+    assets = state.get("assets")
+    if not isinstance(assets, dict) or not assets:
+        raise ReleaseRejected("没有可核对的已上传资产")
+    work = Path(tempfile.mkdtemp(prefix="asterun-origin-"))
+    run_ids: list[str] = []
+    for name in sorted(assets):
+        asset_dir = work / "assets" / name
+        asset_dir.mkdir(parents=True)
+        downloaded = _gh("gh release download", tag, "--repo", repo, "--pattern", name, "--dir", str(asset_dir))
+        if downloaded.returncode != 0:
+            raise ReleaseRejected((downloaded.stderr or downloaded.stdout).strip() or f"无法下载已上传资产 {name}")
+        path = asset_dir / name
+        if not path.is_file():
+            found = [item for item in asset_dir.iterdir() if item.is_file()]
+            if len(found) != 1:
+                raise ReleaseRejected(f"无法定位已上传资产 {name}")
+            path = found[0]
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        if digest != assets[name]:
+            raise ReleaseRejected(f"已上传资产 {name} 与发行摘要不一致")
+        verified = _gh("gh attestation verify", str(path), "--repo", repo, "--format", "json")
+        if verified.returncode != 0:
+            raise ReleaseRejected((verified.stderr or verified.stdout).strip() or f"无法核验 {name} 的来源证明")
+        try:
+            payload = json.loads(verified.stdout)
+        except json.JSONDecodeError as error:
+            raise ReleaseRejected(f"来源证明输出无法解析：{name}") from error
+        run_ids.append(workflow_run_id(payload, repo))
+    if len(set(run_ids)) != 1:
+        raise ReleaseRejected("已上传资产的来源证明不是同一次构建")
+    artifact_dir = work / "artifact"
+    artifact_dir.mkdir()
+    fetched = _gh(
+        "gh run download", run_ids[0], "--repo", repo, "--name", RELEASE_ARTIFACT, "--dir", str(artifact_dir),
+    )
+    if fetched.returncode != 0:
+        raise ReleaseRejected((fetched.stderr or fetched.stdout).strip() or "无法取得同一次构建的 workflow artifact")
+    return _artifact_root(artifact_dir)
+
+
+def publish_source(*, state: dict[str, object] | None, current: Path | None, tag: str, repo: str) -> Path:
+    assets = state.get("assets") if state else None
+    if state is None or not assets:
+        if current is None or not current.is_dir() or not any(current.iterdir()):
+            raise ReleaseRejected("首次发布需要本次构建产物")
+        return current
+    return fetch_original_artifact(tag, state, repo)
 
 
 def _plan(state: dict[str, object] | None, local: dict[str, str]) -> dict[str, object]:
@@ -104,11 +199,13 @@ def _notes(tag: str, commit: str) -> str:
     )
 
 
-def _write_output(mode: str) -> None:
+def _write_outputs(values: dict[str, str]) -> None:
     path = os.environ.get("GITHUB_OUTPUT")
-    if path:
-        with open(path, "a", encoding="utf-8") as handle:
-            handle.write(f"mode={mode}\n")
+    if not path:
+        return
+    with open(path, "a", encoding="utf-8") as handle:
+        for key, value in values.items():
+            handle.write(f"{key}={value}\n")
 
 
 def _head() -> str:
@@ -117,68 +214,110 @@ def _head() -> str:
     ).stdout.strip()
 
 
-def gate(directory: Path, tag: str) -> dict[str, object]:
-    plan = _plan(view_release(tag), local_digests(directory))
-    mode = "noop" if plan["action"] == "noop" else "publish"
-    _write_output(mode)
-    return {"mode": mode, "action": plan["action"], "upload": plan["upload"]}
+def _repository() -> str:
+    repo = os.environ.get("GITHUB_REPOSITORY", "")
+    if not repo:
+        raise ReleaseRejected("缺少 GITHUB_REPOSITORY")
+    return repo
 
 
-def apply_release(directory: Path, tag: str, root: Path) -> dict[str, object]:
-    local = local_digests(directory)
+def gate(tag: str) -> dict[str, object]:
     state = view_release(tag)
-    plan = _plan(state, local)
+    if state is not None and not state["draft"] and not state["assets"]:
+        raise ReleaseRejected("已发布的发行没有资产，拒绝补传")
+    if state is None or not state["assets"]:
+        report = {"mode": "create", "run_id": ""}
+    else:
+        report = {"mode": "resume", "run_id": ""}
+    _write_outputs({"mode": str(report["mode"]), "run_id": str(report["run_id"])})
+    return report
+
+
+def _select(state: dict[str, object] | None, source: Path, current: Path | None) -> dict[str, object]:
+    remote = state["assets"] if state else {}
+    assert isinstance(remote, dict)
+    rebuilt = local_digests(current) if state and state["assets"] and current is not None else None
+    return choose_resume_files(
+        exists=state is not None,
+        draft=bool(state["draft"]) if state else False,
+        remote=remote,
+        artifact=local_digests(source),
+        rebuilt=rebuilt,
+    )
+
+
+def apply_release(directory: Path | None, tag: str, root: Path) -> dict[str, object]:
+    repo = _repository()
+    state = view_release(tag)
+    current = directory if directory is not None and directory.is_dir() and any(directory.iterdir()) else None
+    source = publish_source(state=state, current=current, tag=tag, repo=repo)
+    plan = _select(state, source, current)
     if plan["action"] == "noop":
         return {"ok": True, "action": "noop", "upload": []}
     notes = Path(tempfile.mkdtemp(prefix="asterun-release-notes-")) / "notes.md"
     notes.write_text(_notes(tag, _head()), encoding="utf-8")
     title = f"Asterun {_project_version(root)}"
     if plan["action"] == "create":
-        created = _run([
-            "gh", "release", "create", tag, "--draft", "--prerelease",
+        created = _gh(
+            "gh release create", tag, "--repo", repo, "--draft", "--prerelease",
             "--title", title, "--notes-file", str(notes),
-        ])
+        )
         if created.returncode != 0:
             state = view_release(tag)
             if state is None:
                 raise ReleaseRejected(created.stderr.strip() or "无法创建草稿发行")
-            plan = _plan(state, local)
+            source = publish_source(state=state, current=current, tag=tag, repo=repo)
+            plan = _select(state, source, current)
             if plan["action"] == "noop":
                 return {"ok": True, "action": "noop", "upload": []}
     else:
-        edited = _run(["gh", "release", "edit", tag, "--notes-file", str(notes)])
+        edited = _gh("gh release edit", tag, "--repo", repo, "--notes-file", str(notes))
         if edited.returncode != 0:
             raise ReleaseRejected(edited.stderr.strip() or "无法更新草稿说明")
-    upload = [str(directory / name) for name in plan["upload"]]
+    upload = [str(source / name) for name in plan["upload"]]
     if upload:
-        uploaded = _run(["gh", "release", "upload", tag, *upload])
+        uploaded = _gh("gh release upload", tag, "--repo", repo, *upload)
         if uploaded.returncode != 0:
             raise ReleaseRejected(uploaded.stderr.strip() or "上传草稿资产失败")
     state = view_release(tag)
-    plan = _plan(state, local)
+    if state is None:
+        raise ReleaseRejected("上传后找不到发行")
+    confirmed = local_digests(source)
+    plan = choose_resume_files(
+        exists=True, draft=bool(state["draft"]), remote=state["assets"], artifact=confirmed, rebuilt=None,
+    )
     if plan["upload"]:
         raise ReleaseRejected("上传后仍有缺失资产：" + ", ".join(plan["upload"]))
     if plan["action"] == "publish":
-        published = _run(["gh", "release", "edit", tag, "--draft=false", "--prerelease"])
+        published = _gh("gh release edit", tag, "--repo", repo, "--draft=false", "--prerelease")
         if published.returncode != 0:
             raise ReleaseRejected(published.stderr.strip() or "无法把草稿标为预发布")
     elif plan["action"] != "noop":
         raise ReleaseRejected(f"上传后的发行状态无法发布：{plan['action']}")
-    final = _plan(view_release(tag), local)
+    final_state = view_release(tag)
+    if final_state is None:
+        raise ReleaseRejected("发布后找不到发行")
+    final = choose_resume_files(
+        exists=True, draft=bool(final_state["draft"]), remote=final_state["assets"],
+        artifact=confirmed, rebuilt=None,
+    )
     if final["action"] != "noop":
-        raise ReleaseRejected("发布后的资产与本地构建不一致")
+        raise ReleaseRejected("发布后的资产与原构建不一致")
     return {"ok": True, "action": "published", "upload": upload}
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--assets", type=Path, required=True)
+    parser.add_argument("--assets", type=Path)
     parser.add_argument("--tag", required=True)
     parser.add_argument("--phase", choices=("gate", "apply"), required=True)
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     try:
-        report = gate(args.assets, args.tag) if args.phase == "gate" else apply_release(args.assets, args.tag, root)
+        if args.phase == "gate":
+            report = gate(args.tag)
+        else:
+            report = apply_release(args.assets, args.tag, root)
     except ReleaseRejected as error:
         print(json.dumps({"ok": False, "error": str(error)}, ensure_ascii=False))
         return 1
