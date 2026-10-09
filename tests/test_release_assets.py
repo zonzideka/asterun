@@ -50,9 +50,9 @@ def test_expected_assets_cover_core_skill_and_every_external_plugin():
     module = _loader()
     names = module.expected_asset_names(ROOT)
     assert names == sorted(names)
-    assert "asterun-0.1.0a17-py3-none-any.whl" in names
-    assert "asterun-0.1.0a17.tar.gz" in names
-    assert "asterun-skill-0.1.0a17.zip" in names
+    assert "asterun-0.1.0a18-py3-none-any.whl" in names
+    assert "asterun-0.1.0a18.tar.gz" in names
+    assert "asterun-skill-0.1.0a18.zip" in names
     for plugin in ("antigravity", "cursor", "jules"):
         prefix = f"asterun_plugin_{plugin}-"
         assert any(name.startswith(prefix) and name.endswith(".whl") for name in names)
@@ -524,4 +524,4 @@ def test_smoke_imports_dependencies_and_runs_entry_points(tmp_path):
     output = tmp_path / "dist"
     report = module.build_release_assets(ROOT, output, smoke=False)
     assert report["ok"], report["problems"]
-    module.run_release_smoke(output, "0.1.0a17")
+    module.run_release_smoke(output, "0.1.0a18")

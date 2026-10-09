@@ -2,7 +2,7 @@
 
 [中文](../development-plan.md) | [English](development-plan.md)
 
-The first release covers the capabilities implemented in `0.1.0a13`. The current source version is `0.1.0a17`. Current work focuses on defects, compatibility, live acceptance, and release documentation. The core and all three optional plugins use Apache-2.0. See the [release notes](release-v0.1.md) for scope and [STATUS](../../STATUS.en.md) for test and deployment results tied to specific revisions.
+The first release covers the capabilities implemented in `0.1.0a13`. The current source version is `0.1.0a18`. Current work focuses on defects, compatibility, live acceptance, and release documentation. The core and all three optional plugins use Apache-2.0. See the [release notes](release-v0.1.md) for scope and [STATUS](../../STATUS.en.md) for test and deployment results tied to specific revisions.
 
 On 2026-10-09 the built-in Antigravity backend accepts `timeout_seconds` from 30 to 3600, defaulting to 300. The external plugin source is `1.0.3`; its own `timeout_seconds` remains at most 20 seconds and also sets `--print-timeout`. The `v*` release workflow publishes only after the 3.11/3.12 offline check and the main-ancestor check pass. Builds set `SOURCE_DATE_EPOCH` from the tagged commit and pin setuptools 84.0.0 and wheel 0.48.0. A draft resume keeps the attestations of the uploaded assets and fills gaps from that same workflow artifact, which is retained for 90 days; the release notes describe recovery after it expires. The smoke test pins each plugin and calls the entry points through the isolated launch. The workflow has not run for existing tags. Tool errors keep the previous failure semantics.
 

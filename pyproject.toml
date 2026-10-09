@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "asterun"
-version = "0.1.0a17"
+version = "0.1.0a18"
 description = "通用 Agent 执行底座，通过 CLI 与 MCP 调用多个 Agent。"
 readme = "README.md"
 requires-python = ">=3.11"
