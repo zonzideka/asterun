@@ -2,6 +2,8 @@
 
 [中文](STATUS.md) | [English](STATUS.en.md)
 
+2026-10-10 Grok 编码模式（`workspace-code-v1`）省略 `max_turns` 时的默认原生回合从 12 改为 40。实际使用中 12 回合常在读完代码后就用尽、尚未写入任何改动。范围仍为 1 到 100，超时默认仍为 900 秒；安装文档示例改为 `max_turns` 40、`timeout_seconds` 1800。显式配置了 `max_turns` 的实例不受影响。协议、配置 schema 和 SQLite 不变，随下一版本发行。
+
 2026-10-09 把核心源码标为 `0.1.0a18`。本版纳入结果落盘事务与 `slot_held` 名额持久化、Codex/Claude 环境白名单和 Claude `load_user_settings`、外部插件 runner 白名单与实际入口钉定，以及 `v*` 标签的可复现发版流水线。内置 Antigravity `timeout_seconds` 为 30 到 3600，省略时仍为 300 秒。外部插件源码为 `1.0.3`，随该版本发行；标签打出之前，已发布 wheel 仍是 a17 的 `1.0.1`，换装后需按新 runner 重新注册。标准 skill 最低接口仍为 `0.1.0a14`，技能包只因发行页链接变化而改摘要。尚未打 `v0.1.0a18`，发行页资产要等流水线成功后才出现。协议、SQLite schema 6 和配置 schema 不变。已发布版本的工作流重跑依赖 90 天内的 `asterun-dist` 产物。
 
 2026-10-09 内置 Antigravity 后端增加可选 `timeout_seconds`，范围 30 到 3600，省略时仍为 300 秒，命令行仍是 `5m`。该值同时用于 `--print-timeout` 和适配器等待。v1 写在 `backends.<name>`，v2 写在内置连接的 `options`。配置 schema 仍是 v1/v2，不改 SQLite。外部插件源码升到 `1.0.3`（main 上的 `1.0.2` 已用于来源钉定）。它不读取内置后端 30 到 3600 秒的 `timeout_seconds`；插件自己的同名字段仍默认 20 秒、最多 20 秒，并同时写入 `--print-timeout` 和 worker 期限。`1.0.3` 尚未随标签发布，已发布包仍是 a17 的 `1.0.1`，换装后需重新注册。来源核验仍覆盖全部 `_vendor` 文件，`command.py` 的来源提交改为 `a9b4d63ebb95a56448db535e31281347e9b30ec4`。原生 SUCCESS 但带工具错误、步骤错误或软拒绝时，仍记为 `ANTIGRAVITY_RUN_INCOMPLETE`，证据留在 `native` 计数字段和正文里。`v*` 标签的发行工作流先在 Python 3.11 与 3.12 上跑完整离线校验，并要求标签提交已在 `main` 上。还没有可核对的已上传资产时才构建：`SOURCE_DATE_EPOCH` 取该提交的 Unix 时间，构建依赖钉为 setuptools 84.0.0 与 wheel 0.48.0，tar 与 zip 元数据按该时间归一。草稿续传以已上传资产及其来源证明为准，缺的文件从同一次 workflow artifact 补上。该 artifact 保留 90 天；过期后的恢复见发行说明。已发布资产保持原样。冒烟会导入插件及其依赖，执行 `asterun version` 和 Antigravity `prepare`，并把每个插件按运行树钉定注册后，用 `-I -S -B` 隔离启动调用 `plugin.describe`。只用 `GITHUB_TOKEN` 与 OIDC，尚未对现有标签运行。没有新标签，核心版本仍是 `0.1.0a17`。
