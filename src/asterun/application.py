@@ -332,13 +332,17 @@ class Application:
         finally:
             self._closed = True
             try:
-                if self._control is not None:
-                    self._control.close()
-                getattr(self.store, "close", lambda: None)()
+                # 即使关闭过程抛错，也在释放状态库前尝试保存仅留在内存中的结果。
+                self._retry_retained_results(force=True)
             finally:
-                if self.instance_lock is not None:
-                    self.instance_lock.release()
-                    self.instance_lock = None
+                try:
+                    if self._control is not None:
+                        self._control.close()
+                    getattr(self.store, "close", lambda: None)()
+                finally:
+                    if self.instance_lock is not None:
+                        self.instance_lock.release()
+                        self.instance_lock = None
 
     def handle(self, method: str, payload: dict[str, Any] | None = None) -> Envelope:
         try:
@@ -1924,6 +1928,8 @@ class Application:
         return FixedReadScope(root, binding)
 
     def _drain_queue(self) -> None:
+        if self._closed:
+            return
         if self.executor is not None and self.executor.stopping.is_set():
             return
         if self._draining:
@@ -2240,11 +2246,11 @@ class Application:
             if backend_name is not None:
                 self.scheduler.finish(backend_name, run_id)
 
-    def _retry_retained_results(self) -> None:
+    def _retry_retained_results(self, *, force: bool = False) -> None:
         due = [
             (key, item)
             for key, item in list(self._retained_results.items())
-            if item.ready_at_poll <= self._poll_epoch
+            if force or item.ready_at_poll <= self._poll_epoch
         ]
         for key, item in due:
             self._record_result(RunId(key), item.result, remember=False, approval=item.approval)
