@@ -98,3 +98,18 @@ def test_unexpected_runner_exception_never_claims_not_sent(isolated_env, workspa
     assert result["status"] == "pending_reconcile"
     assert result["native"][DISPATCH_RECEIPT_KEY]["delivery"] == "may_have_been_sent"
     assert "private diagnostics" not in json.dumps(result)
+
+
+def test_coding_default_turn_limit_is_40_and_reaches_command(tmp_path):
+    from asterun.backends.grok import DEFAULT_CODE_MAX_TURNS, DEFAULT_CODE_TIMEOUT_SECONDS
+    from asterun.plugins.builtins import validate_grok_execution_options
+    assert DEFAULT_CODE_MAX_TURNS == 40
+    assert DEFAULT_CODE_TIMEOUT_SECONDS == 900
+    validate_grok_execution_options({"execution_profile": CODE_PROFILE, "max_turns": DEFAULT_CODE_MAX_TURNS}, "grok")
+    backend = GrokBackend(BackendConfig(name="grok-code", kind="grok", execution_profile=CODE_PROFILE))
+    assert backend.inspect()["max_turns"] == 40
+    explicit = GrokBackend(BackendConfig(name="grok-code", kind="grok", execution_profile=CODE_PROFILE, max_turns=12))
+    assert explicit.inspect()["max_turns"] == 12
+    cmd = build_grok_code_command("grok", cwd=tmp_path, prompt_file=tmp_path / "prompt",
+                                  session_id="native", model=None, max_turns=DEFAULT_CODE_MAX_TURNS)
+    assert cmd[cmd.index("--max-turns") + 1] == "40"
