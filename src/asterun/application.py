@@ -1863,10 +1863,25 @@ class Application:
                       "operation": operation.to_dict(), "session": self._session_for_task(task)}),
                       ids={"task_id": task.id.value, "run_id": run.id.value,
                            "operation_id": operation.id.value, **_conversation_ids(task)})
+        from asterun.grok_profile import CODE_PROFILE
         try:
             if task.capability:
                 result = backend.dispatch_capability(task.id, run.id, task.capability, task.capability_input,
                                                       cwd=self.config.get_workspace(task.workspace).root)
+            elif (run.role != "review" and not task.capability and hasattr(backend, "dispatch_stream")
+                  and backend.config.kind == "grok"
+                  and getattr(backend, "execution_profile", None) == CODE_PROFILE):
+                from threading import Event
+
+                def persist(snapshot):
+                    # Executor.drain(self._record_result) is the background acknowledgement.
+                    # A store failure must raise so run_code does not spawn.
+                    self._record_result(run.id, snapshot)
+
+                result = backend.dispatch_stream(
+                    task.id, run.id, task.script, dispatch_text,
+                    cwd=self.config.get_workspace(task.workspace).root,
+                    native=native, publish=persist, stopping=Event())
             else:
                 dispatch = backend.dispatch_review if run.role == "review" else backend.dispatch
                 result = dispatch(task.id, run.id, task.script, dispatch_text,

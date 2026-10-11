@@ -8,6 +8,7 @@ import pytest
 from asterun.application import Application
 from asterun.backends.grok_code import (
     RECEIPT_KEY,
+    CodeProcessHandle,
     host_boot_id,
     host_machine_id,
     process_provably_gone,
@@ -390,3 +391,150 @@ def test_dispatching_snapshot_has_host_identity_before_pid(monkeypatch, tmp_path
     assert process["boot_id"] == boot_path.read_text()
     assert process["machine_id"] == machine_path.read_text()
     assert "pid" not in process
+
+
+def read_persisted_natives(state):
+    """Second read-only connection. from_paths would take the instance lock the writer holds."""
+    from asterun.sqlite_store import SqliteStore
+
+    store = SqliteStore(state / "asterun.sqlite", readonly=True)
+    try:
+        natives = {}
+        for task_id in store.list_task_ids():
+            for run in store.list_runs(task_id):
+                natives[run.id.value] = deepcopy(run.native)
+        return natives
+    finally:
+        store.close()
+
+
+def watch_spawn(monkeypatch, state):
+    seen = {}
+    calls = []
+    original = CodeProcessHandle.spawn
+
+    def spawn(self, command, **kwargs):
+        calls.append(command)
+        seen.update(read_persisted_natives(state))
+        return original(self, command, **kwargs)
+
+    monkeypatch.setattr(CodeProcessHandle, "spawn", spawn)
+    return seen, calls
+
+
+def test_sync_dispatch_persists_host_identity_before_spawn(isolated_env, workspace_root, monkeypatch):
+    boot_path, _proc, machine_path = install_host(monkeypatch, isolated_env, "live-boot")
+    state = isolated_env / "state"
+    config = write_config(isolated_env / "cfg.json", workspace_root,
+                          {"grok": options(isolated_env, monkeypatch)})
+    seen, calls = watch_spawn(monkeypatch, state)
+    app = Application.from_paths(config, state)
+    try:
+        submitted = app.handle("task.submit", {"workspace": "demo", "backend": "grok", "text": "start"})
+        assert submitted.ok, submitted.error
+        assert calls
+        native = seen[submitted.ids["run_id"]]
+        process = native["process"]
+        assert process["boot_id"] == boot_path.read_text()
+        assert process["machine_id"] == machine_path.read_text()
+        assert native[RECEIPT_KEY]["stage"] == "spawn"
+        assert native[RECEIPT_KEY]["prompt_attempted"] is False
+    finally:
+        app.close()
+
+
+def test_sync_persist_failure_does_not_spawn(isolated_env, workspace_root, monkeypatch):
+    install_host(monkeypatch, isolated_env, "live-boot")
+    state = isolated_env / "state"
+    config = write_config(isolated_env / "cfg.json", workspace_root,
+                          {"grok": options(isolated_env, monkeypatch)})
+    _seen, calls = watch_spawn(monkeypatch, state)
+    original = Application._record_result
+    raised = {"done": False}
+
+    def record(self, run_id, result, *args, **kwargs):
+        if not raised["done"] and isinstance(result, dict) and result.get("status") == "dispatching":
+            raised["done"] = True
+            raise RuntimeError("persist failed")
+        return original(self, run_id, result, *args, **kwargs)
+
+    monkeypatch.setattr(Application, "_record_result", record)
+    app = Application.from_paths(config, state)
+    try:
+        submitted = app.handle("task.submit", {"workspace": "demo", "backend": "grok", "text": "start"})
+        assert submitted.ok, submitted.error
+        assert raised["done"] is True
+        assert calls == []
+        run = app.store.get_run(RunId(submitted.ids["run_id"]))
+        assert run.status == RunStatus.FAILED
+        assert run.status != RunStatus.PENDING_RECONCILE
+        assert run.error_code == "BACKEND_UNAVAILABLE"
+        assert run.native[RECEIPT_KEY]["stage"] == "spawn"
+        assert run.native[RECEIPT_KEY]["prompt_attempted"] is False
+        assert app.scheduler.snapshot()["inflight"] == {}
+    finally:
+        app.close()
+
+
+def test_sync_host_death_after_persisted_identity_releases_slot(isolated_env, workspace_root, monkeypatch):
+    boot_path, _proc, machine_path = install_host(monkeypatch, isolated_env, "live-boot")
+    state = isolated_env / "state"
+    config = write_config(isolated_env / "cfg.json", workspace_root,
+                          {"grok": options(isolated_env, monkeypatch)})
+    seen, _calls = watch_spawn(monkeypatch, state)
+    app = Application.from_paths(config, state)
+    try:
+        submitted = app.handle("task.submit", {"workspace": "demo", "backend": "grok", "text": "start"})
+        assert submitted.ok, submitted.error
+        run_id = submitted.ids["run_id"]
+        captured = seen[run_id]
+        assert captured["process"]["boot_id"] == boot_path.read_text()
+        assert captured["process"]["machine_id"] == machine_path.read_text()
+        assert captured[RECEIPT_KEY]["stage"] == "spawn"
+        run = app.store.get_run(RunId(run_id))
+        run.status = RunStatus.DISPATCHING
+        run.terminated = False
+        run.error_code = None
+        run.native = deepcopy(captured)
+        app.store.save_run(run)
+        operation = app.store.find_operation_for_run(run.id)
+        operation.status = OperationStatus.DISPATCHED
+        app.store.save_operation(operation)
+    finally:
+        app.close()
+    boot_path.write_text("restarted-boot")
+    app = Application.from_paths(config, state)
+    try:
+        run = app.store.get_run(RunId(run_id))
+        assert run.status == RunStatus.FAILED
+        assert run.error_code == "GROK_PROCESS_LOST"
+        assert app.scheduler.snapshot()["inflight"] == {}
+    finally:
+        app.close()
+
+
+def test_sync_grok_code_run_still_succeeds(isolated_env, workspace_root, monkeypatch):
+    boot_path, _proc, _machine_path = install_host(monkeypatch, isolated_env, "live-boot")
+    config = write_config(isolated_env / "cfg.json", workspace_root,
+                          {"grok": options(isolated_env, monkeypatch)})
+    app = Application.from_paths(config, isolated_env / "state")
+    try:
+        submitted = app.handle("task.submit", {"workspace": "demo", "backend": "grok", "text": "start"})
+        assert submitted.ok, submitted.error
+        run = submitted.data["run"]
+        dispatch = submitted.data["dispatch"]
+        assert run["status"] == "succeeded"
+        assert run["terminated"] is True
+        assert run["error_code"] is None
+        assert dispatch["status"] == "succeeded"
+        assert dispatch["terminated"] is True
+        assert dispatch["error_code"] is None
+        assert dispatch["native"]["stop_reason"] == "end_turn"
+        assert dispatch["native"]["session_id"] == run["native"]["session_id"]
+        assert run["native"][RECEIPT_KEY]["stage"] == "complete"
+        assert run["native"][RECEIPT_KEY]["prompt_attempted"] is True
+        assert run["native"]["process"]["pid"] == run["native"]["process"]["pgid"]
+        assert run["native"]["process"]["boot_id"] == boot_path.read_text()
+        assert app.scheduler.snapshot()["inflight"] == {}
+    finally:
+        app.close()
