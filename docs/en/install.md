@@ -178,14 +178,14 @@ Then configure a separate backend alias:
   "home": "/absolute/private/grok-profile",
   "model": "grok-4.6",
   "execution_profile": "workspace-code-v1",
-  "max_turns": 12,
-  "timeout_seconds": 900
+  "max_turns": 40,
+  "timeout_seconds": 1800
 }
 ```
 
 For v1, place the object under `backends.grok-code`. For v2, place bin/home/model and the coding options under the built-in Grok connection's `options`. Apply the configuration revision, then submit with `task-submit --workspace PROJECT --backend grok-code --text TR`. To isolate file changes, create a Git worktree first and register its actual directory as a workspace.
 
-The native turn limit defaults to 12, with a range of 1-100. The timeout defaults to 900 seconds, with a range of 1-3600. Submission and dispatch both check `workspace.read`, `workspace.write`, and `process.execute`. Existing configurations that omit `execution_profile` retain text mode.
+The native turn limit defaults to 40, with a range of 1-100. The timeout defaults to 900 seconds, with a range of 1-3600. The sample uses 1800 seconds for tasks that need to read a lot of code first. Submission and dispatch both check `workspace.read`, `workspace.write`, and `process.execute`. Existing configurations that omit `execution_profile` retain text mode.
 
 Coding mode uses headless streaming-json and executes file reads/writes, search, and terminal management tools directly under the configuration. Web, MCP, and subagents remain disabled. The native runtime must successfully apply the named sandbox. Its read scope covers the filesystem; its write scope includes the workspace, native HOME, and temporary directories. macOS subprocesses may still have network access. Choose the execution user and host according to how much you trust the repository.
 

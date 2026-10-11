@@ -172,14 +172,14 @@ asterun-grok prepare --home /absolute/private/grok-profile --execution-profile w
   "home": "/absolute/private/grok-profile",
   "model": "grok-4.6",
   "execution_profile": "workspace-code-v1",
-  "max_turns": 12,
-  "timeout_seconds": 900
+  "max_turns": 40,
+  "timeout_seconds": 1800
 }
 ```
 
 v1 将该对象放入 `backends.grok-code`；v2 将 bin/home/model 和编码选项放入内置 Grok 连接的 `options`。应用配置修订后，使用 `task-submit --workspace PROJECT --backend grok-code --text TR` 提交。若需隔离文件修改，先创建 Git worktree，再将其实际目录登记为工作区。
 
-原生回合默认 12，范围 1-100；超时默认 900 秒，范围 1-3600。提交和派发时均检查 `workspace.read`、`workspace.write`、`process.execute`。旧配置省略 `execution_profile` 时沿用文本模式。
+原生回合默认 40，范围 1-100；超时默认 900 秒，范围 1-3600。示例中的 1800 秒适合需要先读较多代码的任务。提交和派发时均检查 `workspace.read`、`workspace.write`、`process.execute`。旧配置省略 `execution_profile` 时沿用文本模式。
 
 编码配置可显式增加 `"session_policy": "resume"`。第一轮创建原生会话，之后 `task-submit --conversation-id ID` 或原任务的 `workflow-repair` 使用 `--resume`；省略或设置 `new` 保持旧行为。切换策略不自动认领旧会话：只接受本版 Asterun 创建并保留私有绑定记录的会话。派发前读取本地 CLI 帮助确认续接参数，核对 CLI 字节、账户/主机、profile、模型、工作区和原生日志摘要，并持有跨进程会话锁。会话缺失、日志被外部续接、绑定漂移或同时使用时均拒绝，不静默换新会话。
 

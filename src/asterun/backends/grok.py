@@ -56,7 +56,7 @@ CODE_TOOLS = (
     "read_file", "list_dir", "grep", "search_replace", "write_file", "run_terminal_cmd",
     "get_command_or_subagent_output", "wait_commands_or_subagents", "kill_command_or_subagent",
 )
-DEFAULT_CODE_MAX_TURNS = 12
+DEFAULT_CODE_MAX_TURNS = 40
 DEFAULT_CODE_TIMEOUT_SECONDS = 900
 
 
