@@ -16,6 +16,7 @@ from typing import Any
 
 RECEIPT_KEY = "asterun.grok_dispatch_v1"
 _BOOT_ID_PATH = Path("/proc/sys/kernel/random/boot_id")
+_MACHINE_ID_PATH = Path("/etc/machine-id")
 _PROC_ROOT = Path("/proc")
 MAX_LINE_BYTES = 1024 * 1024
 MAX_STREAM_BYTES = 32 * 1024 * 1024
@@ -33,7 +34,8 @@ _INPUT_FIELDS = frozenset({"command", "description", "path", "file_path", "fileP
 _OUTPUT_FIELDS = frozenset({"output", "output_for_prompt", "stdout", "stderr", "exit_code",
     "exitCode", "command", "description", "current_dir", "truncated", "timed_out", "signal",
     "total_bytes", "path", "file_path", "content", "text", "success", "error"})
-_PERMISSION_REFUSAL = re.compile(r"^User cancelled the execution for tool `([^`]{1,128})")
+_TOOL_NAME = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
+_PERMISSION_REFUSAL = re.compile(r"User cancelled the execution for tool `([A-Za-z0-9_.:-]{1,64})`")
 
 
 class _StreamError(Exception):
@@ -226,6 +228,15 @@ def host_boot_id() -> str | None:
     return _reference(value)
 
 
+def host_machine_id() -> str | None:
+    """Current machine id, or None when it cannot be read or is not a reference."""
+    try:
+        value = _MACHINE_ID_PATH.read_text().strip()
+    except Exception:
+        return None
+    return _reference(value)
+
+
 def process_start_ticks(pid: int) -> int | None:
     """proc(5) field 22 (starttime), the 20th field after the last ')' in stat."""
     try:
@@ -236,48 +247,43 @@ def process_start_ticks(pid: int) -> int | None:
 
 
 def process_provably_gone(record) -> bool:
-    """True only when host evidence shows this launch's process group no longer exists."""
+    """True only when the same machine id has a different boot id.
+
+    Same-boot absence is not proof: tool children can leave the process group,
+    and another PID namespace may simply not see the process. pid, pgid and
+    start_ticks are diagnostics and are not consulted.
+    """
     if not isinstance(record, dict):
         return False
-    pid = record.get("pid")
-    pgid = record.get("pgid")
-    if type(pid) is not int or type(pgid) is not int or pid <= 1 or pgid <= 1:
-        return False
     boot_id = _reference(record.get("boot_id"))
-    if boot_id is None:
+    machine_id = _reference(record.get("machine_id"))
+    if boot_id is None or machine_id is None:
         return False
-    current = host_boot_id()
-    if current is None:
+    current_boot = host_boot_id()
+    current_machine = host_machine_id()
+    if current_boot is None or current_machine is None:
         return False
-    if current != boot_id:
-        return True
-    ticks = process_start_ticks(pid)
-    recorded_ticks = record.get("start_ticks")
-    leader_gone = ticks is None or (type(recorded_ticks) is int and recorded_ticks != ticks)
-    if not leader_gone:
-        return False
-    try:
-        os.killpg(pgid, 0)
-    except ProcessLookupError:
-        return True
-    except OSError:
-        return False
-    return False
+    return current_machine == machine_id and current_boot != boot_id
 
 
 def reconcile_lost_process(native, *, task_id, run_id, cancel_requested=False):
-    """End an in-flight prompt when the recorded host process is provably gone.
+    """End an in-flight launch when the recorded host process is provably gone.
 
-    A receipt that already stored a failure or an exit code stays on the legacy
-    path. Startup must not turn that evidence into a lost-process terminal.
+    Proof is a changed boot id on the same machine id only. A prompt receipt
+    (prompt attempted) and a spawn receipt (prompt not yet attempted) both
+    qualify: a host that rebooted cannot still be running a process it may
+    have spawned. A receipt that already stored a failure or an exit code
+    stays on the legacy path.
     """
     if not isinstance(native, dict):
         return None
     receipt = native.get(RECEIPT_KEY)
-    if not isinstance(receipt, dict) or any(receipt.get(key) != value for key, value in {
-            "task_id": task_id, "run_id": run_id, "stage": "prompt"}.items()):
+    if not isinstance(receipt, dict) or receipt.get("task_id") != task_id or receipt.get("run_id") != run_id:
         return None
-    if receipt.get("prompt_attempted") is not True or receipt.get("failure_type") is not None or receipt.get("process_exit_code") is not None:
+    stage = receipt.get("stage")
+    attempted = receipt.get("prompt_attempted")
+    open_launch = (stage == "prompt" and attempted is True) or (stage == "spawn" and attempted is False)
+    if not open_launch or receipt.get("failure_type") is not None or receipt.get("process_exit_code") is not None:
         return None
     if (native.get("execution_profile") != "workspace-code-v1" or native.get("transport") != "headless"
             or not _reference(native.get("session_id")) or not process_provably_gone(native.get("process"))):
@@ -413,6 +419,8 @@ def run_code(*, command: list[str], env: dict, cwd: Path, session_id: str,
             raise _StreamError("stopped_before_spawn")
         # This acknowledgement precedes Popen: the predetermined native reference
         # survives even when the first provider request has no stdout response.
+        # Host identity is in that same acknowledgement, before a pid exists.
+        metadata["process"] = {"boot_id": host_boot_id(), "machine_id": host_machine_id()}
         emit(status="dispatching")
         if stopping.is_set():
             raise _StreamError("stopped_before_spawn")
@@ -420,8 +428,8 @@ def run_code(*, command: list[str], env: dict, cwd: Path, session_id: str,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
         attempted, stage = True, "prompt"
         # start_new_session makes this process the group leader, so pgid == pid.
-        metadata["process"] = {"pid": proc.pid, "pgid": proc.pid,
-            "boot_id": host_boot_id(), "start_ticks": process_start_ticks(proc.pid)}
+        metadata["process"].update({"pid": proc.pid, "pgid": proc.pid,
+            "boot_id": host_boot_id(), "start_ticks": process_start_ticks(proc.pid)})
         deadline = time.monotonic() + timeout_seconds
         for stream, name in ((proc.stdout, "stdout"), (proc.stderr, "stderr")):
             thread = Thread(target=read_stream, args=(stream, name), daemon=True)
@@ -508,19 +516,27 @@ def run_code(*, command: list[str], env: dict, cwd: Path, session_id: str,
                 text_truncated = text_truncated or len(chunk) > remaining
                 emit([{"type": "message", "kind": "text", "text": chunk[:MAX_FIELD_CHARS]}])
             elif kind in {"tool_call", "tool_call_update", "tool_result"}:
+                # The last tool event before end decides. dontAsk ends the turn on a
+                # refusal, so a later tool_call or a later update/result that is not
+                # this exact refusal is not why the turn was cancelled.
                 if kind == "tool_call":
                     tool_count += 1
+                    permission_refusal = None
                     call_id, call_name = event.get("toolCallId"), event.get("toolName")
-                    if isinstance(call_id, str) and isinstance(call_name, str) and call_id:
-                        tool_names[call_id[:256]] = call_name[:128]
+                    if (isinstance(call_id, str) and call_id and isinstance(call_name, str)
+                            and _TOOL_NAME.fullmatch(call_name)):
+                        tool_names[call_id[:256]] = call_name
                 projected = _tool(event)
-                if kind in {"tool_call_update", "tool_result"} and projected.get("status") == "failed":
-                    refusal_text = projected.get("text")
-                    matched = _PERMISSION_REFUSAL.match(refusal_text) if isinstance(refusal_text, str) else None
-                    if matched:
-                        mapped = tool_names.get(projected.get("toolCallId"))
-                        tool = (matched.group(1) or (mapped if isinstance(mapped, str) else ""))[:128]
-                        permission_refusal = {"kind": "permission_denied", "source": "native_event", "tool": tool}
+                if kind in {"tool_call_update", "tool_result"}:
+                    permission_refusal = None
+                    if projected.get("status") == "failed":
+                        refusal_text = projected.get("text")
+                        matched = _PERMISSION_REFUSAL.fullmatch(refusal_text) if isinstance(refusal_text, str) else None
+                        recorded = tool_names.get(projected.get("toolCallId")) if matched else None
+                        # tool is the tool_call's toolName, never a slice of the free text.
+                        if matched and isinstance(recorded, str) and recorded == matched.group(1):
+                            permission_refusal = {
+                                "kind": "permission_denied", "source": "native_event", "tool": recorded}
                 emit([projected])
             elif kind == "usage":
                 # Prompt totals belong to end, not a sum of potentially repeated

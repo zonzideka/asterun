@@ -225,6 +225,7 @@ class Application:
         self.state_dir = state_dir
         self._closed = False
         self._draining = False
+        self._restoring = False
         self.executor = Executor() if background else None
         self._retained_results: dict[str, _RetainedResult] = {}
         self._poll_epoch = 0
@@ -1931,6 +1932,8 @@ class Application:
         return FixedReadScope(root, binding)
 
     def _drain_queue(self) -> None:
+        if self._restoring:
+            return
         if self.executor is not None and self.executor.stopping.is_set():
             return
         if self._draining:
@@ -2387,41 +2390,47 @@ class Application:
         return presented, receipt
 
     def _restore_scheduler(self) -> None:
-        for task_id in self.store.list_task_ids():
-            task = self.store.get_task(task_id)
-            run = self.store.get_run(task.current_run_id) if task.current_run_id else None
-            if run is None or run.status in TERMINAL_RUN_STATUSES:
-                continue
-            self._apply_retained_result_if_any(run)
-            run = self.store.get_run(run.id)
-            if run.status in TERMINAL_RUN_STATUSES:
-                self._project_slot(run)
-                continue
-            operation = self.store.find_operation_for_run(run.id)
-            if operation is not None and operation.status == OperationStatus.INTENDED:
-                self.scheduler.finish(run.backend.value, run.id)
-                self.scheduler.enqueue(run.backend.value, task.id, run.id,
-                                       self._workspace_key(task))
-            elif operation is None:
-                self._reconcile_one(task.id)
-            else:
-                # 只有主机进程证据能在启动时结束运行。已分类的旧回执保持未决，等显式核对。
-                try:
-                    backend = self._backend(run.backend.value)
-                except AsterunError:
-                    backend = None
-                if backend is not None and hasattr(backend, "reconcile_lost"):
-                    lost = backend.reconcile_lost(
-                        run.native, task_id=task.id.value, run_id=run.id.value,
-                        cancel_requested=run.cancel_requested)
-                    if lost is not None:
-                        self._record_result(run.id, lost)
-                        run = self.store.get_run(run.id)
-                        self._project_slot(run)
-                        continue
-                # 重放结果时可能已经投影过一次；这里再投影仍然按 run id 幂等。
-                self._project_slot(run)
-                self._reconcile_one(task.id)
+        self._restoring = True
+        try:
+            for task_id in self.store.list_task_ids():
+                task = self.store.get_task(task_id)
+                run = self.store.get_run(task.current_run_id) if task.current_run_id else None
+                if run is None or run.status in TERMINAL_RUN_STATUSES:
+                    continue
+                self._apply_retained_result_if_any(run)
+                run = self.store.get_run(run.id)
+                if run.status in TERMINAL_RUN_STATUSES:
+                    self._project_slot(run)
+                    continue
+                operation = self.store.find_operation_for_run(run.id)
+                if operation is not None and operation.status == OperationStatus.INTENDED:
+                    self.scheduler.finish(run.backend.value, run.id)
+                    self.scheduler.enqueue(run.backend.value, task.id, run.id,
+                                           self._workspace_key(task))
+                elif operation is None:
+                    self._reconcile_one(task.id)
+                else:
+                    # 只有主机进程证据能在启动时结束运行。已分类的旧回执保持未决，等显式核对。
+                    try:
+                        backend = self._backend(run.backend.value)
+                    except AsterunError:
+                        backend = None
+                    if backend is not None and hasattr(backend, "reconcile_lost"):
+                        lost = backend.reconcile_lost(
+                            run.native, task_id=task.id.value, run_id=run.id.value,
+                            cancel_requested=run.cancel_requested)
+                        if lost is not None:
+                            self._record_result(run.id, lost)
+                            run = self.store.get_run(run.id)
+                            self._project_slot(run)
+                            continue
+                    # 重放结果时可能已经投影过一次；这里再投影仍然按 run id 幂等。
+                    self._project_slot(run)
+                    self._reconcile_one(task.id)
+        finally:
+            self._restoring = False
+        if self.executor is not None:
+            self._drain_queue()
 
     def _assert_task_binding(self, task: Task) -> None:
         if task.account_ref != self.account_ref or task.runtime_ref != self.runtime_ref:
