@@ -891,7 +891,12 @@ class Application:
             result = {"status": str(RunStatus.CANCELLED), "terminated": True,
                       "summary": "排队运行已取消，未派发后端"}
         else:
-            result = backend.request_cancel(run.id, task.script)
+            result = None
+            if hasattr(backend, "reconcile_recorded") and (not self.executor or run.id.value not in self.executor.workers):
+                result = backend.reconcile_recorded(
+                    run.native, task_id=task.id.value, run_id=run.id.value, cancel_requested=True)
+            if result is None:
+                result = backend.request_cancel(run.id, task.script)
         if result.get("terminated") or result.get("raced_completion"):
             self._record_result(run.id, result)
         run = self.store.get_run(run.id)
@@ -1282,7 +1287,9 @@ class Application:
             backend = self._backend(run.backend.value if run else scoped_task.backend.value)
             if run and run.status not in TERMINAL_RUN_STATUSES and hasattr(backend, "reconcile_recorded"):
                 if not self.executor or run.id.value not in self.executor.workers:
-                    result = backend.reconcile_recorded(run.native, task_id=scoped_task.id.value, run_id=run.id.value)
+                    result = backend.reconcile_recorded(
+                        run.native, task_id=scoped_task.id.value, run_id=run.id.value,
+                        cancel_requested=run.cancel_requested)
                     if result is not None:
                         self._record_result(run.id, result)
                         run = self.store.get_run(run.id)
@@ -2398,6 +2405,20 @@ class Application:
             elif operation is None:
                 self._reconcile_one(task.id)
             else:
+                # 只有主机进程证据能在启动时结束运行。已分类的旧回执保持未决，等显式核对。
+                try:
+                    backend = self._backend(run.backend.value)
+                except AsterunError:
+                    backend = None
+                if backend is not None and hasattr(backend, "reconcile_lost"):
+                    lost = backend.reconcile_lost(
+                        run.native, task_id=task.id.value, run_id=run.id.value,
+                        cancel_requested=run.cancel_requested)
+                    if lost is not None:
+                        self._record_result(run.id, lost)
+                        run = self.store.get_run(run.id)
+                        self._project_slot(run)
+                        continue
                 # 重放结果时可能已经投影过一次；这里再投影仍然按 run id 幂等。
                 self._project_slot(run)
                 self._reconcile_one(task.id)
