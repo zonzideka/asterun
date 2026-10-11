@@ -15,6 +15,9 @@ import time
 from typing import Any
 
 RECEIPT_KEY = "asterun.grok_dispatch_v1"
+_BOOT_ID_PATH = Path("/proc/sys/kernel/random/boot_id")
+_MACHINE_ID_PATH = Path("/etc/machine-id")
+_PROC_ROOT = Path("/proc")
 MAX_LINE_BYTES = 1024 * 1024
 MAX_STREAM_BYTES = 32 * 1024 * 1024
 MAX_EVENTS = 20000
@@ -31,6 +34,8 @@ _INPUT_FIELDS = frozenset({"command", "description", "path", "file_path", "fileP
 _OUTPUT_FIELDS = frozenset({"output", "output_for_prompt", "stdout", "stderr", "exit_code",
     "exitCode", "command", "description", "current_dir", "truncated", "timed_out", "signal",
     "total_bytes", "path", "file_path", "content", "text", "success", "error"})
+_TOOL_NAME = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
+_PERMISSION_REFUSAL = re.compile(r"User cancelled the execution for tool `([A-Za-z0-9_.:-]{1,64})`")
 
 
 class _StreamError(Exception):
@@ -173,11 +178,13 @@ def _stop_process(proc: subprocess.Popen) -> None:
         pass
 
 
-def incomplete_terminal(reason, turn_limit=False):
+def incomplete_terminal(reason, turn_limit=False, permission_denied=False):
     """A bound native end may prove failure even when the CLI exits with code 1."""
     if reason in {"max_tokens", "max_turn_requests", "max_turns", "max_turns_reached", "refusal"} or (
             turn_limit and reason in {"end_turn", "cancelled"}):
         return {"status": "failed", "terminated": True, "error_code": "GROK_RUN_INCOMPLETE"}
+    if reason == "cancelled" and permission_denied:
+        return {"status": "failed", "terminated": True, "error_code": "GROK_PERMISSION_DENIED"}
     if reason == "cancelled":
         return {"status": "cancelled", "terminated": True, "error_code": None}
     return None
@@ -210,6 +217,87 @@ def reconcile_recorded_terminal(native, *, task_id, run_id):
     return {**result, "native": {"recorded_terminal_reconciliation": {
         "source": "persisted_headless_end_and_exit", "task_id": task_id, "run_id": run_id,
         "re_dispatched": False}}}
+
+
+def host_boot_id() -> str | None:
+    """Current boot id, or None when /proc is missing or the value is not a reference."""
+    try:
+        value = _BOOT_ID_PATH.read_text().strip()
+    except (OSError, UnicodeError, ValueError):
+        return None
+    return _reference(value)
+
+
+def host_machine_id() -> str | None:
+    """Current machine id, or None when it cannot be read or is not a reference."""
+    try:
+        value = _MACHINE_ID_PATH.read_text().strip()
+    except Exception:
+        return None
+    return _reference(value)
+
+
+def process_start_ticks(pid: int) -> int | None:
+    """proc(5) field 22 (starttime), the 20th field after the last ')' in stat."""
+    try:
+        text = (_PROC_ROOT / str(pid) / "stat").read_text()
+        return int(text.rsplit(")", 1)[1].split()[19])
+    except (OSError, UnicodeError, ValueError, IndexError, TypeError):
+        return None
+
+
+def process_provably_gone(record) -> bool:
+    """True only when the same machine id has a different boot id.
+
+    Same-boot absence is not proof: tool children can leave the process group,
+    and another PID namespace may simply not see the process. pid, pgid and
+    start_ticks are diagnostics and are not consulted.
+    """
+    if not isinstance(record, dict):
+        return False
+    boot_id = _reference(record.get("boot_id"))
+    machine_id = _reference(record.get("machine_id"))
+    if boot_id is None or machine_id is None:
+        return False
+    current_boot = host_boot_id()
+    current_machine = host_machine_id()
+    if current_boot is None or current_machine is None:
+        return False
+    return current_machine == machine_id and current_boot != boot_id
+
+
+def reconcile_lost_process(native, *, task_id, run_id, cancel_requested=False):
+    """End an in-flight launch when the recorded host process is provably gone.
+
+    Proof is a changed boot id on the same machine id only. A prompt receipt
+    (prompt attempted) and a spawn receipt (prompt not yet attempted) both
+    qualify: a host that rebooted cannot still be running a process it may
+    have spawned. A receipt that already stored a failure or an exit code
+    stays on the legacy path.
+    """
+    if not isinstance(native, dict):
+        return None
+    receipt = native.get(RECEIPT_KEY)
+    if not isinstance(receipt, dict) or receipt.get("task_id") != task_id or receipt.get("run_id") != run_id:
+        return None
+    stage = receipt.get("stage")
+    attempted = receipt.get("prompt_attempted")
+    open_launch = (stage == "prompt" and attempted is True) or (stage == "spawn" and attempted is False)
+    if not open_launch or receipt.get("failure_type") is not None or receipt.get("process_exit_code") is not None:
+        return None
+    if (native.get("execution_profile") != "workspace-code-v1" or native.get("transport") != "headless"
+            or not _reference(native.get("session_id")) or not process_provably_gone(native.get("process"))):
+        return None
+    cancelled = bool(cancel_requested)
+    return {
+        "status": "cancelled" if cancelled else "failed",
+        "error_code": None if cancelled else "GROK_PROCESS_LOST",
+        "terminated": True,
+        "summary": "Grok 编码进程已不存在（主机重启或进程消失），按已记录进程证据结束；未重派",
+        "events": [{"type": "reconciled", "re_dispatched": False, "reason": "host_process_lost"}],
+        "native": {"recorded_terminal_reconciliation": {
+            "source": "host_process_lost", "task_id": task_id, "run_id": run_id, "re_dispatched": False}},
+    }
 
 
 class CodeProcessHandle:
@@ -267,6 +355,8 @@ def run_code(*, command: list[str], env: dict, cwd: Path, session_id: str,
     metadata: dict[str, Any] = {}
     stream_error = False
     budget_reached = False
+    permission_refusal = None
+    tool_names: dict[str, str] = {}
     event_count = 0
     stdout_bytes = stderr_bytes = 0
     stderr_tail = ""
@@ -329,12 +419,17 @@ def run_code(*, command: list[str], env: dict, cwd: Path, session_id: str,
             raise _StreamError("stopped_before_spawn")
         # This acknowledgement precedes Popen: the predetermined native reference
         # survives even when the first provider request has no stdout response.
+        # Host identity is in that same acknowledgement, before a pid exists.
+        metadata["process"] = {"boot_id": host_boot_id(), "machine_id": host_machine_id()}
         emit(status="dispatching")
         if stopping.is_set():
             raise _StreamError("stopped_before_spawn")
         proc = process.spawn(command, cwd=str(cwd), env=env, stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
         attempted, stage = True, "prompt"
+        # start_new_session makes this process the group leader, so pgid == pid.
+        metadata["process"].update({"pid": proc.pid, "pgid": proc.pid,
+            "boot_id": host_boot_id(), "start_ticks": process_start_ticks(proc.pid)})
         deadline = time.monotonic() + timeout_seconds
         for stream, name in ((proc.stdout, "stdout"), (proc.stderr, "stderr")):
             thread = Thread(target=read_stream, args=(stream, name), daemon=True)
@@ -421,9 +516,28 @@ def run_code(*, command: list[str], env: dict, cwd: Path, session_id: str,
                 text_truncated = text_truncated or len(chunk) > remaining
                 emit([{"type": "message", "kind": "text", "text": chunk[:MAX_FIELD_CHARS]}])
             elif kind in {"tool_call", "tool_call_update", "tool_result"}:
+                # The last tool event before end decides. dontAsk ends the turn on a
+                # refusal, so a later tool_call or a later update/result that is not
+                # this exact refusal is not why the turn was cancelled.
                 if kind == "tool_call":
                     tool_count += 1
-                emit([_tool(event)])
+                    permission_refusal = None
+                    call_id, call_name = event.get("toolCallId"), event.get("toolName")
+                    if (isinstance(call_id, str) and call_id and isinstance(call_name, str)
+                            and _TOOL_NAME.fullmatch(call_name)):
+                        tool_names[call_id[:256]] = call_name
+                projected = _tool(event)
+                if kind in {"tool_call_update", "tool_result"}:
+                    permission_refusal = None
+                    if projected.get("status") == "failed":
+                        refusal_text = projected.get("text")
+                        matched = _PERMISSION_REFUSAL.fullmatch(refusal_text) if isinstance(refusal_text, str) else None
+                        recorded = tool_names.get(projected.get("toolCallId")) if matched else None
+                        # tool is the tool_call's toolName, never a slice of the free text.
+                        if matched and isinstance(recorded, str) and recorded == matched.group(1):
+                            permission_refusal = {
+                                "kind": "permission_denied", "source": "native_event", "tool": recorded}
+                emit([projected])
             elif kind == "usage":
                 # Prompt totals belong to end, not a sum of potentially repeated
                 # model-boundary updates. Signatures and unknown fields stay out.
@@ -457,7 +571,7 @@ def run_code(*, command: list[str], env: dict, cwd: Path, session_id: str,
             # Plans, command catalogs and future event payloads are not persisted.
         if protocol_failure:
             raise _StreamError(protocol_failure)
-        known_incomplete = incomplete_terminal(end["stopReason"], budget_reached) if end else None
+        known_incomplete = incomplete_terminal(end["stopReason"], budget_reached, permission_refusal is not None) if end else None
         if exit_code != 0 and not (exit_code == 1 and known_incomplete):
             raise _StreamError("nonzero_exit")
         if end is None:
@@ -470,6 +584,9 @@ def run_code(*, command: list[str], env: dict, cwd: Path, session_id: str,
             raise _StreamError("native_error")
         elif reason == "end_turn":
             status, code = "succeeded", None
+        elif reason == "cancelled" and permission_refusal is not None and not budget_reached:
+            status, code = "failed", "GROK_PERMISSION_DENIED"
+            metadata.setdefault("provider_failure", permission_refusal)
         elif reason == "cancelled":
             status, code = "cancelled", None
         else:

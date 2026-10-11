@@ -2,6 +2,8 @@
 
 [中文](STATUS.md) | [English](STATUS.en.md)
 
+2026-10-11 grok-code 在后台核心和同步核心中，都在 spawn 之前把宿主身份（boot id 和 machine id）写入 dispatching 确认并落盘，spawn 之后再补上 pid、进程组和启动时间。进程已被证明不存在的唯一证据是同一 machine id 上的 boot id 发生变化（主机重启或从快照恢复）。这类运行由 `task.reconcile` 结束为失败 / `GROK_PROCESS_LOST`，由 `task.cancel` 结束为已取消，并在核心启动时结束为失败 / `GROK_PROCESS_LOST` 且不再占回名额；这些运行不会重派。启动恢复在每个仍存活的名额重新投影之前，不再启动已排队任务。同一次启动下丢失的进程（工具子进程可以离开进程组），以及没有这份记录的运行（旧版本），仍需显式或操作者路径，并保持未知。已知限制：该证明比较 `/etc/machine-id`；把 Asterun 状态目录搬到克隆主机（machine id 相同、boot 不同）不受支持，可能把仍在原主机上活着的运行误判为 `GROK_PROCESS_LOST` 并释放其名额。运行尚未结束时，不要在主机之间移动或共享状态目录。dontAsk 下的 Grok 权限拒绝只按 Grok 的精确拒绝文本、并绑定到已记录的工具调用来识别，现在记为失败 / `GROK_PERMISSION_DENIED`，`provider_failure` 为 `permission_denied`，保存的工具名来自该次调用，不再记成已取消。权限模式故意不改：换成始终批准会让模型在没有 Asterun 侧闸门的情况下执行任意命令（联网、用配置里的凭据 `git push`，以及 Landlock 工作区沙箱仍允许的写入，例如 `/tmp`），而 dontAsk 加允许列表保持失败关闭的白名单。给 grok-code 的提示应使用字面路径，避免 `$VAR`、`$?`、`$(...)`、`rm` 和多行 `python -c`。协议、配置 schema 和 SQLite 不变，随下一版本发行。
+
 2026-10-10 Grok 编码模式（`workspace-code-v1`）省略 `max_turns` 时的默认原生回合从 12 改为 40。实际使用中 12 回合常在读完代码后就用尽、尚未写入任何改动。范围仍为 1 到 100，超时默认仍为 900 秒；安装文档示例改为 `max_turns` 40、`timeout_seconds` 1800。显式配置了 `max_turns` 的实例不受影响。协议、配置 schema 和 SQLite 不变，随下一版本发行。
 
 2026-10-09 把核心源码标为 `0.1.0a18`。本版纳入结果落盘事务与 `slot_held` 名额持久化、Codex/Claude 环境白名单和 Claude `load_user_settings`、外部插件 runner 白名单与实际入口钉定，以及 `v*` 标签的可复现发版流水线。内置 Antigravity `timeout_seconds` 为 30 到 3600，省略时仍为 300 秒。外部插件源码为 `1.0.3`，随该版本发行；标签打出之前，已发布 wheel 仍是 a17 的 `1.0.1`，换装后需按新 runner 重新注册。标准 skill 最低接口仍为 `0.1.0a14`，技能包只因发行页链接变化而改摘要。尚未打 `v0.1.0a18`，发行页资产要等流水线成功后才出现。协议、SQLite schema 6 和配置 schema 不变。已发布版本的工作流重跑依赖 90 天内的 `asterun-dist` 产物。
