@@ -2,7 +2,7 @@
 
 [中文](STATUS.md) | [English](STATUS.en.md)
 
-2026-10-11 grok-code 在启动时记录原生进程（pid、进程组、boot id、启动时间）。进程已被证明不存在的运行（主机重启或恢复，或同一次启动下组长与进程组都已消失）由 `task.reconcile` 结束为失败 / `GROK_PROCESS_LOST`，由 `task.cancel` 结束为已取消，并在核心启动时结束为失败 / `GROK_PROCESS_LOST` 且不再占回名额；这些运行不会重派。没有进程记录的旧版本运行仍需显式路径，并保持未知。dontAsk 下的 Grok 权限拒绝现在记为失败 / `GROK_PERMISSION_DENIED`，`provider_failure` 为 `permission_denied`，不再记成已取消。权限模式故意不改：换成始终批准会让模型在没有 Asterun 侧闸门的情况下执行任意命令（联网、用配置里的凭据 `git push`，以及 Landlock 工作区沙箱仍允许的写入，例如 `/tmp`），而 dontAsk 加允许列表保持失败关闭的白名单。给 grok-code 的提示应使用字面路径，避免 `$VAR`、`$?`、`$(...)`、`rm` 和多行 `python -c`。协议、配置 schema 和 SQLite 不变，随下一版本发行。
+2026-10-11 grok-code 在 spawn 之前把宿主身份（boot id 和 machine id）写入 dispatching 确认，spawn 之后再补上 pid、进程组和启动时间。进程已被证明不存在的唯一证据是同一 machine id 上的 boot id 发生变化（主机重启或从快照恢复）。这类运行由 `task.reconcile` 结束为失败 / `GROK_PROCESS_LOST`，由 `task.cancel` 结束为已取消，并在核心启动时结束为失败 / `GROK_PROCESS_LOST` 且不再占回名额；这些运行不会重派。启动恢复在每个仍存活的名额重新投影之前，不再启动已排队任务。同一次启动下丢失的进程（工具子进程可以离开进程组），以及没有这份记录的运行（旧版本，或同步核心在第一次确认前退出），仍需显式或操作者路径，并保持未知。dontAsk 下的 Grok 权限拒绝只按 Grok 的精确拒绝文本、并绑定到已记录的工具调用来识别，现在记为失败 / `GROK_PERMISSION_DENIED`，`provider_failure` 为 `permission_denied`，保存的工具名来自该次调用，不再记成已取消。权限模式故意不改：换成始终批准会让模型在没有 Asterun 侧闸门的情况下执行任意命令（联网、用配置里的凭据 `git push`，以及 Landlock 工作区沙箱仍允许的写入，例如 `/tmp`），而 dontAsk 加允许列表保持失败关闭的白名单。给 grok-code 的提示应使用字面路径，避免 `$VAR`、`$?`、`$(...)`、`rm` 和多行 `python -c`。协议、配置 schema 和 SQLite 不变，随下一版本发行。
 
 2026-10-10 Grok 编码模式（`workspace-code-v1`）省略 `max_turns` 时的默认原生回合从 12 改为 40。实际使用中 12 回合常在读完代码后就用尽、尚未写入任何改动。范围仍为 1 到 100，超时默认仍为 900 秒；安装文档示例改为 `max_turns` 40、`timeout_seconds` 1800。显式配置了 `max_turns` 的实例不受影响。协议、配置 schema 和 SQLite 不变，随下一版本发行。
 

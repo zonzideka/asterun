@@ -10,6 +10,7 @@ from tests.conftest import write_config
 
 PERMISSION = {"kind": "permission_denied", "source": "native_event", "tool": "run_terminal_command"}
 REFUSAL = "User cancelled the execution for tool `run_terminal_command`"
+OPEN_REFUSAL = "User cancelled the execution for tool `FAKE_SECRET_TOKEN=example-value; this is an ordinary failed command"
 
 
 def options(tmp_path, monkeypatch):
@@ -22,16 +23,21 @@ args = sys.argv
 sid = args[args.index("--session-id") + 1]
 prompt = pathlib.Path(args[args.index("--prompt-file") + 1]).read_text()
 refusal = "User cancelled the execution for tool `run_terminal_command`"
+open_refusal = "User cancelled the execution for tool `FAKE_SECRET_TOKEN=example-value; this is an ordinary failed command"
 
 def emit(event):
     print(json.dumps(event), flush=True)
 
-def call():
-    emit({"type": "tool_call", "toolCallId": "c1", "toolName": "run_terminal_command", "status": "pending"})
+def call(call_id="c1", name="run_terminal_command"):
+    emit({"type": "tool_call", "toolCallId": call_id, "toolName": name, "status": "pending"})
 
-def failed(text):
-    emit({"type": "tool_call_update", "toolCallId": "c1", "status": "failed", "content": [
+def failed(text, call_id="c1"):
+    emit({"type": "tool_call_update", "toolCallId": call_id, "status": "failed", "content": [
         {"type": "content", "content": {"type": "text", "text": text}}]})
+
+def completed(call_id, name):
+    call(call_id, name)
+    emit({"type": "tool_call_update", "toolCallId": call_id, "status": "completed"})
 
 def finish(reason, code=0):
     emit({"type": "text", "data": "model summary"})
@@ -52,6 +58,14 @@ elif prompt == "budget":
     call(); failed(refusal)
     emit({"type": "max_turns_reached"})
     finish("cancelled")
+elif prompt == "unclosed":
+    call(); failed(open_refusal); finish("cancelled")
+elif prompt == "wrong-tool":
+    call(); failed("User cancelled the execution for tool `read_file`"); finish("cancelled")
+elif prompt == "unknown-call":
+    call("other", "run_terminal_command"); failed(refusal, "never-announced"); finish("cancelled")
+elif prompt == "refusal-then-complete":
+    call(); failed(refusal); completed("c2", "read_file"); finish("cancelled")
 else:
     emit({"type": "text", "data": "UNEXPECTED " + prompt})
     finish("end_turn", 2)
@@ -69,6 +83,10 @@ else:
     ("other-fail", "cancelled", None, None),
     ("recovered", "succeeded", None, None),
     ("budget", "failed", "GROK_RUN_INCOMPLETE", {"kind": "turn_limit", "source": "native_event"}),
+    ("unclosed", "cancelled", None, None),
+    ("wrong-tool", "cancelled", None, None),
+    ("unknown-call", "cancelled", None, None),
+    ("refusal-then-complete", "cancelled", None, None),
 ])
 def test_permission_refusal_terminal(isolated_env, workspace_root, monkeypatch, prompt, status, code, failure):
     conf = write_config(isolated_env / "cfg.json", workspace_root, {"grok": options(isolated_env, monkeypatch)})
@@ -81,7 +99,9 @@ def test_permission_refusal_terminal(isolated_env, workspace_root, monkeypatch, 
         assert run["error_code"] == code
         assert run["native"].get("provider_failure") == failure
         assert run["summary"] == "model summary"
-        assert REFUSAL not in json.dumps(run["native"])
+        native_json = json.dumps(run["native"])
+        assert REFUSAL not in native_json
+        assert OPEN_REFUSAL not in native_json
         assert app.scheduler.snapshot()["inflight"] == {}
     finally:
         app.close()
