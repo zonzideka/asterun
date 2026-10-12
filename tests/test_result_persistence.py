@@ -912,6 +912,129 @@ def test_retry_after_double_write_failure_keeps_slot_released(isolated_env, work
         restored.close()
 
 
+@pytest.mark.parametrize("failure_during_close", [False, True])
+@pytest.mark.parametrize("result_failures", [1, 2])
+def test_close_flushes_memory_only_result(isolated_env, workspace_root, failure_during_close, result_failures):
+    """两次写入暂时失败后立即关闭，终态仍完整落盘，关闭时不派发排队任务。"""
+    db = isolated_env / "close-result.sqlite"
+    store = SqliteStore(db)
+    backend = StreamBackend(None, {"done": _result("needs_approval")})
+    app = _worker_app(isolated_env, workspace_root, store, backend, concurrency=1)
+    try:
+        submitted = app.task_submit({"workspace": "demo", "backend": "worker", "text": "done", "script": "done"})
+        queued = app.task_submit({"workspace": "demo", "backend": "worker", "text": "next", "script": "done"})
+        assert submitted.ok and queued.ok
+        run_id = submitted.ids["run_id"]
+        _wait(lambda: app.executor.updates.qsize() >= 1, "结果没有进入执行器队列")
+        original_session, original_run = store.save_session, store.save_run
+        failures = {"result": 0, "copy": 0}
+
+        def fail_result(session):
+            if failures["result"] < result_failures and getattr(session.backend_session_id, "value", None) == KEPT_SESSION:
+                failures["result"] += 1
+                raise sqlite3.OperationalError("injected close result failure")
+            return original_session(session)
+
+        def fail_copy_once(run):
+            if not failures["copy"] and run.id.value == run_id and UNAPPLIED_RESULT_NATIVE_KEY in run.native:
+                failures["copy"] += 1
+                raise sqlite3.OperationalError("injected close copy failure")
+            return original_run(run)
+
+        store.save_session, store.save_run = fail_result, fail_copy_once
+        if failure_during_close:
+            with pytest.raises(sqlite3.OperationalError, match="injected close result failure"):
+                app.close()
+        else:
+            with pytest.raises(sqlite3.OperationalError, match="injected close result failure"):
+                app.poll()
+            assert app._retained_results[run_id].ready_at_poll > app._poll_epoch
+            assert UNAPPLIED_RESULT_NATIVE_KEY not in _persisted(db, run_id)[0]["native"]
+            app.close()
+        assert failures == {"result": result_failures, "copy": 1}
+        assert backend.dispatch_count == 1
+        assert _persisted(db, queued.ids["run_id"])[1] == OperationStatus.INTENDED
+        run = _persisted(db, run_id)[0]
+        if result_failures == 1:
+            assert run["status"] == RunStatus.SUCCEEDED
+        else:
+            # 关闭时完整事务仍失败，但保留副本可写；重启只重放这份结果。
+            assert run["status"] == RunStatus.PENDING_RECONCILE
+            assert run["native"][UNAPPLIED_RESULT_NATIVE_KEY] == _result("needs_approval")
+        app.close()  # 重复关闭不能重复写结果。
+    finally:
+        app.close()
+
+    restored_backend = StreamBackend(None, {"done": _result("needs_approval")})
+    restored = _worker_app(isolated_env, workspace_root, SqliteStore(db), restored_backend, concurrency=1)
+    try:
+        assert restored.store.get_run(RunId(run_id)).status == RunStatus.SUCCEEDED
+        assert run_id not in restored.scheduler.inflight_runs
+        # 重启可恢复原本排队的下一任务，但不得重新派发已收到结果的运行。
+        assert run_id not in restored_backend.calls
+        assert set(restored_backend.calls) <= {queued.ids["run_id"]}
+        assert UNAPPLIED_RESULT_NATIVE_KEY not in restored.store.get_run(RunId(run_id)).native
+        run, operation, events, approvals, sessions, version = _persisted(db, run_id)
+        assert run["summary"] == KEPT_SUMMARY
+        assert operation == OperationStatus.COMPLETED
+        assert _texts(events).count(KEPT_MARKER) == 1
+        assert len([item for item in approvals if item["run_id"] == run_id]) == 1
+        assert any(item["backend_session_id"] == KEPT_SESSION for item in sessions)
+        assert version == "6"
+    finally:
+        restored.close()
+
+
+def test_sync_close_flushes_cancel_result_without_dispatching_queue(isolated_env, workspace_root):
+    """前台模式关闭时保存已确认取消，不因释放名额而启动排队任务。"""
+    db = isolated_env / "close-cancel.sqlite"
+    store = SqliteStore(db)
+    app = _sync_app(isolated_env, workspace_root, store)
+    try:
+        held = app.handle("task.submit", {"workspace": "demo", "text": "hold", "script": "cancel_and_stop"})
+        queued = app.handle("task.submit", {"workspace": "demo", "text": "next", "script": "success"})
+        assert held.ok and queued.ok and queued.data["queued"]
+        run_id = held.ids["run_id"]
+        original_operation, original_run = store.save_operation, store.save_run
+        failures = {"result": 0, "copy": 0}
+
+        def fail_result_once(operation):
+            if not failures["result"] and operation.status == OperationStatus.COMPLETED:
+                failures["result"] += 1
+                raise sqlite3.OperationalError("injected close cancel failure")
+            return original_operation(operation)
+
+        def fail_copy_once(run):
+            if not failures["copy"] and run.id.value == run_id and UNAPPLIED_RESULT_NATIVE_KEY in run.native:
+                failures["copy"] += 1
+                raise sqlite3.OperationalError("injected close cancel copy failure")
+            return original_run(run)
+
+        store.save_operation, store.save_run = fail_result_once, fail_copy_once
+        with pytest.raises(sqlite3.OperationalError, match="injected close cancel failure"):
+            app.handle("task.cancel", {"task_id": held.ids["task_id"]})
+        assert failures == {"result": 1, "copy": 1}
+        assert UNAPPLIED_RESULT_NATIVE_KEY not in _persisted(db, run_id)[0]["native"]
+        app.close()
+        run, operation, events, *_ = _persisted(db, run_id)
+        assert run["status"] == RunStatus.CANCELLED
+        assert operation == OperationStatus.COMPLETED
+        assert _texts(events).count("fake 已停止运行") == 1
+        assert app.backends["fake"].dispatch_count == 1
+        assert _persisted(db, queued.ids["run_id"])[1] == OperationStatus.INTENDED
+        assert sum(call.method == "request_cancel" for call in app.backends["fake"].calls) == 1
+    finally:
+        app.close()
+
+    restored = _sync_app(isolated_env, workspace_root, SqliteStore(db))
+    try:
+        assert restored.store.get_run(RunId(run_id)).status == RunStatus.CANCELLED
+        assert run_id not in restored.scheduler.inflight_runs
+        assert restored.backends["fake"].dispatch_count == 0
+    finally:
+        restored.close()
+
+
 def test_slot_count_matches_live_runs_after_faults_and_restart(isolated_env, workspace_root):
     """任意一次落盘失败和重启之后，名额计数都等于仍被标记为占用的运行数。"""
     db = isolated_env / "slot-invariant.sqlite"
