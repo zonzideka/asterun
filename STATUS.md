@@ -2,9 +2,15 @@
 
 [中文](STATUS.md) | [English](STATUS.en.md)
 
+2026-10-12 关闭结果恢复维护完成第 3/3 轮合入，基线为 main `dc91801`。队列入口同时保留关闭保护和启动恢复保护，解决两份状态记录冲突并更新运行源码摘要；原五项故障回归未改。临时 HOME、清理凭据环境和 fake 后端下，关闭恢复、生命周期、Grok 进程恢复、权限拒绝及控制对象析构共 96 项专项通过。提交前的完整离线初验为 2863 通过、4 跳过、15 失败：12 项在未修改的该 main 快照上全部复现，仍为 macOS `/home` 路径断言和插件 worker 的 0.2 秒限时；另 3 项发行资产检查因新合入的 skill 源码尚未提交而拒绝构建。来源核验、插件副本版本检查和 34 项包装检查通过。固定提交的发行复验、CI 和交接记录见 [PR #16](https://github.com/zonzideka/asterun/pull/16)。达到自动修复上限后停止自动修改，保持 Draft，未部署或调用真实后端。
+
 2026-10-11 关闭结果恢复维护分支合入 main `0fb4a37`，解决中英文状态记录的插入冲突并保留两边记录；原关闭修复代码与回归用例未改。结果持久化、生命周期及 Grok 编码派发专项 47 项通过。Python 3.14.0 全量离线验证为 2817 通过、4 跳过、12 失败；这 12 项在未修改的最新 main 隔离快照上全部复现，仍是 `/home` 路径断言和插件 worker 的 0.2 秒限时用例。来源核验、34 项包装和 18 项发行资产检查通过。首轮 `e11e619` 的四项 Linux CI 已通过，但不能代替这次合入后的提交验证；维护 PR 继续保持 Draft，未部署或调用真实后端。
 
 2026-10-10 修复正常关闭时丢失内存保留结果的问题。结果事务与保留副本暂时写入失败后，关闭流程会在释放状态库前跳过轮询退避重试一次；关闭期间抛错也执行这次重试，且不启动排队任务。沿用已有事务和保留副本路径，重启不会重派已返回结果的运行。新增 5 项故障注入回归覆盖后台结果、同步取消、异常关闭及保留副本恢复；结果持久化与生命周期专项 41 项通过。Python 3.14.0 的 `scripts/verify-offline.sh` 为 2816 通过、4 跳过、12 失败，来源核验及其中 34 项包装检查、18 项发行资产检查通过。12 项失败在未修改的 main `bf0994d` 快照上同样复现：1 项依赖 `/home` 路径原样比较，11 项插件 worker 用例在 0.2 秒限时下未产生预期受理标记或原生引用；本轮未修改这些测试或模块，完整验证仍受阻。协议、SQLite schema 6、依赖和版本号不变。验证使用临时状态及 fake 后端，未调用真实供应商或部署；持续不可写和强制终止前尚未落盘的结果仍不保证恢复。
+
+2026-10-11 把核心源码标为 `0.1.0a19`。a18 已于 2026-10-09 发布（[`v0.1.0a18`](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a18)）。Grok 编码模式默认 `max_turns` 从 12 改为 40，范围仍为 1 到 100，超时默认不变。宿主重启后进程已被证明消失的 grok-code 运行（boot id 变化，同一 `/etc/machine-id`）在启动时、由 `task.reconcile` 或由 `task.cancel` 关闭为失败 `GROK_PROCESS_LOST`（若已请求取消则为已取消），并释放名额。同一次启动内丢失或证据不足仍为 `pending_reconcile`，且不再重派。宿主身份在进程启动前写入后台核心与同步核心。原生权限拒绝（`permission_cancelled`）记为失败 `GROK_PERMISSION_DENIED`，不再记为已取消；权限模式仍为 `dontAsk`。`ControlRuntime` 终结器在其他线程被垃圾回收时不再抛出异常。运行尚未结束时，把 Asterun 状态目录移动或共享到克隆主机（machine id 相同）不受支持，可能把仍在活动的运行误判为 `GROK_PROCESS_LOST`。协议、SQLite schema 6 和配置 schema v1/v2 不变。插件仍为 Antigravity `1.0.3`、Cursor 与 Jules `1.0.0`，与 a18 相同。标准 skill 最低接口仍为 `0.1.0a14`，技能包只因发行页链接改为 a19 而改摘要。尚未打 `v0.1.0a19`，发行页资产要等该标签进入 `main` 且发行工作流成功后才出现。旧版本留下、没有宿主身份记录的待处理运行仍需显式路径，并保持未知。
+
+2026-10-11 grok-code 在后台核心和同步核心中，都在 spawn 之前把宿主身份（boot id 和 machine id）写入 dispatching 确认并落盘，spawn 之后再补上 pid、进程组和启动时间。进程已被证明不存在的唯一证据是同一 machine id 上的 boot id 发生变化（主机重启或从快照恢复）。这类运行由 `task.reconcile` 结束为失败 / `GROK_PROCESS_LOST`，由 `task.cancel` 结束为已取消，并在核心启动时结束为失败 / `GROK_PROCESS_LOST` 且不再占回名额；这些运行不会重派。启动恢复在每个仍存活的名额重新投影之前，不再启动已排队任务。同一次启动下丢失的进程（工具子进程可以离开进程组），以及没有这份记录的运行（旧版本），仍需显式或操作者路径，并保持未知。已知限制：该证明比较 `/etc/machine-id`；把 Asterun 状态目录搬到克隆主机（machine id 相同、boot 不同）不受支持，可能把仍在原主机上活着的运行误判为 `GROK_PROCESS_LOST` 并释放其名额。运行尚未结束时，不要在主机之间移动或共享状态目录。dontAsk 下的 Grok 权限拒绝只按 Grok 的精确拒绝文本、并绑定到已记录的工具调用来识别，现在记为失败 / `GROK_PERMISSION_DENIED`，`provider_failure` 为 `permission_denied`，保存的工具名来自该次调用，不再记成已取消。权限模式故意不改：换成始终批准会让模型在没有 Asterun 侧闸门的情况下执行任意命令（联网、用配置里的凭据 `git push`，以及 Landlock 工作区沙箱仍允许的写入，例如 `/tmp`），而 dontAsk 加允许列表保持失败关闭的白名单。给 grok-code 的提示应使用字面路径，避免 `$VAR`、`$?`、`$(...)`、`rm` 和多行 `python -c`。协议、配置 schema 和 SQLite 不变，随下一版本发行。
 
 2026-10-10 Grok 编码模式（`workspace-code-v1`）省略 `max_turns` 时的默认原生回合从 12 改为 40。实际使用中 12 回合常在读完代码后就用尽、尚未写入任何改动。范围仍为 1 到 100，超时默认仍为 900 秒；安装文档示例改为 `max_turns` 40、`timeout_seconds` 1800。显式配置了 `max_turns` 的实例不受影响。协议、配置 schema 和 SQLite 不变，随下一版本发行。
 
@@ -30,7 +36,7 @@
 
 2026-10-09 发布外部 Antigravity 插件 `1.0.1`：a16 已更新插件内 `_vendor/profile.py` 的 Linux x86_64 支持，但插件仍为 `1.0.0` 且未发新包。本次只升插件与 manifest 版本，并随 a17 发布插件 wheel 与源码包；插件代码与核心行为相对 a16 不变。
 
-当前版本为 `0.1.0a18`，采用 Apache-2.0。首版功能范围已冻结，维护集中在现有缺陷、兼容性、现场验收和发行内容。使用入口见 [README](README.md)、[用户手册](docs/user-manual.md)和[发行说明](docs/release-v0.1.md)。本次预发布的核心与标准 skill 资产及校验文件见[对应版本发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a18)；标签尚未打出，下方按日期保留各批次当时的验证和部署事实。
+当前版本为 `0.1.0a19`，采用 Apache-2.0。首版功能范围已冻结，维护集中在现有缺陷、兼容性、现场验收和发行内容。使用入口见 [README](README.md)、[用户手册](docs/user-manual.md)和[发行说明](docs/release-v0.1.md)。本次预发布的核心与标准 skill 资产及校验文件见[对应版本发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a19)；标签尚未打出，下方按日期保留各批次当时的验证和部署事实。
 
 2026-10-09 Antigravity profile 按平台核验 CLI 1.2.0 的 `webm_encoder`。macOS 仍只接受已核验的 12781442 字节摘要 `9cf13e875e7ffb9ef3fe1fc1a177c744bd8ee5a6651a2ec47cda307a009e8d11`。Linux x86_64 增加官方构建的 17056035 字节摘要 `45c1b1edd50159fbd4eac95ffd82df97a79b8c345fc43408ddae09230a304ed6`。Linux 的空 Playwright 缓存为 `~/.cache/ms-playwright-go/1.57.0`，macOS 仍只接受 `Library/Caches/ms-playwright-go/1.57.0`。未登记摘要、其他架构的编码器和额外二进制继续拒绝。内置技能清单未改。agy 1.3.2 因技能文件差异仍不在支持范围内；扩展方式是为该版本单独登记内置文件、各平台编码器摘要、缓存形状和 `upstream_version` 门禁。本项只改离线 profile 检查，没有调用真实 agy，也没有切换运行实例。Python 3.12.3 上 `scripts/verify-offline.sh` 的来源核验通过；pytest 收集 2659 项，2622 通过、36 跳过、1 失败。失败项是既有 `tests/test_read_scope.py::test_mutation_while_reading_rejected`：同长度覆写依赖 inode 时间变化，本机 ext4/tmpfs 在约 4ms 粒度内不更新 `st_mtime_ns`，`read_scope.py` 与该测试未改。main 的最近 GitHub CI（run 37126600286）为成功。跳过包含未开启的真实后端和缺少 bubblewrap 的 OS 沙箱用例。Antigravity profile 新增用例通过。
 

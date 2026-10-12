@@ -65,9 +65,12 @@ def api_error(error, request_id=None):
 class ControlRuntime:
     def __init__(self, app):
         self.app = app
+        self._closed = False
         self.namespace = "ns_local"
         self.own_connection = not hasattr(app.store, "_conn")
-        connection = (sqlite3.connect(":memory:", isolation_level=None) if self.own_connection else app.store._conn)
+        # Cyclic GC may run on another thread and must be able to close this private database.
+        connection = (sqlite3.connect(":memory:", isolation_level=None, check_same_thread=False)
+                      if self.own_connection else app.store._conn)
         self.store = ControlStore(connection, initialize=not getattr(app.store, "readonly", False))
         self.busy = False
         self.worker = identifier("wrk")
@@ -83,12 +86,22 @@ class ControlRuntime:
                                 "resolved_roots": {name: str(binding.root.resolve()) for name, binding in self.app.config.workspaces.items()}})
 
     def close(self):
-        if self.own_connection:
-            self.store._conn.close()
-
-    def __del__(self):
+        # Connection.close() checks the creating thread even after a previous close.
+        if getattr(self, "_closed", False):
+            return
         if getattr(self, "own_connection", False):
             self.store._conn.close()
+        self._closed = True
+
+    def __del__(self):
+        if getattr(self, "_closed", False):
+            return
+        try:
+            self.close()
+        except sqlite3.ProgrammingError:
+            pass
+        except Exception:
+            pass
 
     def entity(self, kind, prefix, **fields):
         timestamp = now()

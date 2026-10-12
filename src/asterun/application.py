@@ -225,6 +225,7 @@ class Application:
         self.state_dir = state_dir
         self._closed = False
         self._draining = False
+        self._restoring = False
         self.executor = Executor() if background else None
         self._retained_results: dict[str, _RetainedResult] = {}
         self._poll_epoch = 0
@@ -895,7 +896,12 @@ class Application:
             result = {"status": str(RunStatus.CANCELLED), "terminated": True,
                       "summary": "排队运行已取消，未派发后端"}
         else:
-            result = backend.request_cancel(run.id, task.script)
+            result = None
+            if hasattr(backend, "reconcile_recorded") and (not self.executor or run.id.value not in self.executor.workers):
+                result = backend.reconcile_recorded(
+                    run.native, task_id=task.id.value, run_id=run.id.value, cancel_requested=True)
+            if result is None:
+                result = backend.request_cancel(run.id, task.script)
         if result.get("terminated") or result.get("raced_completion"):
             self._record_result(run.id, result)
         run = self.store.get_run(run.id)
@@ -1286,7 +1292,9 @@ class Application:
             backend = self._backend(run.backend.value if run else scoped_task.backend.value)
             if run and run.status not in TERMINAL_RUN_STATUSES and hasattr(backend, "reconcile_recorded"):
                 if not self.executor or run.id.value not in self.executor.workers:
-                    result = backend.reconcile_recorded(run.native, task_id=scoped_task.id.value, run_id=run.id.value)
+                    result = backend.reconcile_recorded(
+                        run.native, task_id=scoped_task.id.value, run_id=run.id.value,
+                        cancel_requested=run.cancel_requested)
                     if result is not None:
                         self._record_result(run.id, result)
                         run = self.store.get_run(run.id)
@@ -1859,10 +1867,25 @@ class Application:
                       "operation": operation.to_dict(), "session": self._session_for_task(task)}),
                       ids={"task_id": task.id.value, "run_id": run.id.value,
                            "operation_id": operation.id.value, **_conversation_ids(task)})
+        from asterun.grok_profile import CODE_PROFILE
         try:
             if task.capability:
                 result = backend.dispatch_capability(task.id, run.id, task.capability, task.capability_input,
                                                       cwd=self.config.get_workspace(task.workspace).root)
+            elif (run.role != "review" and not task.capability and hasattr(backend, "dispatch_stream")
+                  and backend.config.kind == "grok"
+                  and getattr(backend, "execution_profile", None) == CODE_PROFILE):
+                from threading import Event
+
+                def persist(snapshot):
+                    # Executor.drain(self._record_result) is the background acknowledgement.
+                    # A store failure must raise so run_code does not spawn.
+                    self._record_result(run.id, snapshot)
+
+                result = backend.dispatch_stream(
+                    task.id, run.id, task.script, dispatch_text,
+                    cwd=self.config.get_workspace(task.workspace).root,
+                    native=native, publish=persist, stopping=Event())
             else:
                 dispatch = backend.dispatch_review if run.role == "review" else backend.dispatch
                 result = dispatch(task.id, run.id, task.script, dispatch_text,
@@ -1928,7 +1951,7 @@ class Application:
         return FixedReadScope(root, binding)
 
     def _drain_queue(self) -> None:
-        if self._closed:
+        if self._closed or self._restoring:
             return
         if self.executor is not None and self.executor.stopping.is_set():
             return
@@ -2386,27 +2409,47 @@ class Application:
         return presented, receipt
 
     def _restore_scheduler(self) -> None:
-        for task_id in self.store.list_task_ids():
-            task = self.store.get_task(task_id)
-            run = self.store.get_run(task.current_run_id) if task.current_run_id else None
-            if run is None or run.status in TERMINAL_RUN_STATUSES:
-                continue
-            self._apply_retained_result_if_any(run)
-            run = self.store.get_run(run.id)
-            if run.status in TERMINAL_RUN_STATUSES:
-                self._project_slot(run)
-                continue
-            operation = self.store.find_operation_for_run(run.id)
-            if operation is not None and operation.status == OperationStatus.INTENDED:
-                self.scheduler.finish(run.backend.value, run.id)
-                self.scheduler.enqueue(run.backend.value, task.id, run.id,
-                                       self._workspace_key(task))
-            elif operation is None:
-                self._reconcile_one(task.id)
-            else:
-                # 重放结果时可能已经投影过一次；这里再投影仍然按 run id 幂等。
-                self._project_slot(run)
-                self._reconcile_one(task.id)
+        self._restoring = True
+        try:
+            for task_id in self.store.list_task_ids():
+                task = self.store.get_task(task_id)
+                run = self.store.get_run(task.current_run_id) if task.current_run_id else None
+                if run is None or run.status in TERMINAL_RUN_STATUSES:
+                    continue
+                self._apply_retained_result_if_any(run)
+                run = self.store.get_run(run.id)
+                if run.status in TERMINAL_RUN_STATUSES:
+                    self._project_slot(run)
+                    continue
+                operation = self.store.find_operation_for_run(run.id)
+                if operation is not None and operation.status == OperationStatus.INTENDED:
+                    self.scheduler.finish(run.backend.value, run.id)
+                    self.scheduler.enqueue(run.backend.value, task.id, run.id,
+                                           self._workspace_key(task))
+                elif operation is None:
+                    self._reconcile_one(task.id)
+                else:
+                    # 只有主机进程证据能在启动时结束运行。已分类的旧回执保持未决，等显式核对。
+                    try:
+                        backend = self._backend(run.backend.value)
+                    except AsterunError:
+                        backend = None
+                    if backend is not None and hasattr(backend, "reconcile_lost"):
+                        lost = backend.reconcile_lost(
+                            run.native, task_id=task.id.value, run_id=run.id.value,
+                            cancel_requested=run.cancel_requested)
+                        if lost is not None:
+                            self._record_result(run.id, lost)
+                            run = self.store.get_run(run.id)
+                            self._project_slot(run)
+                            continue
+                    # 重放结果时可能已经投影过一次；这里再投影仍然按 run id 幂等。
+                    self._project_slot(run)
+                    self._reconcile_one(task.id)
+        finally:
+            self._restoring = False
+        if self.executor is not None:
+            self._drain_queue()
 
     def _assert_task_binding(self, task: Task) -> None:
         if task.account_ref != self.account_ref or task.runtime_ref != self.runtime_ref:

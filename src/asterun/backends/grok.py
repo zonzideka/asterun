@@ -60,6 +60,11 @@ DEFAULT_CODE_MAX_TURNS = 40
 DEFAULT_CODE_TIMEOUT_SECONDS = 900
 
 
+# dontAsk plus the allow list stays fail-closed. Switching to always-approve would
+# let the model run any command (network, git push with the profile's credentials,
+# writes the Landlock workspace sandbox still allows such as /tmp) with no
+# Asterun-side gate. Unverifiable commands are refused and surface as
+# GROK_PERMISSION_DENIED.
 def build_grok_code_command(grok_bin: str, *, cwd: Path, prompt_file: Path,
                             session_id: str, model: str | None, max_turns: int, resume: bool = False) -> list[str]:
     """Explicit coding grant, constrained by the native workspace sandbox and tool set."""
@@ -647,11 +652,20 @@ class GrokBackend:
             "native": {**native_receipt(), "stop_reason": reason},
         }
 
-    def reconcile_recorded(self, native, *, task_id, run_id):
+    def reconcile_recorded(self, native, *, task_id, run_id, cancel_requested=False):
         if self.execution_profile != CODE_PROFILE:
             return None
-        from asterun.backends.grok_code import reconcile_recorded_terminal
-        return reconcile_recorded_terminal(native, task_id=task_id, run_id=run_id)
+        from asterun.backends.grok_code import reconcile_lost_process, reconcile_recorded_terminal
+        recorded = reconcile_recorded_terminal(native, task_id=task_id, run_id=run_id)
+        if recorded is not None:
+            return recorded
+        return reconcile_lost_process(native, task_id=task_id, run_id=run_id, cancel_requested=cancel_requested)
+
+    def reconcile_lost(self, native, *, task_id, run_id, cancel_requested=False):
+        if self.execution_profile != CODE_PROFILE:
+            return None
+        from asterun.backends.grok_code import reconcile_lost_process
+        return reconcile_lost_process(native, task_id=task_id, run_id=run_id, cancel_requested=cancel_requested)
 
     def request_cancel(self, run_id: RunId, script: str) -> dict[str, Any]:
         self.calls.append(BackendCall("request_cancel", {"run_id": run_id.value, "script": script}))

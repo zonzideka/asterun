@@ -2,7 +2,15 @@
 
 # First release notes
 
-The current public source version is `0.1.0a18`. The stable `0.1.0` release has not yet been published. See the [versioned release page](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a18) for this prerelease's installation assets and checksums. The first release's scope is frozen; preparation focuses on fixes to existing behavior, compatibility, and packaging. Asterun is licensed under [Apache-2.0](../../LICENSE). The `v0.1.0a18` tag has not been created. Files appear on that page only after the tag is on `main` and the release workflow succeeds.
+The current public source version is `0.1.0a19`. The stable `0.1.0` release has not yet been published. See the [versioned release page](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a19) for this prerelease's installation assets and checksums. The first release's scope is frozen; preparation focuses on fixes to existing behavior, compatibility, and packaging. Asterun is licensed under [Apache-2.0](../../LICENSE). The `v0.1.0a19` tag has not been created. Files appear on that page only after the tag is on `main` and the release workflow succeeds.
+
+## 0.1.0a19
+
+Relative to a18, published on 2026-10-09 as [`v0.1.0a18`](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a18), this version marks the grok-code turn default and host-restart closeout as `0.1.0a19`. The default `max_turns` changes from 12 to 40. The range stays 1 to 100, and the default timeout is unchanged. Protocol, SQLite schema 6, and configuration schema v1/v2 are unchanged. Plugins remain Antigravity `1.0.3` and Cursor and Jules `1.0.0`, the same as a18. The standard skill's minimum interface remains `0.1.0a14`. The skill zip digest differs only because the release-page link now points to a19.
+
+A grok-code run whose process provably disappeared after a host restart (boot id changed, same `/etc/machine-id`) is closed as failed `GROK_PROCESS_LOST`, or as cancelled if cancel had been requested. The close runs at startup, by `task.reconcile`, or by `task.cancel`, and the slot is released. The run is never re-dispatched. Same-boot loss or missing evidence stays `pending_reconcile`. Host identity is persisted before the process starts in both the background and synchronous cores. A native permission refusal (`permission_cancelled`) is recorded as failed `GROK_PERMISSION_DENIED` instead of cancelled. Permission mode stays `dontAsk`. The ControlRuntime finalizer no longer raises when garbage-collected on another thread. Moving or sharing an Asterun state directory with a cloned host (same machine id) while runs are unfinished is unsupported and could misclassify a live run as `GROK_PROCESS_LOST`. Runs left pending by older versions without the host-identity record still need the explicit path and stay unknown.
+
+`v0.1.0a19` has not been tagged. Assets appear on the [release page](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a19) only after the tag is on `main` and the release workflow succeeds. Assets are the core wheel, source distribution, `asterun-skill-0.1.0a19.zip`, wheels and source distributions for the three external plugins (Antigravity `1.0.3`, Cursor and Jules `1.0.0`), and `SHA256SUMS`.
 
 ## 0.1.0a18
 

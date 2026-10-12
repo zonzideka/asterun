@@ -2,7 +2,15 @@
 
 # 首版发行说明
 
-当前公开源码版本为 `0.1.0a18`，正式稳定版 `0.1.0` 尚未发布。本次预发布的安装资产和校验文件见[对应版本发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a18)。首版范围已冻结，发布准备集中在现有行为、兼容和打包修复。项目采用 [Apache-2.0](../LICENSE)。`v0.1.0a18` 标签尚未打出，发行页上的文件要等该标签进入 `main` 且发行工作流成功之后才会出现。
+当前公开源码版本为 `0.1.0a19`，正式稳定版 `0.1.0` 尚未发布。本次预发布的安装资产和校验文件见[对应版本发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a19)。首版范围已冻结，发布准备集中在现有行为、兼容和打包修复。项目采用 [Apache-2.0](../LICENSE)。`v0.1.0a19` 标签尚未打出，发行页上的文件要等该标签进入 `main` 且发行工作流成功之后才会出现。
+
+## 0.1.0a19
+
+相对 2026-10-09 已发布的 [`v0.1.0a18`](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a18)，本版把 grok-code 的默认回合与宿主重启后的进程丢失处理标成 `0.1.0a19`。默认 `max_turns` 从 12 改为 40，范围仍为 1 到 100，超时默认不变。协议、SQLite schema 6 和配置 schema v1/v2 不变。插件仍为 Antigravity `1.0.3`、Cursor 与 Jules `1.0.0`，与 a18 相同。标准 skill 最低接口仍为 `0.1.0a14`；技能包摘要只因发行页链接改为 a19 而不同。
+
+宿主重启后进程已被证明消失的 grok-code 运行（boot id 变化，同一 `/etc/machine-id`）关闭为失败 `GROK_PROCESS_LOST`；若当时已请求取消，则记为已取消。关闭发生在启动时、`task.reconcile` 或 `task.cancel`，并释放名额，且不再重派。同一次启动内丢失或证据不足仍为 `pending_reconcile`。宿主身份在进程启动前写入后台核心与同步核心。原生权限拒绝（`permission_cancelled`）记为失败 `GROK_PERMISSION_DENIED`，不再记为已取消；权限模式仍为 `dontAsk`。`ControlRuntime` 终结器在其他线程被垃圾回收时不再抛出异常。运行尚未结束时，把 Asterun 状态目录移动或共享到克隆主机（machine id 相同）不受支持，可能把仍在活动的运行误判为 `GROK_PROCESS_LOST`。旧版本留下、没有宿主身份记录的待处理运行仍需显式路径，并保持未知。
+
+尚未打 `v0.1.0a19`。资产要等该标签进入 `main` 且发行工作流成功之后，才会出现在[发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a19)。本次资产为核心 wheel、源码包、`asterun-skill-0.1.0a19.zip`、三个外部插件的 wheel 与源码包（Antigravity `1.0.3`，Cursor 与 Jules `1.0.0`），以及 `SHA256SUMS`。
 
 ## 0.1.0a18
 
