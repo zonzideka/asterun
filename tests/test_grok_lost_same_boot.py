@@ -522,8 +522,10 @@ def test_real_zombie_parent_setsid_child_stays_alive_until_reaped():
         _scan_state, unstable = grok_code._scan_once(
             record["pid"], record["pgid"], record["start_ticks"], needle, os.getuid())
         # A single stable pass must agree; separate calls may see unrelated transient processes.
-        if not unstable:
-            assert _scan_state == "absent"
+        # After reaping, the launch must never look alive. "absent" is expected on a quiet
+        # host; "unknown" is the fail-closed answer when unrelated same-uid entries are
+        # unreadable, zombie or transient (e.g. CI runners).
+        assert _scan_state in ("absent", "unknown")
         assert same_boot_liveness(record) in ("absent", "unknown")
     finally:
         if child_pid is not None:
