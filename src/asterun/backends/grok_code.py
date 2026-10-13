@@ -237,6 +237,21 @@ def host_machine_id() -> str | None:
     return _reference(value)
 
 
+def host_pid_namespace() -> str | None:
+    """Current PID namespace, or None on any error.
+
+    The link is ``_PROC_ROOT / "self" / "ns" / "pid"`` so a test can redirect /proc.
+    ``os.readlink`` returns the namespace name (for example ``pid:[4026531836]``).
+    """
+    try:
+        value = os.readlink(_PROC_ROOT / "self" / "ns" / "pid")
+    except Exception:
+        return None
+    if isinstance(value, str) and value:
+        return value
+    return None
+
+
 def process_start_ticks(pid: int) -> int | None:
     """proc(5) field 22 (starttime), the 20th field after the last ')' in stat."""
     try:
@@ -266,14 +281,74 @@ def process_provably_gone(record) -> bool:
     return current_machine == machine_id and current_boot != boot_id
 
 
+def process_absent_same_boot(record) -> bool:
+    """True only when this same boot proves the recorded launch is gone.
+
+    Every check below has to hold. The record is a dict whose machine_id,
+    boot_id, and pid_ns equal the current host (host_machine_id, host_boot_id,
+    host_pid_namespace). None anywhere is not proof, so a record written
+    before pid_ns existed stays unknown, as does a different PID namespace
+    that simply cannot see the process. pid and pgid are positive ints and
+    start_ticks is an int. The recorded pid is not still that process:
+    ``/proc/<pid>`` is missing, or process_start_ticks differs (the pid was
+    reused). No live process is in the recorded process group with starttime
+    greater than or equal to the recorded start_ticks. Unreadable proc entries
+    that vanish during the scan are skipped. If the proc root cannot be
+    listed, the absence is not proof.
+
+    A tool child that called setsid() left the group and is not detected.
+    """
+    if not isinstance(record, dict):
+        return False
+    current_boot = host_boot_id()
+    current_machine = host_machine_id()
+    current_ns = host_pid_namespace()
+    if current_boot is None or current_machine is None or current_ns is None:
+        return False
+    if (record.get("boot_id") != current_boot or record.get("machine_id") != current_machine
+            or record.get("pid_ns") != current_ns):
+        return False
+    pid = record.get("pid")
+    pgid = record.get("pgid")
+    start_ticks = record.get("start_ticks")
+    if type(pid) is not int or type(pgid) is not int or pid < 1 or pgid < 1 or type(start_ticks) is not int:
+        return False
+    try:
+        pid_present = (_PROC_ROOT / str(pid)).exists()
+    except OSError:
+        return False
+    if pid_present:
+        ticks = process_start_ticks(pid)
+        # Present but unreadable is not proof. A different starttime is reuse.
+        if ticks is None or ticks == start_ticks:
+            return False
+    try:
+        entries = list(_PROC_ROOT.iterdir())
+    except OSError:
+        return False
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            # proc(5): fields after the last ')'. Index 2 is pgrp, 19 is starttime.
+            fields = (entry / "stat").read_text().rsplit(")", 1)[1].split()
+            pgrp = int(fields[2])
+            started = int(fields[19])
+        except (OSError, UnicodeError, ValueError, IndexError, TypeError):
+            continue
+        if pgrp == pgid and started >= start_ticks:
+            return False
+    return True
+
+
 def reconcile_lost_process(native, *, task_id, run_id, cancel_requested=False):
     """End an in-flight launch when the recorded host process is provably gone.
 
-    Proof is a changed boot id on the same machine id only. A prompt receipt
-    (prompt attempted) and a spawn receipt (prompt not yet attempted) both
-    qualify: a host that rebooted cannot still be running a process it may
-    have spawned. A receipt that already stored a failure or an exit code
-    stays on the legacy path.
+    Proof is a changed boot id on the same machine, or same-boot absence in
+    this PID namespace (process_absent_same_boot). A prompt receipt (prompt
+    attempted) and a spawn receipt (prompt not yet attempted) both qualify.
+    A receipt that already stored a failure or an exit code stays on the
+    legacy path.
     """
     if not isinstance(native, dict):
         return None
@@ -285,18 +360,23 @@ def reconcile_lost_process(native, *, task_id, run_id, cancel_requested=False):
     open_launch = (stage == "prompt" and attempted is True) or (stage == "spawn" and attempted is False)
     if not open_launch or receipt.get("failure_type") is not None or receipt.get("process_exit_code") is not None:
         return None
+    process = native.get("process")
+    # Boot change stays on the old proof and does not consult the proc scan.
+    boot_gone = process_provably_gone(process)
+    same_boot_gone = False if boot_gone else process_absent_same_boot(process)
     if (native.get("execution_profile") != "workspace-code-v1" or native.get("transport") != "headless"
-            or not _reference(native.get("session_id")) or not process_provably_gone(native.get("process"))):
+            or not _reference(native.get("session_id")) or not (boot_gone or same_boot_gone)):
         return None
     cancelled = bool(cancel_requested)
+    reason = "host_process_lost_same_boot" if same_boot_gone else "host_process_lost"
     return {
         "status": "cancelled" if cancelled else "failed",
         "error_code": None if cancelled else "GROK_PROCESS_LOST",
         "terminated": True,
         "summary": "Grok 编码进程已不存在（主机重启或进程消失），按已记录进程证据结束；未重派",
-        "events": [{"type": "reconciled", "re_dispatched": False, "reason": "host_process_lost"}],
+        "events": [{"type": "reconciled", "re_dispatched": False, "reason": reason}],
         "native": {"recorded_terminal_reconciliation": {
-            "source": "host_process_lost", "task_id": task_id, "run_id": run_id, "re_dispatched": False}},
+            "source": reason, "task_id": task_id, "run_id": run_id, "re_dispatched": False}},
     }
 
 
@@ -419,8 +499,10 @@ def run_code(*, command: list[str], env: dict, cwd: Path, session_id: str,
             raise _StreamError("stopped_before_spawn")
         # This acknowledgement precedes Popen: the predetermined native reference
         # survives even when the first provider request has no stdout response.
-        # Host identity is in that same acknowledgement, before a pid exists.
-        metadata["process"] = {"boot_id": host_boot_id(), "machine_id": host_machine_id()}
+        # Host identity, including this core's PID namespace, is in that same
+        # acknowledgement, before a pid exists.
+        metadata["process"] = {"boot_id": host_boot_id(), "machine_id": host_machine_id(),
+            "pid_ns": host_pid_namespace()}
         emit(status="dispatching")
         if stopping.is_set():
             raise _StreamError("stopped_before_spawn")
