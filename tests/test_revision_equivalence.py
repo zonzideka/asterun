@@ -10,8 +10,9 @@ from asterun.application import Application
 from asterun.backends.fake import FakeBackend
 from asterun.config import load_config
 from asterun.config_equivalence import execution_digest
+from asterun.contracts import OperationStatus, RunStatus
 from asterun.errors import REVISION_CONFLICT, AsterunError
-from asterun.ids import AccountRef, RuntimeRef, TaskId
+from asterun.ids import AccountRef, RunId, RuntimeRef, TaskId
 from asterun.policy import Principal
 from asterun.store import MemoryStore
 from tests.conftest import write_config
@@ -159,3 +160,47 @@ def test_legacy_task_without_digest_conflicts_but_cancel_does_not(isolated_env: 
 
     cancelled = app2.handle("task.cancel", {"task_id": task_id})
     assert cancelled.ok or cancelled.error["code"] != REVISION_CONFLICT
+
+
+def test_queued_task_survives_scheduler_only_change(isolated_env: Path, workspace_root: Path) -> None:
+    path = write_config(isolated_env / "config.json", workspace_root)
+    state = isolated_env / "state"
+    app = Application.from_paths(path, state)
+    try:
+        submitted = app.handle("task.submit", {"workspace": "demo", "script": "success"})
+        assert submitted.ok, submitted.error
+        task_id = submitted.ids["task_id"]
+        run_id = submitted.ids["run_id"]
+        run = app.store.get_run(RunId(run_id))
+        assert run.status == RunStatus.SUCCEEDED
+        run.status = RunStatus.QUEUED
+        run.terminated = False
+        run.error_code = None
+        run.cancel_requested = False
+        app.store.save_run(run)
+        operation = app.store.find_operation_for_run(run.id)
+        operation.status = OperationStatus.INTENDED
+        app.store.save_operation(operation)
+        paused = app.handle("task.handoff", {"task_id": task_id, "action": "pause"})
+        assert paused.ok, paused.error
+        assert app.store.get_run(RunId(run_id)).status == RunStatus.PAUSED
+    finally:
+        app.close()
+
+    _rewrite(path, revision=2, scheduler={"per_backend_concurrency": 2})
+    app2 = Application.from_paths(path, state)
+    try:
+        applied = app2.handle("config.apply", {"expected_revision": 1})
+        assert applied.ok, applied.error
+        task = app2.store.get_task(TaskId(task_id))
+        app2._assert_task_binding(task)
+        resumed = app2.handle("task.handoff", {"task_id": task_id, "action": "resume"})
+        assert resumed.ok, resumed.error
+        run = app2.store.get_run(RunId(run_id))
+        assert run.error_code != REVISION_CONFLICT
+        assert run.status == RunStatus.SUCCEEDED
+        reconciled = app2.handle("task.reconcile", {"task_id": task_id})
+        assert reconciled.ok, reconciled.error
+        assert app2.store.get_run(RunId(run_id)).error_code != REVISION_CONFLICT
+    finally:
+        app2.close()

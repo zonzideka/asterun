@@ -158,6 +158,9 @@ def build_parser() -> argparse.ArgumentParser:
     handoff.add_argument("--external-change", action="store_true")
     reconcile = sub.add_parser("task-reconcile", help="对账未决运行，不重派")
     reconcile.add_argument("task_id", nargs="?")
+    reconcile.add_argument("--terminate", action="store_true", help="人工确认后把卡住的运行记为已终止；不重派")
+    reconcile.add_argument("--reason", help="--terminate 必填的人工说明，写入审计记录")
+    reconcile.add_argument("--confirm-process-gone", action="store_true", help="无法自动证明进程已消失时，由操作者确认")
     present = sub.add_parser("task-present", help="仅重试原生客户端项目登记与会话关联，不重派任务")
     present.add_argument("task_id")
     evaluate = sub.add_parser("workflow-evaluate", help="评价任务验收；运行成功不等于通过")
@@ -477,6 +480,12 @@ def main(argv: list[str] | None = None) -> int:
             payload["task_id"] = args.task_id
         if args.command == "task-reconcile" and getattr(args, "task_id", None):
             payload["task_id"] = args.task_id
+        if args.command == "task-reconcile" and getattr(args, "terminate", False):
+            payload["terminate"] = True
+            if args.reason is not None:
+                payload["reason"] = args.reason
+            if args.confirm_process_gone:
+                payload["confirm_process_gone"] = True
         if args.command in {"approval-respond", "approval-assess", "approval-apply-policy"}:
             payload["approval_id"] = args.approval_id
         envelope = app.handle(COMMAND_METHODS[args.command], payload)

@@ -1265,6 +1265,8 @@ class Application:
                   ids={"task_id": task.id.value, "run_id": run.id.value})
 
     def task_reconcile(self, payload: dict[str, Any]) -> Envelope:
+        if payload.get("terminate"):
+            return self._task_terminate(payload)
         requested = payload.get("task_id")
         if requested not in (None, ""):
             task = self._require_task(str(requested))
@@ -1319,6 +1321,57 @@ class Application:
                 "message": "按已保存的原生轮次核对结果；缺少引用或确定终态时保持未决，不重派。",
             }
         )
+
+    def _task_terminate(self, payload: dict[str, Any]) -> Envelope:
+        """Operator path: end one stuck run as cancelled/terminated. Never re-dispatches."""
+        requested = str(payload.get("task_id") or "")
+        reason = str(payload.get("reason") or "").strip()
+        if not requested or not reason:
+            raise AsterunError(INVALID_REQUEST, "--terminate 需要 task_id 和 --reason")
+        task = self._require_task(requested)
+        enforce(self.policy.authorize(self.principal, "task.reconcile", task.workspace))
+        self._require_grant(task.workspace)
+        self._require_applied_config()
+        self._assert_task_binding(task, purpose="terminate")
+        if task.current_run_id is None:
+            raise AsterunError(NOT_FOUND, "任务没有运行")
+        run = self.store.get_run(task.current_run_id)
+        if run.status in TERMINAL_RUN_STATUSES:
+            raise AsterunError(RUN_ALREADY_TERMINAL, f"运行已处于终态 {run.status}，不改写",
+                               details={"status": str(run.status)})
+        if self.executor is not None and run.id.value in self.executor.workers:
+            raise AsterunError(INVALID_REQUEST, "本核心仍在观察该运行，请用 task-cancel 或等待其结束")
+        from asterun.backends.grok_code import (
+            host_boot_id, host_machine_id, process_absent_same_boot, process_provably_gone, process_start_ticks)
+        record = run.native.get("process") if isinstance(run.native, dict) else None
+        if isinstance(record, dict) and type(record.get("pid")) is int and record.get("boot_id") == host_boot_id() \
+                and record.get("machine_id") == host_machine_id() and record.get("start_ticks") is not None \
+                and process_start_ticks(record["pid"]) == record.get("start_ticks"):
+            raise AsterunError(REMOTE_STATE_UNKNOWN, "记录的后端进程仍在运行，先停止该进程再终止",
+                               details={"pid": record["pid"]})
+        if process_provably_gone(record) or process_absent_same_boot(record):
+            evidence = "process_absent"
+        elif payload.get("confirm_process_gone") is True:
+            evidence = "operator_confirmed"
+        else:
+            raise AsterunError(INVALID_REQUEST, "无法自动证明后端进程已消失；确认后加 --confirm-process-gone 重试",
+                               details={"process_evidence": "unproven"})
+        operation = self.store.find_operation_for_run(run.id)
+        if operation is not None and operation.status == OperationStatus.INTENDED:
+            self.scheduler.remove(run.id)
+        run.cancel_requested = True
+        self.store.save_run(run)
+        self._record_result(run.id, {
+            "status": str(RunStatus.CANCELLED), "terminated": True, "error_code": None,
+            "summary": f"人工终止：{reason}",
+            "events": [{"type": "reconciled", "re_dispatched": False, "reason": "operator_terminated"}],
+            "native": {"operator_termination": {"reason": reason, "process_evidence": evidence,
+                                                "at": utc_now(), "re_dispatched": False}},
+        })
+        run = self.store.get_run(run.id)
+        return ok({"terminated": run.terminated, "run": _public_run(run), "process_evidence": evidence,
+                   "re_dispatched": False, "message": "已按人工指令终止运行并释放并发名额；不会重派。"},
+                  ids={"task_id": task.id.value, "run_id": run.id.value})
 
     def workflow_snapshot(self, payload: dict[str, Any]) -> Envelope:
         from asterun.external_evaluation import prepare_snapshot
