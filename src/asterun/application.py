@@ -1341,21 +1341,19 @@ class Application:
                                details={"status": str(run.status)})
         if self.executor is not None and run.id.value in self.executor.workers:
             raise AsterunError(INVALID_REQUEST, "本核心仍在观察该运行，请用 task-cancel 或等待其结束")
-        from asterun.backends.grok_code import (
-            host_boot_id, host_machine_id, process_absent_same_boot, process_provably_gone, process_start_ticks)
+        from asterun.backends.grok_code import process_provably_gone, same_boot_liveness
         record = run.native.get("process") if isinstance(run.native, dict) else None
-        if isinstance(record, dict) and type(record.get("pid")) is int and record.get("boot_id") == host_boot_id() \
-                and record.get("machine_id") == host_machine_id() and record.get("start_ticks") is not None \
-                and process_start_ticks(record["pid"]) == record.get("start_ticks"):
-            raise AsterunError(REMOTE_STATE_UNKNOWN, "记录的后端进程仍在运行，先停止该进程再终止",
-                               details={"pid": record["pid"]})
-        if process_provably_gone(record) or process_absent_same_boot(record):
+        liveness = same_boot_liveness(record)
+        if liveness == "alive":
+            raise AsterunError(REMOTE_STATE_UNKNOWN, "记录的后端进程或其子进程仍在运行，先停止它们再终止",
+                               details={"process_evidence": "alive"})
+        if liveness == "absent" or process_provably_gone(record):
             evidence = "process_absent"
         elif payload.get("confirm_process_gone") is True:
             evidence = "operator_confirmed"
         else:
             raise AsterunError(INVALID_REQUEST, "无法自动证明后端进程已消失；确认后加 --confirm-process-gone 重试",
-                               details={"process_evidence": "unproven"})
+                               details={"process_evidence": "unknown"})
         operation = self.store.find_operation_for_run(run.id)
         if operation is not None and operation.status == OperationStatus.INTENDED:
             self.scheduler.remove(run.id)

@@ -7,8 +7,9 @@ from threading import Event
 
 import pytest
 
+import asterun.backends.grok_code as grok_code
 from asterun.application import Application
-from asterun.backends.grok_code import reconcile_lost_process, run_code
+from asterun.backends.grok_code import reconcile_lost_process, run_code, same_boot_liveness
 from asterun.contracts import (
     SLOT_HELD_NATIVE_KEY,
     SLOT_RELEASED_NATIVE_KEY,
@@ -56,6 +57,7 @@ def same_native(**updates):
         "machine_id": MACHINE_ID,
         "start_ticks": 5555,
         "pid_ns": NS,
+        "launch_marker": "run:s1",
     }
     native["process"].update(updates)
     return native
@@ -109,7 +111,47 @@ def test_live_group_member_blocks_same_boot_reclaim(monkeypatch, tmp_path, ticks
     assert reconcile_lost_process(same_native(), task_id="task", run_id="run") is None
 
 
-@pytest.mark.parametrize("case", ["different_ns", "missing_ns", "missing_start_ticks"])
+def _raise_on_pid(monkeypatch, pid, error):
+    real = grok_code._read_proc_entry
+
+    def wrapped(entry):
+        if entry.name == str(pid):
+            raise error
+        return real(entry)
+
+    monkeypatch.setattr(grok_code, "_read_proc_entry", wrapped)
+
+
+def test_setsid_child_with_launch_marker_stays_alive(monkeypatch, tmp_path):
+    _boot, proc, _machine = install_same(monkeypatch, tmp_path)
+    write_stat(proc, pid=789, ticks=100, pgrp=789)
+    (proc / "789" / "environ").write_bytes(b"PATH=/x\0ASTERUN_LAUNCH_MARKER=run:s1\0")
+    native = same_native()
+    assert reconcile_lost_process(native, task_id="task", run_id="run") is None
+    assert same_boot_liveness(native["process"]) == "alive"
+
+
+def test_unreadable_proc_entry_is_unknown(monkeypatch, tmp_path):
+    _boot, proc, _machine = install_same(monkeypatch, tmp_path)
+    write_stat(proc, pid=456, ticks=6000, pgrp=123)
+    _raise_on_pid(monkeypatch, "456", PermissionError("unreadable"))
+    native = same_native()
+    assert same_boot_liveness(native["process"]) == "unknown"
+    assert reconcile_lost_process(native, task_id="task", run_id="run") is None
+
+
+def test_vanished_proc_entry_is_still_absent(monkeypatch, tmp_path):
+    _boot, proc, _machine = install_same(monkeypatch, tmp_path)
+    write_stat(proc, pid=456, ticks=6000, pgrp=123)
+    _raise_on_pid(monkeypatch, "456", FileNotFoundError("gone"))
+    native = same_native()
+    assert same_boot_liveness(native["process"]) == "absent"
+    result = reconcile_lost_process(native, task_id="task", run_id="run")
+    assert result["status"] == "failed"
+    assert result["events"][0]["reason"] == "host_process_lost_same_boot"
+
+
+@pytest.mark.parametrize("case", ["different_ns", "missing_ns", "missing_start_ticks", "missing_marker"])
 def test_incomplete_same_boot_identity_is_not_proof(monkeypatch, tmp_path, case):
     install_same(monkeypatch, tmp_path)
     native = same_native()
@@ -117,9 +159,12 @@ def test_incomplete_same_boot_identity_is_not_proof(monkeypatch, tmp_path, case)
         native["process"]["pid_ns"] = "pid:[1]"
     elif case == "missing_ns":
         native["process"].pop("pid_ns")
+    elif case == "missing_marker":
+        native["process"].pop("launch_marker")
     else:
         native["process"].pop("start_ticks")
     assert reconcile_lost_process(native, task_id="task", run_id="run") is None
+    assert same_boot_liveness(native["process"]) == "unknown"
 
 
 def test_unlistable_proc_root_is_not_proof(monkeypatch, tmp_path):
@@ -173,10 +218,12 @@ def test_run_code_records_pid_ns_before_spawn(monkeypatch, tmp_path):
     dispatching = next(item for item in snapshots if item["status"] == "dispatching")
     process = dispatching["native"]["process"]
     assert process["pid_ns"] == NS
+    assert process["launch_marker"] == "run:s1"
     assert process["boot_id"] == boot_path.read_text()
     assert process["machine_id"] == machine_path.read_text()
     assert "pid" not in process
     assert result["native"]["process"]["pid_ns"] == NS
+    assert result["native"]["process"]["launch_marker"] == "run:s1"
 
 
 def test_reopen_same_boot_absent_process_releases_slot(isolated_env, workspace_root, monkeypatch):
@@ -192,6 +239,7 @@ def test_reopen_same_boot_absent_process_releases_slot(isolated_env, workspace_r
         run.native = lost_native(submitted.ids["task_id"], submitted.ids["run_id"], run.native["session_id"])
         run.native["process"]["pid_ns"] = NS
         run.native["process"]["boot_id"] = "old-boot"
+        run.native["process"]["launch_marker"] = "run:s1"
         run.native.pop(SLOT_HELD_NATIVE_KEY, None)
         run.native.pop(SLOT_RELEASED_NATIVE_KEY, None)
         run.status = RunStatus.PENDING_RECONCILE

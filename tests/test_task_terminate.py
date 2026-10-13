@@ -9,6 +9,7 @@ from asterun.contracts import OperationStatus, RunStatus
 from asterun.errors import INVALID_REQUEST, REMOTE_STATE_UNKNOWN, RUN_ALREADY_TERMINAL
 from asterun.ids import RunId
 from tests.test_grok_lost_process import park_pending
+from tests.test_grok_lost_same_boot import NS, write_pid_ns
 
 REUSED_STAT = "123 (x) S 1 123 123 0 -1 4194560 1 0 0 0 0 0 0 0 20 0 1 0 9999 0\n"
 
@@ -24,13 +25,23 @@ def _terminate(app, task_id, *, reason="operator stop", confirm=False):
     return app.handle("task.reconcile", payload)
 
 
+def _stamp_same_boot(app, isolated_env, run_id) -> None:
+    write_pid_ns(isolated_env / "proc")
+    run = app.store.get_run(RunId(run_id))
+    run.native["process"]["pid_ns"] = NS
+    run.native["process"]["launch_marker"] = "run:s1"
+    app.store.save_run(run)
+
+
 def test_live_leader_stays_pending(isolated_env, workspace_root, monkeypatch):
     config, state, task_id, run_id, _boot_path = park_pending(isolated_env, workspace_root, monkeypatch)
     app = Application.from_paths(config, state)
     try:
+        _stamp_same_boot(app, isolated_env, run_id)
         result = _terminate(app, task_id, reason="x", confirm=True)
         assert not result.ok
         assert result.error["code"] == REMOTE_STATE_UNKNOWN
+        assert result.error["details"]["process_evidence"] == "alive"
         run = app.store.get_run(RunId(run_id))
         assert run.status == RunStatus.PENDING_RECONCILE
         assert run.terminated is False
@@ -47,7 +58,7 @@ def test_unproven_death_needs_confirm_then_releases_slot(isolated_env, workspace
         denied = _terminate(app, task_id, reason="operator stop")
         assert not denied.ok
         assert denied.error["code"] == INVALID_REQUEST
-        assert denied.error["details"]["process_evidence"] == "unproven"
+        assert denied.error["details"]["process_evidence"] == "unknown"
         assert app.store.get_run(RunId(run_id)).status == RunStatus.PENDING_RECONCILE
 
         done = _terminate(app, task_id, reason="operator stop", confirm=True)
@@ -67,6 +78,32 @@ def test_unproven_death_needs_confirm_then_releases_slot(isolated_env, workspace
         second = app.handle("task.submit", {"workspace": "demo", "backend": "grok", "text": "continue"})
         assert second.ok, second.error
         assert second.data["queued"] is False
+    finally:
+        app.close()
+
+
+def test_live_group_child_blocks_confirm(isolated_env, workspace_root, monkeypatch):
+    config, state, task_id, run_id, _boot_path = park_pending(isolated_env, workspace_root, monkeypatch)
+    proc = isolated_env / "proc"
+    # Reused leader is not the recorded process and is not in the recorded group.
+    (proc / "123" / "stat").write_text(
+        "123 (x) S 1 1 1 0 -1 4194560 1 0 0 0 0 0 0 0 20 0 1 0 9999 0\n"
+    )
+    (proc / "456").mkdir(parents=True, exist_ok=True)
+    (proc / "456" / "stat").write_text(
+        "456 (tool) S 1 123 123 0 -1 4194560 1 0 0 0 0 0 0 0 20 0 1 0 6000 0\n"
+    )
+    app = Application.from_paths(config, state)
+    try:
+        _stamp_same_boot(app, isolated_env, run_id)
+        result = _terminate(app, task_id, reason="operator stop", confirm=True)
+        assert not result.ok
+        assert result.error["code"] == REMOTE_STATE_UNKNOWN
+        assert result.error["details"]["process_evidence"] == "alive"
+        run = app.store.get_run(RunId(run_id))
+        assert run.status == RunStatus.PENDING_RECONCILE
+        assert run.terminated is False
+        assert app.scheduler.snapshot()["inflight"] == {"grok": 1}
     finally:
         app.close()
 

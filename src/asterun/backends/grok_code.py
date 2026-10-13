@@ -15,6 +15,7 @@ import time
 from typing import Any
 
 RECEIPT_KEY = "asterun.grok_dispatch_v1"
+LAUNCH_MARKER_ENV = "ASTERUN_LAUNCH_MARKER"
 _BOOT_ID_PATH = Path("/proc/sys/kernel/random/boot_id")
 _MACHINE_ID_PATH = Path("/etc/machine-id")
 _PROC_ROOT = Path("/proc")
@@ -281,64 +282,68 @@ def process_provably_gone(record) -> bool:
     return current_machine == machine_id and current_boot != boot_id
 
 
-def process_absent_same_boot(record) -> bool:
-    """True only when this same boot proves the recorded launch is gone.
+def _read_proc_entry(entry: Path) -> tuple[int, int, int, bytes]:
+    """(uid, pgrp, starttime, environ) for one /proc/<pid>; raises OSError/ValueError."""
+    uid = entry.stat().st_uid
+    fields = (entry / "stat").read_text().rsplit(")", 1)[1].split()
+    pgrp, started = int(fields[2]), int(fields[19])
+    try:
+        environ = (entry / "environ").read_bytes()
+    except FileNotFoundError:
+        environ = b""
+    return uid, pgrp, started, environ
 
-    Every check below has to hold. The record is a dict whose machine_id,
-    boot_id, and pid_ns equal the current host (host_machine_id, host_boot_id,
-    host_pid_namespace). None anywhere is not proof, so a record written
-    before pid_ns existed stays unknown, as does a different PID namespace
-    that simply cannot see the process. pid and pgid are positive ints and
-    start_ticks is an int. The recorded pid is not still that process:
-    ``/proc/<pid>`` is missing, or process_start_ticks differs (the pid was
-    reused). No live process is in the recorded process group with starttime
-    greater than or equal to the recorded start_ticks. Unreadable proc entries
-    that vanish during the scan are skipped. If the proc root cannot be
-    listed, the absence is not proof.
 
-    A tool child that called setsid() left the group and is not detected.
+def same_boot_liveness(record) -> str:
+    """"alive", "absent" or "unknown" for a launch recorded on this boot.
+
+    absent needs: same machine id, boot id and PID namespace; a recorded launch_marker
+    (written since 0.1.0a20); leader pid gone or reused; and no visible process of this
+    uid that is in the recorded group (started at/after the leader) or carries the launch
+    marker in its environment (inherited across setsid/double fork). Any entry that still
+    exists but cannot be read makes the answer unknown, never absent. Known limit: a
+    descendant that cleared its environment AND left the group, or changed uid, is not seen.
     """
     if not isinstance(record, dict):
-        return False
-    current_boot = host_boot_id()
-    current_machine = host_machine_id()
-    current_ns = host_pid_namespace()
-    if current_boot is None or current_machine is None or current_ns is None:
-        return False
-    if (record.get("boot_id") != current_boot or record.get("machine_id") != current_machine
-            or record.get("pid_ns") != current_ns):
-        return False
-    pid = record.get("pid")
-    pgid = record.get("pgid")
-    start_ticks = record.get("start_ticks")
-    if type(pid) is not int or type(pgid) is not int or pid < 1 or pgid < 1 or type(start_ticks) is not int:
-        return False
+        return "unknown"
+    machine, boot, ns = host_machine_id(), host_boot_id(), host_pid_namespace()
+    if None in (machine, boot, ns):
+        return "unknown"
+    if record.get("machine_id") != machine or record.get("boot_id") != boot or record.get("pid_ns") != ns:
+        return "unknown"
+    pid, pgid, ticks, marker = record.get("pid"), record.get("pgid"), record.get("start_ticks"), record.get("launch_marker")
+    if type(pid) is not int or type(pgid) is not int or pid < 1 or pgid < 1 or type(ticks) is not int:
+        return "unknown"
+    needle = f"{LAUNCH_MARKER_ENV}={marker}".encode() if isinstance(marker, str) and marker else None
+    uid = os.getuid()
     try:
-        pid_present = (_PROC_ROOT / str(pid)).exists()
+        entries = [e for e in _PROC_ROOT.iterdir() if e.name.isdigit()]
     except OSError:
-        return False
-    if pid_present:
-        ticks = process_start_ticks(pid)
-        # Present but unreadable is not proof. A different starttime is reuse.
-        if ticks is None or ticks == start_ticks:
-            return False
-    try:
-        entries = list(_PROC_ROOT.iterdir())
-    except OSError:
-        return False
+        return "unknown"
+    unknown = False
     for entry in entries:
-        if not entry.name.isdigit():
-            continue
         try:
-            # proc(5): fields after the last ')'. Index 2 is pgrp, 19 is starttime.
-            fields = (entry / "stat").read_text().rsplit(")", 1)[1].split()
-            pgrp = int(fields[2])
-            started = int(fields[19])
-        except (OSError, UnicodeError, ValueError, IndexError, TypeError):
+            owner, pgrp, started, environ = _read_proc_entry(entry)
+        except (FileNotFoundError, ProcessLookupError):
+            continue  # vanished during the scan
+        except (OSError, UnicodeError, ValueError, IndexError):
+            unknown = True  # still there but unreadable
             continue
-        if pgrp == pgid and started >= start_ticks:
-            return False
-    return True
+        if owner != uid:
+            continue
+        if int(entry.name) == pid and started == ticks:
+            return "alive"
+        if pgrp == pgid and started >= ticks:
+            return "alive"
+        if needle is not None and needle in environ.split(b"\0"):
+            return "alive"
+    if unknown or needle is None:
+        return "unknown"
+    return "absent"
+
+
+def process_absent_same_boot(record) -> bool:
+    return same_boot_liveness(record) == "absent"
 
 
 def reconcile_lost_process(native, *, task_id, run_id, cancel_requested=False):
@@ -501,13 +506,14 @@ def run_code(*, command: list[str], env: dict, cwd: Path, session_id: str,
         # survives even when the first provider request has no stdout response.
         # Host identity, including this core's PID namespace, is in that same
         # acknowledgement, before a pid exists.
+        marker = f"{run_id}:{session_id}"
         metadata["process"] = {"boot_id": host_boot_id(), "machine_id": host_machine_id(),
-            "pid_ns": host_pid_namespace()}
+            "pid_ns": host_pid_namespace(), "launch_marker": marker}
         emit(status="dispatching")
         if stopping.is_set():
             raise _StreamError("stopped_before_spawn")
-        proc = process.spawn(command, cwd=str(cwd), env=env, stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+        proc = process.spawn(command, cwd=str(cwd), env={**env, LAUNCH_MARKER_ENV: marker},
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
         attempted, stage = True, "prompt"
         # start_new_session makes this process the group leader, so pgid == pid.
         metadata["process"].update({"pid": proc.pid, "pgid": proc.pid,
