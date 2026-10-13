@@ -2,7 +2,15 @@
 
 # First release notes
 
-The current public source version is `0.1.0a19`. The stable `0.1.0` release has not yet been published. See the [versioned release page](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a19) for this prerelease's installation assets and checksums. The first release's scope is frozen; preparation focuses on fixes to existing behavior, compatibility, and packaging. Asterun is licensed under [Apache-2.0](../../LICENSE). The `v0.1.0a19` tag has not been created. Files appear on that page only after the tag is on `main` and the release workflow succeeds.
+The current public source version is `0.1.0a20`. The stable `0.1.0` release has not yet been published. See the [versioned release page](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a20) for this prerelease's installation assets and checksums. The first release's scope is frozen; preparation focuses on fixes to existing behavior, compatibility, and packaging. Asterun is licensed under [Apache-2.0](../../LICENSE). The `v0.1.0a20` tag has not been created. Files appear on that page only after the tag is on `main` and the release workflow succeeds.
+
+## 0.1.0a20
+
+Relative to a19, released on 2026-10-11 as [`v0.1.0a19`](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a19), this version marks scheduler-capacity-only config changes, same-boot reclaim of vanished grok-code runs, and the operator terminate path as `0.1.0a20`. Protocol, SQLite schema 6, the configuration schema, plugin versions, and the standard skill's minimum interface `0.1.0a14` are unchanged. Plugins remain Antigravity `1.0.3` and Cursor and Jules `1.0.0`, the same as a19. The skill zip digest differs only because the release-page link now points to a20.
+
+Scheduler-capacity-only changes (`max_queue`, `per_backend_concurrency`, `max_concurrency`, and `local_check_concurrency`; `max_runs_per_task` still counts) no longer invalidate existing tasks. Each task stores an `execution_digest`. A legacy task without a digest stays non-equivalent. `task-cancel` and `task-reconcile` accept old-revision tasks. grok-code reclaims a run whose process has vanished on the same boot: it records `pid_ns` and scans the leader, the process group, and the `ASTERUN_LAUNCH_MARKER` environment marker. An unreadable same-uid entry is fail-closed as unknown and is not treated as gone. A vanished entry, a zombie, or an empty environ forces a bounded rescan, at most 3; if every scan is still unstable, the answer stays unknown. A descendant that clears its environment and leaves the group, or that changes uid, is not seen. The operator path is `task-reconcile <id> --terminate --reason ... [--confirm-process-gone]`.
+
+`v0.1.0a20` has not been tagged. Assets appear on the [release page](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a20) only after the tag is on `main` and the release workflow succeeds. Assets are the core wheel, source distribution, `asterun-skill-0.1.0a20.zip`, wheels and source distributions for the three external plugins (Antigravity `1.0.3`, Cursor and Jules `1.0.0`), and `SHA256SUMS`.
 
 ## 0.1.0a19
 
