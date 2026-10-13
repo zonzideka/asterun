@@ -521,11 +521,10 @@ def test_real_zombie_parent_setsid_child_stays_alive_until_reaped():
         needle = f"ASTERUN_LAUNCH_MARKER={marker}".encode()
         _scan_state, unstable = grok_code._scan_once(
             record["pid"], record["pgid"], record["start_ticks"], needle, os.getuid())
-        verdict = same_boot_liveness(record)
+        # A single stable pass must agree; separate calls may see unrelated transient processes.
         if not unstable:
-            assert verdict == "absent"
-        else:
-            assert verdict in ("absent", "unknown")
+            assert _scan_state == "absent"
+        assert same_boot_liveness(record) in ("absent", "unknown")
     finally:
         if child_pid is not None:
             try:
