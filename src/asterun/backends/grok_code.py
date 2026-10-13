@@ -289,9 +289,9 @@ def _proc_uid(entry: Path) -> int:
     return entry.stat().st_uid
 
 
-def _proc_stat(entry: Path) -> tuple[int, int]:
+def _proc_stat(entry: Path) -> tuple[str, int, int]:
     fields = (entry / "stat").read_text().rsplit(")", 1)[1].split()
-    return int(fields[2]), int(fields[19])
+    return fields[0], int(fields[2]), int(fields[19])
 
 
 def _proc_environ(entry: Path) -> bytes:
@@ -299,36 +299,50 @@ def _proc_environ(entry: Path) -> bytes:
 
 
 def _scan_once(pid, pgid, ticks, needle, uid):
-    """One pass over /proc: ("alive"|"absent"|"unknown", vanished_seen)."""
+    """One pass over /proc: ("alive"|"absent"|"unknown", unstable_seen).
+
+    unstable_seen means a same-uid entry vanished, was a zombie or dead
+    (Z/X/x), or had an empty environ. It may have forked a child that this
+    snapshot did not enumerate.
+    """
     try:
         entries = [e for e in _PROC_ROOT.iterdir() if e.name.isdigit()]
     except OSError:
         return "unknown", False
-    unknown = vanished = False
+    unknown = unstable = False
     for entry in entries:
         try:
             if _proc_uid(entry) != uid:
                 continue  # foreign uid: never read its environ
-            pgrp, started = _proc_stat(entry)
+            state, pgrp, started = _proc_stat(entry)
         except (FileNotFoundError, ProcessLookupError):
-            vanished = True
+            unstable = True
             continue
         except (OSError, UnicodeError, ValueError, IndexError):
             unknown = True
             continue
-        if (int(entry.name) == pid and started == ticks) or (pgrp == pgid and started >= ticks):
-            return "alive", vanished  # proven before touching environ
+        # A zombie leader is not proof of a live leader: it can fork after enumeration, then exit.
+        alive_by_stat = state != "Z" and ((int(entry.name) == pid and started == ticks) or (pgrp == pgid and started >= ticks))
+        if alive_by_stat:
+            return "alive", unstable  # proven before touching environ
+        if state in {"Z", "X", "x"}:
+            unstable = True  # may have forked a child we did not enumerate
+            continue  # do not read environ
         try:
             environ = _proc_environ(entry)
         except (FileNotFoundError, ProcessLookupError):
-            vanished = True
+            unstable = True
             continue
         except OSError:
             unknown = True
             continue
+        if environ == b"":
+            # Same-uid process whose environment is not visible (for example, exiting).
+            unstable = True
+            continue
         if needle in environ.split(b"\0"):
-            return "alive", vanished
-    return ("unknown" if unknown else "absent"), vanished
+            return "alive", unstable
+    return ("unknown" if unknown else "absent"), unstable
 
 
 def same_boot_liveness(record) -> str:
@@ -340,11 +354,12 @@ def same_boot_liveness(record) -> str:
     marker in its environment (inherited across setsid/double fork). Each /proc entry is
     read in stages (uid, then stat, then environ). Foreign uids are skipped before their
     environ is read. A live leader or group member is proven from stat before environ is
-    touched. Any same-uid entry that still exists but cannot be read makes the answer
-    unknown, never absent. If a process vanishes during a scan, the scan is repeated
-    (bounded by _LIVENESS_SCANS); if every scan still sees a vanish, the answer is
-    unknown. Known limit: a descendant that cleared its environment AND left the group,
-    or changed uid, is not seen.
+    touched. A zombie (state Z) is not that proof. Any same-uid entry that still exists
+    but cannot be read makes the answer unknown, never absent. A vanished entry, a zombie
+    or dead state (Z/X/x), or an empty environ also forces a rescan: the process may have
+    forked a child after enumeration. The rescan is bounded by _LIVENESS_SCANS; if every
+    scan is still unstable, the answer is unknown and the slot is kept. Known limit: a
+    descendant that cleared its environment AND left the group, or changed uid, is not seen.
     """
     if not isinstance(record, dict):
         return "unknown"
@@ -361,10 +376,10 @@ def same_boot_liveness(record) -> str:
         return "unknown"
     uid = os.getuid()
     for _ in range(_LIVENESS_SCANS):
-        state, vanished = _scan_once(pid, pgid, ticks, needle, uid)
-        if state != "absent" or not vanished:
+        state, unstable = _scan_once(pid, pgid, ticks, needle, uid)
+        if state != "absent" or not unstable:
             return state
-        # A process vanished mid-scan: it may have forked a child after enumeration. Rescan.
+        # Unstable (vanished, zombie, or empty environ): it may have forked a child after enumeration. Rescan.
     return "unknown"
 
 

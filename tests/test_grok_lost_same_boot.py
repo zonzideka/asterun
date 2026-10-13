@@ -1,9 +1,15 @@
 """Same-boot proof that a grok-code process is gone in this PID namespace."""
 
 import os
+import select
+import signal
+import subprocess
 import sys
+import time
 from copy import deepcopy
+from pathlib import Path
 from threading import Event
+from uuid import uuid4
 
 import pytest
 
@@ -372,3 +378,165 @@ def test_reopen_same_boot_absent_process_releases_slot(isolated_env, workspace_r
         assert app.scheduler.snapshot()["inflight"] == {}
     finally:
         app.close()
+
+
+def _count_scans(monkeypatch):
+    scans = {"n": 0}
+    real = grok_code._scan_once
+
+    def wrapped(*args, **kwargs):
+        scans["n"] += 1
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(grok_code, "_scan_once", wrapped)
+    return scans
+
+
+def test_zombie_same_uid_entry_is_unknown(monkeypatch, tmp_path):
+    _boot, proc, _machine = install_same(monkeypatch, tmp_path)
+    directory = proc / "600"
+    directory.mkdir()
+    (directory / "stat").write_text(
+        "600 (p) Z 1 600 600 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 7000 0\n"
+    )
+    scans = _count_scans(monkeypatch)
+    native = same_native()
+    assert same_boot_liveness(native["process"]) == "unknown"
+    assert scans["n"] == grok_code._LIVENESS_SCANS
+    assert reconcile_lost_process(native, task_id="task", run_id="run") is None
+
+
+def test_zombie_parent_fork_after_enumeration_is_alive_on_rescan(monkeypatch, tmp_path):
+    _boot, proc, _machine = install_same(monkeypatch, tmp_path)
+    directory = proc / "600"
+    directory.mkdir()
+    (directory / "stat").write_text(
+        "600 (p) Z 1 600 600 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 7000 0\n"
+    )
+    real = grok_code._proc_stat
+    seen = {"n": 0}
+
+    def wrapped(entry):
+        if entry.name == "600":
+            seen["n"] += 1
+            if seen["n"] == 1:
+                child = proc / "601"
+                child.mkdir()
+                (child / "stat").write_text(
+                    "601 (c) S 1 601 601 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 7001 0\n"
+                )
+                (child / "environ").write_bytes(b"PATH=/x\0ASTERUN_LAUNCH_MARKER=run:s1\0")
+                return ("Z", 600, 7000)
+        return real(entry)
+
+    monkeypatch.setattr(grok_code, "_proc_stat", wrapped)
+    assert same_boot_liveness(same_native()["process"]) == "alive"
+    assert seen["n"] >= 1
+
+
+def test_empty_environ_is_unknown_and_unmarked_environ_is_absent(monkeypatch, tmp_path):
+    _boot, proc, _machine = install_same(monkeypatch, tmp_path)
+    write_stat(proc, pid=456, ticks=100, pgrp=456)
+    (proc / "456" / "environ").write_bytes(b"")
+    scans = _count_scans(monkeypatch)
+    native = same_native()
+    assert same_boot_liveness(native["process"]) == "unknown"
+    assert scans["n"] == grok_code._LIVENESS_SCANS
+    (proc / "456" / "environ").write_bytes(b"PATH=/x\0")
+    assert same_boot_liveness(native["process"]) == "absent"
+
+
+def test_zombie_leader_matching_pid_and_ticks_is_unknown(monkeypatch, tmp_path):
+    _boot, proc, _machine = install_same(monkeypatch, tmp_path)
+    directory = proc / "123"
+    directory.mkdir()
+    (directory / "stat").write_text(
+        "123 (p) Z 1 123 123 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 5555 0\n"
+    )
+    scans = _count_scans(monkeypatch)
+    assert same_boot_liveness(same_native()["process"]) == "unknown"
+    assert scans["n"] == grok_code._LIVENESS_SCANS
+
+
+# Child leaves the parent's group, prints its pid, then sleeps. Parent exits at once.
+_ZOMBIE_PARENT_CODE = "import os,time\np=os.fork()\nif p==0:\n os.setsid(); print(os.getpid(), flush=True); time.sleep(30)\nelse:\n os._exit(0)\n"
+
+
+def _stat_state(pid):
+    text = Path(f"/proc/{pid}/stat").read_text()
+    return text.rsplit(")", 1)[1].split()[0]
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux") or not Path("/proc/self/ns/pid").exists(),
+    reason="linux pid namespace required",
+)
+def test_real_zombie_parent_setsid_child_stays_alive_until_reaped():
+    marker = f"realtest:{uuid4()}"
+    proc = None
+    child_pid = None
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, "-c", _ZOMBIE_PARENT_CODE],
+            env={**os.environ, "ASTERUN_LAUNCH_MARKER": marker},
+            start_new_session=True,
+            stdout=subprocess.PIPE,
+        )
+        deadline = time.monotonic() + 5
+        state = ""
+        while time.monotonic() < deadline:
+            try:
+                state = _stat_state(proc.pid)
+            except (OSError, IndexError, ValueError):
+                state = ""
+            if state == "Z":
+                break
+            time.sleep(0.02)
+        assert state == "Z"
+        ticks = grok_code.process_start_ticks(proc.pid)
+        assert type(ticks) is int
+        record = {
+            "pid": proc.pid,
+            "pgid": proc.pid,
+            "start_ticks": ticks,
+            "boot_id": grok_code.host_boot_id(),
+            "machine_id": grok_code.host_machine_id(),
+            "pid_ns": grok_code.host_pid_namespace(),
+            "launch_marker": marker,
+        }
+        stdout = proc.stdout
+        assert stdout is not None
+        assert select.select([stdout], [], [], 5)[0]
+        child_pid = int(stdout.readline())
+        stdout.close()
+        assert same_boot_liveness(record) == "alive"
+        os.kill(child_pid, signal.SIGKILL)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and Path(f"/proc/{child_pid}").exists():
+            time.sleep(0.02)
+        assert not Path(f"/proc/{child_pid}").exists()
+        assert _stat_state(proc.pid) == "Z"
+        assert same_boot_liveness(record) == "unknown"
+        proc.wait(timeout=5)
+        needle = f"ASTERUN_LAUNCH_MARKER={marker}".encode()
+        _scan_state, unstable = grok_code._scan_once(
+            record["pid"], record["pgid"], record["start_ticks"], needle, os.getuid())
+        verdict = same_boot_liveness(record)
+        if not unstable:
+            assert verdict == "absent"
+        else:
+            assert verdict in ("absent", "unknown")
+    finally:
+        if child_pid is not None:
+            try:
+                os.kill(child_pid, signal.SIGKILL)
+            except OSError:
+                pass
+        if proc is not None:
+            if proc.stdout is not None and not proc.stdout.closed:
+                proc.stdout.close()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5)
