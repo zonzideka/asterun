@@ -282,16 +282,53 @@ def process_provably_gone(record) -> bool:
     return current_machine == machine_id and current_boot != boot_id
 
 
-def _read_proc_entry(entry: Path) -> tuple[int, int, int, bytes]:
-    """(uid, pgrp, starttime, environ) for one /proc/<pid>; raises OSError/ValueError."""
-    uid = entry.stat().st_uid
+_LIVENESS_SCANS = 3
+
+
+def _proc_uid(entry: Path) -> int:
+    return entry.stat().st_uid
+
+
+def _proc_stat(entry: Path) -> tuple[int, int]:
     fields = (entry / "stat").read_text().rsplit(")", 1)[1].split()
-    pgrp, started = int(fields[2]), int(fields[19])
+    return int(fields[2]), int(fields[19])
+
+
+def _proc_environ(entry: Path) -> bytes:
+    return (entry / "environ").read_bytes()
+
+
+def _scan_once(pid, pgid, ticks, needle, uid):
+    """One pass over /proc: ("alive"|"absent"|"unknown", vanished_seen)."""
     try:
-        environ = (entry / "environ").read_bytes()
-    except FileNotFoundError:
-        environ = b""
-    return uid, pgrp, started, environ
+        entries = [e for e in _PROC_ROOT.iterdir() if e.name.isdigit()]
+    except OSError:
+        return "unknown", False
+    unknown = vanished = False
+    for entry in entries:
+        try:
+            if _proc_uid(entry) != uid:
+                continue  # foreign uid: never read its environ
+            pgrp, started = _proc_stat(entry)
+        except (FileNotFoundError, ProcessLookupError):
+            vanished = True
+            continue
+        except (OSError, UnicodeError, ValueError, IndexError):
+            unknown = True
+            continue
+        if (int(entry.name) == pid and started == ticks) or (pgrp == pgid and started >= ticks):
+            return "alive", vanished  # proven before touching environ
+        try:
+            environ = _proc_environ(entry)
+        except (FileNotFoundError, ProcessLookupError):
+            vanished = True
+            continue
+        except OSError:
+            unknown = True
+            continue
+        if needle in environ.split(b"\0"):
+            return "alive", vanished
+    return ("unknown" if unknown else "absent"), vanished
 
 
 def same_boot_liveness(record) -> str:
@@ -300,9 +337,14 @@ def same_boot_liveness(record) -> str:
     absent needs: same machine id, boot id and PID namespace; a recorded launch_marker
     (written since 0.1.0a20); leader pid gone or reused; and no visible process of this
     uid that is in the recorded group (started at/after the leader) or carries the launch
-    marker in its environment (inherited across setsid/double fork). Any entry that still
-    exists but cannot be read makes the answer unknown, never absent. Known limit: a
-    descendant that cleared its environment AND left the group, or changed uid, is not seen.
+    marker in its environment (inherited across setsid/double fork). Each /proc entry is
+    read in stages (uid, then stat, then environ). Foreign uids are skipped before their
+    environ is read. A live leader or group member is proven from stat before environ is
+    touched. Any same-uid entry that still exists but cannot be read makes the answer
+    unknown, never absent. If a process vanishes during a scan, the scan is repeated
+    (bounded by _LIVENESS_SCANS); if every scan still sees a vanish, the answer is
+    unknown. Known limit: a descendant that cleared its environment AND left the group,
+    or changed uid, is not seen.
     """
     if not isinstance(record, dict):
         return "unknown"
@@ -315,31 +357,15 @@ def same_boot_liveness(record) -> str:
     if type(pid) is not int or type(pgid) is not int or pid < 1 or pgid < 1 or type(ticks) is not int:
         return "unknown"
     needle = f"{LAUNCH_MARKER_ENV}={marker}".encode() if isinstance(marker, str) and marker else None
+    if needle is None:
+        return "unknown"
     uid = os.getuid()
-    try:
-        entries = [e for e in _PROC_ROOT.iterdir() if e.name.isdigit()]
-    except OSError:
-        return "unknown"
-    unknown = False
-    for entry in entries:
-        try:
-            owner, pgrp, started, environ = _read_proc_entry(entry)
-        except (FileNotFoundError, ProcessLookupError):
-            continue  # vanished during the scan
-        except (OSError, UnicodeError, ValueError, IndexError):
-            unknown = True  # still there but unreadable
-            continue
-        if owner != uid:
-            continue
-        if int(entry.name) == pid and started == ticks:
-            return "alive"
-        if pgrp == pgid and started >= ticks:
-            return "alive"
-        if needle is not None and needle in environ.split(b"\0"):
-            return "alive"
-    if unknown or needle is None:
-        return "unknown"
-    return "absent"
+    for _ in range(_LIVENESS_SCANS):
+        state, vanished = _scan_once(pid, pgid, ticks, needle, uid)
+        if state != "absent" or not vanished:
+            return state
+        # A process vanished mid-scan: it may have forked a child after enumeration. Rescan.
+    return "unknown"
 
 
 def process_absent_same_boot(record) -> bool:

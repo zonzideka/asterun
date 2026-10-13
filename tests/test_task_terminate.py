@@ -82,6 +82,28 @@ def test_unproven_death_needs_confirm_then_releases_slot(isolated_env, workspace
         app.close()
 
 
+def test_live_leader_unreadable_environ_blocks_confirm(isolated_env, workspace_root, monkeypatch):
+    config, state, task_id, run_id, _boot_path = park_pending(isolated_env, workspace_root, monkeypatch)
+
+    def unreadable(_entry):
+        raise PermissionError("environ")
+
+    monkeypatch.setattr("asterun.backends.grok_code._proc_environ", unreadable)
+    app = Application.from_paths(config, state)
+    try:
+        _stamp_same_boot(app, isolated_env, run_id)
+        result = _terminate(app, task_id, reason="operator stop", confirm=True)
+        assert not result.ok
+        assert result.error["code"] == REMOTE_STATE_UNKNOWN
+        assert result.error["details"]["process_evidence"] == "alive"
+        run = app.store.get_run(RunId(run_id))
+        assert run.status == RunStatus.PENDING_RECONCILE
+        assert run.terminated is False
+        assert app.scheduler.snapshot()["inflight"] == {"grok": 1}
+    finally:
+        app.close()
+
+
 def test_live_group_child_blocks_confirm(isolated_env, workspace_root, monkeypatch):
     config, state, task_id, run_id, _boot_path = park_pending(isolated_env, workspace_root, monkeypatch)
     proc = isolated_env / "proc"

@@ -97,7 +97,9 @@ def test_same_boot_live_pid_stays_unknown(monkeypatch, tmp_path):
 def test_reused_pid_without_group_member_is_reclaimed(monkeypatch, tmp_path):
     _boot, proc, _machine = install_same(monkeypatch, tmp_path)
     # Different start ticks, and not a member of the recorded group (pgrp != pgid).
+    # A live process has an environ file; a missing one is a mid-scan vanish.
     write_stat(proc, pid=123, ticks=9999, pgrp=1)
+    (proc / "123" / "environ").write_bytes(b"PATH=/x\0")
     result = reconcile_lost_process(same_native(), task_id="task", run_id="run")
     assert result["status"] == "failed"
     assert result["error_code"] == "GROK_PROCESS_LOST"
@@ -112,14 +114,14 @@ def test_live_group_member_blocks_same_boot_reclaim(monkeypatch, tmp_path, ticks
 
 
 def _raise_on_pid(monkeypatch, pid, error):
-    real = grok_code._read_proc_entry
+    real = grok_code._proc_stat
 
     def wrapped(entry):
         if entry.name == str(pid):
             raise error
         return real(entry)
 
-    monkeypatch.setattr(grok_code, "_read_proc_entry", wrapped)
+    monkeypatch.setattr(grok_code, "_proc_stat", wrapped)
 
 
 def test_setsid_child_with_launch_marker_stays_alive(monkeypatch, tmp_path):
@@ -143,12 +145,119 @@ def test_unreadable_proc_entry_is_unknown(monkeypatch, tmp_path):
 def test_vanished_proc_entry_is_still_absent(monkeypatch, tmp_path):
     _boot, proc, _machine = install_same(monkeypatch, tmp_path)
     write_stat(proc, pid=456, ticks=6000, pgrp=123)
-    _raise_on_pid(monkeypatch, "456", FileNotFoundError("gone"))
+    real = grok_code._proc_stat
+
+    def wrapped(entry):
+        if entry.name == "456":
+            # Drop it so the rescan no longer sees a mid-scan vanish.
+            stat_path = entry / "stat"
+            if stat_path.exists():
+                stat_path.unlink()
+            if entry.is_dir():
+                entry.rmdir()
+            raise FileNotFoundError("gone")
+        return real(entry)
+
+    monkeypatch.setattr(grok_code, "_proc_stat", wrapped)
     native = same_native()
     assert same_boot_liveness(native["process"]) == "absent"
     result = reconcile_lost_process(native, task_id="task", run_id="run")
     assert result["status"] == "failed"
     assert result["events"][0]["reason"] == "host_process_lost_same_boot"
+
+
+def test_child_forked_after_enumeration_is_alive_on_rescan(monkeypatch, tmp_path):
+    _boot, proc, _machine = install_same(monkeypatch, tmp_path)
+    write_stat(proc, pid=456, ticks=1, pgrp=456)
+    real = grok_code._proc_stat
+    calls = {"n": 0}
+
+    def wrapped(entry):
+        if entry.name == "456":
+            calls["n"] += 1
+            if calls["n"] == 1:
+                write_stat(proc, pid=789, ticks=100, pgrp=789)
+                (proc / "789" / "environ").write_bytes(b"PATH=/x\0ASTERUN_LAUNCH_MARKER=run:s1\0")
+            raise FileNotFoundError("gone")
+        return real(entry)
+
+    monkeypatch.setattr(grok_code, "_proc_stat", wrapped)
+    assert same_boot_liveness(same_native()["process"]) == "alive"
+    assert calls["n"] >= 1
+
+
+def test_endless_vanishing_scan_is_unknown(monkeypatch, tmp_path):
+    _boot, proc, _machine = install_same(monkeypatch, tmp_path)
+    write_stat(proc, pid=456, ticks=6000, pgrp=456)
+    real = grok_code._proc_stat
+    calls = {"n": 0}
+
+    def wrapped(entry):
+        if entry.name == "456":
+            calls["n"] += 1
+            raise FileNotFoundError("gone")
+        return real(entry)
+
+    monkeypatch.setattr(grok_code, "_proc_stat", wrapped)
+    native = same_native()
+    assert same_boot_liveness(native["process"]) == "unknown"
+    assert calls["n"] == grok_code._LIVENESS_SCANS
+    assert reconcile_lost_process(native, task_id="task", run_id="run") is None
+
+
+def test_live_leader_unreadable_environ_is_alive(monkeypatch, tmp_path):
+    _boot, proc, _machine = install_same(monkeypatch, tmp_path)
+    write_leader(proc, pid=123, ticks=5555)
+
+    def unreadable(_entry):
+        raise PermissionError("environ")
+
+    monkeypatch.setattr(grok_code, "_proc_environ", unreadable)
+    assert same_boot_liveness(same_native()["process"]) == "alive"
+
+
+def test_foreign_uid_unreadable_environ_is_absent(monkeypatch, tmp_path):
+    _boot, proc, _machine = install_same(monkeypatch, tmp_path)
+    write_stat(proc, pid=999, ticks=100, pgrp=999)
+    real_uid = grok_code._proc_uid
+    real_environ = grok_code._proc_environ
+    environ_pids = []
+
+    def uid(entry):
+        if entry.name == "999":
+            return os.getuid() + 1
+        return real_uid(entry)
+
+    def environ(entry):
+        environ_pids.append(entry.name)
+        if entry.name == "999":
+            raise PermissionError("foreign environ")
+        return real_environ(entry)
+
+    monkeypatch.setattr(grok_code, "_proc_uid", uid)
+    monkeypatch.setattr(grok_code, "_proc_environ", environ)
+    native = same_native()
+    assert same_boot_liveness(native["process"]) == "absent"
+    assert "999" not in environ_pids
+    result = reconcile_lost_process(native, task_id="task", run_id="run")
+    assert result["status"] == "failed"
+    assert result["events"][0]["reason"] == "host_process_lost_same_boot"
+
+
+def test_same_uid_unreadable_environ_on_unrelated_process_is_unknown(monkeypatch, tmp_path):
+    _boot, proc, _machine = install_same(monkeypatch, tmp_path)
+    write_stat(proc, pid=456, ticks=100, pgrp=456)
+    real = grok_code._proc_environ
+
+    def environ(entry):
+        if entry.name == "456":
+            raise PermissionError("unreadable")
+        return real(entry)
+
+    monkeypatch.setattr(grok_code, "_proc_environ", environ)
+    native = same_native()
+    assert same_boot_liveness(native["process"]) == "unknown"
+    assert reconcile_lost_process(native, task_id="task", run_id="run") is None
 
 
 @pytest.mark.parametrize("case", ["different_ns", "missing_ns", "missing_start_ticks", "missing_marker"])
