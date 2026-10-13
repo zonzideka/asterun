@@ -102,7 +102,7 @@ REQUEST_SCHEMAS = {
         **TASK, "action": {"type": "string", "enum": ["pause", "resume"]},
         "external_change": {"type": "boolean"},
     }, ["task_id", "action"]),
-    "task.reconcile": obj(TASK),
+    "task.reconcile": obj({**TASK, "terminate": {"type": "boolean"}, "reason": {"type": "string", "minLength": 1, "maxLength": 500}, "confirm_process_gone": {"type": "boolean"}}),
     "workflow.evaluate": obj({
         **TASK, "expected_revision": REVISION, "expected_input_hash": IDENTIFIER,
         **TARGET_BINDING,

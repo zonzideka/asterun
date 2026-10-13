@@ -15,6 +15,7 @@ import time
 from typing import Any
 
 RECEIPT_KEY = "asterun.grok_dispatch_v1"
+LAUNCH_MARKER_ENV = "ASTERUN_LAUNCH_MARKER"
 _BOOT_ID_PATH = Path("/proc/sys/kernel/random/boot_id")
 _MACHINE_ID_PATH = Path("/etc/machine-id")
 _PROC_ROOT = Path("/proc")
@@ -237,6 +238,21 @@ def host_machine_id() -> str | None:
     return _reference(value)
 
 
+def host_pid_namespace() -> str | None:
+    """Current PID namespace, or None on any error.
+
+    The link is ``_PROC_ROOT / "self" / "ns" / "pid"`` so a test can redirect /proc.
+    ``os.readlink`` returns the namespace name (for example ``pid:[4026531836]``).
+    """
+    try:
+        value = os.readlink(_PROC_ROOT / "self" / "ns" / "pid")
+    except Exception:
+        return None
+    if isinstance(value, str) and value:
+        return value
+    return None
+
+
 def process_start_ticks(pid: int) -> int | None:
     """proc(5) field 22 (starttime), the 20th field after the last ')' in stat."""
     try:
@@ -266,14 +282,119 @@ def process_provably_gone(record) -> bool:
     return current_machine == machine_id and current_boot != boot_id
 
 
+_LIVENESS_SCANS = 3
+
+
+def _proc_uid(entry: Path) -> int:
+    return entry.stat().st_uid
+
+
+def _proc_stat(entry: Path) -> tuple[str, int, int]:
+    fields = (entry / "stat").read_text().rsplit(")", 1)[1].split()
+    return fields[0], int(fields[2]), int(fields[19])
+
+
+def _proc_environ(entry: Path) -> bytes:
+    return (entry / "environ").read_bytes()
+
+
+def _scan_once(pid, pgid, ticks, needle, uid):
+    """One pass over /proc: ("alive"|"absent"|"unknown", unstable_seen).
+
+    unstable_seen means a same-uid entry vanished, was a zombie or dead
+    (Z/X/x), or had an empty environ. It may have forked a child that this
+    snapshot did not enumerate.
+    """
+    try:
+        entries = [e for e in _PROC_ROOT.iterdir() if e.name.isdigit()]
+    except OSError:
+        return "unknown", False
+    unknown = unstable = False
+    for entry in entries:
+        try:
+            if _proc_uid(entry) != uid:
+                continue  # foreign uid: never read its environ
+            state, pgrp, started = _proc_stat(entry)
+        except (FileNotFoundError, ProcessLookupError):
+            unstable = True
+            continue
+        except (OSError, UnicodeError, ValueError, IndexError):
+            unknown = True
+            continue
+        # A zombie leader is not proof of a live leader: it can fork after enumeration, then exit.
+        alive_by_stat = state != "Z" and ((int(entry.name) == pid and started == ticks) or (pgrp == pgid and started >= ticks))
+        if alive_by_stat:
+            return "alive", unstable  # proven before touching environ
+        if state in {"Z", "X", "x"}:
+            unstable = True  # may have forked a child we did not enumerate
+            continue  # do not read environ
+        try:
+            environ = _proc_environ(entry)
+        except (FileNotFoundError, ProcessLookupError):
+            unstable = True
+            continue
+        except OSError:
+            unknown = True
+            continue
+        if environ == b"":
+            # Same-uid process whose environment is not visible (for example, exiting).
+            unstable = True
+            continue
+        if needle in environ.split(b"\0"):
+            return "alive", unstable
+    return ("unknown" if unknown else "absent"), unstable
+
+
+def same_boot_liveness(record) -> str:
+    """"alive", "absent" or "unknown" for a launch recorded on this boot.
+
+    absent needs: same machine id, boot id and PID namespace; a recorded launch_marker
+    (written since 0.1.0a20); leader pid gone or reused; and no visible process of this
+    uid that is in the recorded group (started at/after the leader) or carries the launch
+    marker in its environment (inherited across setsid/double fork). Each /proc entry is
+    read in stages (uid, then stat, then environ). Foreign uids are skipped before their
+    environ is read. A live leader or group member is proven from stat before environ is
+    touched. A zombie (state Z) is not that proof. Any same-uid entry that still exists
+    but cannot be read makes the answer unknown, never absent. A vanished entry, a zombie
+    or dead state (Z/X/x), or an empty environ also forces a rescan: the process may have
+    forked a child after enumeration. The rescan is bounded by _LIVENESS_SCANS; if every
+    scan is still unstable, the answer is unknown and the slot is kept. Known limit: a
+    descendant that cleared its environment AND left the group, or changed uid, is not seen.
+    """
+    if not isinstance(record, dict):
+        return "unknown"
+    machine, boot, ns = host_machine_id(), host_boot_id(), host_pid_namespace()
+    if None in (machine, boot, ns):
+        return "unknown"
+    if record.get("machine_id") != machine or record.get("boot_id") != boot or record.get("pid_ns") != ns:
+        return "unknown"
+    pid, pgid, ticks, marker = record.get("pid"), record.get("pgid"), record.get("start_ticks"), record.get("launch_marker")
+    if type(pid) is not int or type(pgid) is not int or pid < 1 or pgid < 1 or type(ticks) is not int:
+        return "unknown"
+    needle = f"{LAUNCH_MARKER_ENV}={marker}".encode() if isinstance(marker, str) and marker else None
+    if needle is None:
+        return "unknown"
+    uid = os.getuid()
+    for _ in range(_LIVENESS_SCANS):
+        state, unstable = _scan_once(pid, pgid, ticks, needle, uid)
+        if state != "absent" or not unstable:
+            return state
+        # Unstable (vanished, zombie, or empty environ): it may have forked a child after enumeration. Rescan.
+    return "unknown"
+
+
+def process_absent_same_boot(record) -> bool:
+    return same_boot_liveness(record) == "absent"
+
+
 def reconcile_lost_process(native, *, task_id, run_id, cancel_requested=False):
     """End an in-flight launch when the recorded host process is provably gone.
 
-    Proof is a changed boot id on the same machine id only. A prompt receipt
-    (prompt attempted) and a spawn receipt (prompt not yet attempted) both
-    qualify: a host that rebooted cannot still be running a process it may
-    have spawned. A receipt that already stored a failure or an exit code
-    stays on the legacy path.
+    Proof is a changed boot id on the same machine, or same-boot absence in
+    this PID namespace (process_absent_same_boot). A prompt receipt (prompt
+    attempted) and a spawn receipt (prompt not yet attempted) both qualify.
+    A receipt that already stored a failure or an exit code stays on the
+    legacy path.
     """
     if not isinstance(native, dict):
         return None
@@ -285,18 +406,23 @@ def reconcile_lost_process(native, *, task_id, run_id, cancel_requested=False):
     open_launch = (stage == "prompt" and attempted is True) or (stage == "spawn" and attempted is False)
     if not open_launch or receipt.get("failure_type") is not None or receipt.get("process_exit_code") is not None:
         return None
+    process = native.get("process")
+    # Boot change stays on the old proof and does not consult the proc scan.
+    boot_gone = process_provably_gone(process)
+    same_boot_gone = False if boot_gone else process_absent_same_boot(process)
     if (native.get("execution_profile") != "workspace-code-v1" or native.get("transport") != "headless"
-            or not _reference(native.get("session_id")) or not process_provably_gone(native.get("process"))):
+            or not _reference(native.get("session_id")) or not (boot_gone or same_boot_gone)):
         return None
     cancelled = bool(cancel_requested)
+    reason = "host_process_lost_same_boot" if same_boot_gone else "host_process_lost"
     return {
         "status": "cancelled" if cancelled else "failed",
         "error_code": None if cancelled else "GROK_PROCESS_LOST",
         "terminated": True,
         "summary": "Grok 编码进程已不存在（主机重启或进程消失），按已记录进程证据结束；未重派",
-        "events": [{"type": "reconciled", "re_dispatched": False, "reason": "host_process_lost"}],
+        "events": [{"type": "reconciled", "re_dispatched": False, "reason": reason}],
         "native": {"recorded_terminal_reconciliation": {
-            "source": "host_process_lost", "task_id": task_id, "run_id": run_id, "re_dispatched": False}},
+            "source": reason, "task_id": task_id, "run_id": run_id, "re_dispatched": False}},
     }
 
 
@@ -419,13 +545,16 @@ def run_code(*, command: list[str], env: dict, cwd: Path, session_id: str,
             raise _StreamError("stopped_before_spawn")
         # This acknowledgement precedes Popen: the predetermined native reference
         # survives even when the first provider request has no stdout response.
-        # Host identity is in that same acknowledgement, before a pid exists.
-        metadata["process"] = {"boot_id": host_boot_id(), "machine_id": host_machine_id()}
+        # Host identity, including this core's PID namespace, is in that same
+        # acknowledgement, before a pid exists.
+        marker = f"{run_id}:{session_id}"
+        metadata["process"] = {"boot_id": host_boot_id(), "machine_id": host_machine_id(),
+            "pid_ns": host_pid_namespace(), "launch_marker": marker}
         emit(status="dispatching")
         if stopping.is_set():
             raise _StreamError("stopped_before_spawn")
-        proc = process.spawn(command, cwd=str(cwd), env=env, stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+        proc = process.spawn(command, cwd=str(cwd), env={**env, LAUNCH_MARKER_ENV: marker},
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
         attempted, stage = True, "prompt"
         # start_new_session makes this process the group leader, so pgid == pid.
         metadata["process"].update({"pid": proc.pid, "pgid": proc.pid,
