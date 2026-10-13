@@ -189,6 +189,7 @@ class Task:
     evidence_stale: bool = False
     input_hash: str = ""
     evidence_input_hash: str = ""
+    execution_digest: str = ""
     findings: list[dict[str, Any]] = field(default_factory=list)
     repair_count: int = 0
     review_status: str = "not_configured"
@@ -251,6 +252,7 @@ class Task:
             "run_count": self.run_count,
             "workspace_root": self.workspace_root,
             "quality": self.quality,
+            **({"execution_digest": self.execution_digest} if self.execution_digest else {}),
             **({"capability": self.capability, "capability_input": deepcopy(self.capability_input)} if self.capability else {}),
             **({"read_scope": dict(self.read_scope)} if self.read_scope is not None else {}),
             **({"external_evaluation": deepcopy(self.external_evaluation)} if self.external_evaluation else {}),
@@ -288,6 +290,7 @@ class Task:
             evidence_stale=bool(data.get("evidence_stale")),
             input_hash=str(data.get("input_hash") or ""),
             evidence_input_hash=str(data.get("evidence_input_hash") or ""),
+            execution_digest=str(data.get("execution_digest") or ""),
             findings=list(data.get("findings") or []),
             repair_count=int(data.get("repair_count") or 0),
             review_status=str(data.get("review_status") or "not_configured"),

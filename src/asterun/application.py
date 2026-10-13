@@ -12,6 +12,7 @@ from asterun.backends.fake import FAKE_SCRIPTS
 from asterun.backup import backup_state
 from asterun.binding import resolve_account_ref, resolve_runtime_ref
 from asterun.config import AsterunConfig, load_config
+from asterun.config_equivalence import execution_digest
 from asterun.diagnose import build_diagnose
 from asterun.contracts import (
     AcceptanceStatus,
@@ -661,6 +662,7 @@ class Application:
             account_ref=self.account_ref,
             runtime_ref=self.runtime_ref,
             config_revision=self.config.revision,
+            execution_digest=execution_digest(self.config),
             orchestration_owner="core",
             input_hash=digest,
             evidence_input_hash=digest,
@@ -856,7 +858,7 @@ class Application:
         enforce(self.policy.authorize(self.principal, "task.cancel", task.workspace))
         self._require_grant(task.workspace)
         self._require_applied_config()
-        self._assert_task_binding(task)
+        self._assert_task_binding(task, purpose="terminate")
         if task.current_run_id is None:
             raise AsterunError(NOT_FOUND, "任务没有运行")
         run = self.store.get_run(task.current_run_id)
@@ -1281,7 +1283,7 @@ class Application:
             scoped_task = self._require_task(task_id.value)
             enforce(self.policy.authorize(self.principal, "task.reconcile", scoped_task.workspace))
             self._require_grant(scoped_task.workspace)
-            self._assert_task_binding(scoped_task)
+            self._assert_task_binding(scoped_task, purpose="terminate")
             run = self.store.get_run(scoped_task.current_run_id) if scoped_task.current_run_id else None
             if self.admission is not None and run and run.status not in TERMINAL_RUN_STATUSES:
                 self.admission.guard_existing_run(run.id.value)
@@ -2447,13 +2449,22 @@ class Application:
         if self.executor is not None:
             self._drain_queue()
 
-    def _assert_task_binding(self, task: Task) -> None:
+    def _assert_task_binding(self, task: Task, *, purpose: str = "execute") -> None:
         if task.account_ref != self.account_ref or task.runtime_ref != self.runtime_ref:
             raise AsterunError(BINDING_MISMATCH, "任务绑定与当前账户/主机不一致")
-        if task.config_revision != self.config.revision:
-            raise AsterunError(REVISION_CONFLICT, "任务使用旧配置，请核对原工作区和后端后创建新任务")
-        if task.workspace_root and task.workspace_root != str(self.config.get_workspace(task.workspace).root.resolve()):
-            raise AsterunError(BINDING_MISMATCH, "工作区路径已改变，不能把旧运行绑定到新路径")
+        terminate = purpose == "terminate"
+        if task.config_revision != self.config.revision and not terminate:
+            equivalent = bool(task.execution_digest) and task.execution_digest == execution_digest(self.config)
+            if not equivalent:
+                raise AsterunError(
+                    REVISION_CONFLICT, "任务使用旧配置，请核对原工作区和后端后创建新任务",
+                    next_action="旧任务仍可 task-cancel / task-reconcile；需要重新执行时按当前配置创建新任务",
+                    details={"task_revision": task.config_revision, "current_revision": self.config.revision,
+                             "equivalent": False})
+        workspace = self.config.workspaces.get(task.workspace)
+        if task.workspace_root and (workspace is not None or not terminate):
+            if task.workspace_root != str(self.config.get_workspace(task.workspace).root.resolve()):
+                raise AsterunError(BINDING_MISMATCH, "工作区路径已改变，不能把旧运行绑定到新路径")
         if task.conversation_id is not None:
             session = self.store.get_session(task.conversation_id)
             self._assert_session_binding(session, workspace=task.workspace, backend=task.backend.value)
