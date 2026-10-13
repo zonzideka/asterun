@@ -2,7 +2,15 @@
 
 # 首版发行说明
 
-当前公开源码版本为 `0.1.0a19`，正式稳定版 `0.1.0` 尚未发布。本次预发布的安装资产和校验文件见[对应版本发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a19)。首版范围已冻结，发布准备集中在现有行为、兼容和打包修复。项目采用 [Apache-2.0](../LICENSE)。`v0.1.0a19` 标签尚未打出，发行页上的文件要等该标签进入 `main` 且发行工作流成功之后才会出现。
+当前公开源码版本为 `0.1.0a20`，正式稳定版 `0.1.0` 尚未发布。本次预发布的安装资产和校验文件见[对应版本发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a20)。首版范围已冻结，发布准备集中在现有行为、兼容和打包修复。项目采用 [Apache-2.0](../LICENSE)。`v0.1.0a20` 标签尚未打出，发行页上的文件要等该标签进入 `main` 且发行工作流成功之后才会出现。
+
+## 0.1.0a20
+
+相对 2026-10-11 已发布的 [`v0.1.0a19`](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a19)，本版把调度容量改动不再作废既有任务、同一次启动内回收进程已消失的 grok-code 运行，以及操作者终止路径标成 `0.1.0a20`。协议、SQLite schema 6、配置 schema、插件版本与标准 skill 最低接口 `0.1.0a14` 不变。插件仍为 Antigravity `1.0.3`、Cursor 与 Jules `1.0.0`，与 a19 相同。技能包摘要只因发行页链接改为 a20 而不同。
+
+只改调度器容量（`max_queue`、`per_backend_concurrency`、`max_concurrency`、`local_check_concurrency`；`max_runs_per_task` 仍计入）不再使既有任务失效。每个任务保存 `execution_digest`；没有这份摘要的旧任务保持不等价。`task-cancel` 与 `task-reconcile` 接受旧修订上的任务。grok-code 在同一次启动内回收进程已被证明消失的运行：记录 `pid_ns`，并用环境标记 `ASTERUN_LAUNCH_MARKER` 扫描 leader、进程组与标记。无法读取的同 uid 条目按失败关闭记为未知，不会当成已消失。消失、僵尸或空 environ 的条目触发有界重扫，最多 3 次；三次都不稳定则仍为未知。限制：后代进程清掉自身环境并离开进程组，或更换 uid 后，不会被看到。操作者路径为 `task-reconcile <id> --terminate --reason ... [--confirm-process-gone]`。
+
+尚未打 `v0.1.0a20`。资产要等该标签进入 `main` 且发行工作流成功之后，才会出现在[发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a20)。本次资产为核心 wheel、源码包、`asterun-skill-0.1.0a20.zip`、三个外部插件的 wheel 与源码包（Antigravity `1.0.3`，Cursor 与 Jules `1.0.0`），以及 `SHA256SUMS`。
 
 ## 0.1.0a19
 
