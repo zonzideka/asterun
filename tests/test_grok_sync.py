@@ -21,6 +21,12 @@ def native(home, sid="session-1"):
     return session
 
 
+def advance(session, turn):
+    (session / "summary.json").write_text(json.dumps({"current_model_id": f"grok-test-{turn}"}))
+    with (session / "updates.jsonl").open("a") as handle:
+        handle.write(json.dumps({"params": {"sessionId": session.name}, "timestamp": turn}) + "\n")
+
+
 def test_full_incremental_sync_and_existing_identical_trial(tmp_path):
     src, dst = tmp_path / "src", tmp_path / "dst"
     session = native(src)
@@ -38,6 +44,126 @@ def test_full_incremental_sync_and_existing_identical_trial(tmp_path):
         f.write(json.dumps({"params": {"sessionId": session.name}, "timestamp": 124}) + "\n")
     assert sync_sessions(src, dst)["copied"] == 1
     assert (target / "updates.jsonl").read_bytes() == (session / "updates.jsonl").read_bytes()
+
+
+@pytest.mark.parametrize("retry_before_growth", [True, False])
+def test_retry_after_marker_write_failure_handles_source_growth(tmp_path, monkeypatch, retry_before_growth):
+    from asterun import grok_sync
+
+    src, dst = tmp_path / "src", tmp_path / "dst"
+    session = native(src)
+    assert sync_sessions(src, dst)["copied"] == 1
+    target = dst / session.relative_to(src)
+    old_hashes = json.loads((target / MARKER).read_bytes())["hashes"]
+    (session / "summary.json").write_text(json.dumps({"current_model_id": "grok-test-2"}))
+    with (session / "updates.jsonl").open("a") as handle:
+        handle.write(json.dumps({"params": {"sessionId": session.name}, "timestamp": 124}) + "\n")
+
+    original_write = grok_sync._write
+
+    def fail_marker(path, data):
+        if path.name == MARKER and "pending_hashes" not in json.loads(data):
+            raise OSError("simulated marker write failure")
+        return original_write(path, data)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(grok_sync, "_write", fail_marker)
+        assert sync_sessions(src, dst)["skipped"] == 1
+    assert json.loads((target / MARKER).read_bytes())["hashes"] == old_hashes
+    assert all((target / name).read_bytes() == (session / name).read_bytes() for name in FILES)
+    data_stats = {name: (target / name).stat() for name in FILES}
+
+    if retry_before_growth:
+        assert sync_sessions(src, dst)["unchanged"] == 1
+        for name in FILES:
+            current = (target / name).stat()
+            assert (current.st_ino, current.st_mtime_ns) == (data_stats[name].st_ino, data_stats[name].st_mtime_ns)
+
+    (session / "summary.json").write_text(json.dumps({"current_model_id": "grok-test-3"}))
+    with (session / "updates.jsonl").open("a") as handle:
+        handle.write(json.dumps({"params": {"sessionId": session.name}, "timestamp": 125}) + "\n")
+    result = sync_sessions(src, dst)
+    assert result["copied"] == 1 and result["conflicts"] == 0
+    assert all((target / name).read_bytes() == (session / name).read_bytes() for name in FILES)
+    assert "pending_hashes" not in json.loads((target / MARKER).read_bytes())
+
+
+@pytest.mark.parametrize("failure_point", ["prepare", "summary.json", "updates.jsonl", "commit"])
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_repeated_interrupted_sync_recovers_after_source_growth(tmp_path, monkeypatch, failure_point, interrupted):
+    from asterun import grok_sync
+
+    src, dst = tmp_path / "src", tmp_path / "dst"
+    session = native(src)
+    assert sync_sessions(src, dst)["copied"] == 1
+    target = dst / session.relative_to(src)
+    original_write = grok_sync._write
+
+    def fail_write(path, data):
+        point = path.name
+        if point == MARKER:
+            point = "prepare" if "pending_hashes" in json.loads(data) else "commit"
+        if point == failure_point:
+            raise KeyboardInterrupt() if interrupted else OSError("simulated write failure")
+        return original_write(path, data)
+
+    # Each retry sees a newer source, and the second retry is interrupted too.
+    for turn in (124, 125):
+        advance(session, turn)
+        before = {name: (target / name).read_bytes() for name in FILES}
+        with monkeypatch.context() as patch:
+            patch.setattr(grok_sync, "_write", fail_write)
+            if interrupted:
+                with pytest.raises(KeyboardInterrupt):
+                    sync_sessions(src, dst)
+            else:
+                assert sync_sessions(src, dst)["skipped"] == 1
+        if failure_point == "prepare":
+            assert {name: (target / name).read_bytes() for name in FILES} == before
+
+    advance(session, 126)
+    result = sync_sessions(src, dst)
+    assert result["copied"] == 1 and result["conflicts"] == result["skipped"] == 0
+    assert all((target / name).read_bytes() == (session / name).read_bytes() for name in FILES)
+    assert "pending_hashes" not in json.loads((target / MARKER).read_bytes())
+    assert sync_sessions(src, dst)["unchanged"] == 1
+
+
+@pytest.mark.parametrize("change", ["summary.json", "updates.jsonl", "legacy_marker", "rewind", "other_source"])
+def test_pending_export_does_not_authorize_unverified_destination_changes(tmp_path, monkeypatch, change):
+    from asterun import grok_sync
+
+    src, dst = tmp_path / "src", tmp_path / "dst"
+    session = native(src)
+    assert sync_sessions(src, dst)["copied"] == 1
+    target = dst / session.relative_to(src)
+    original_write = grok_sync._write
+
+    def fail_commit(path, data):
+        if path.name == MARKER and "pending_hashes" not in json.loads(data):
+            raise OSError("simulated marker failure")
+        return original_write(path, data)
+
+    advance(session, 124)
+    with monkeypatch.context() as patch:
+        patch.setattr(grok_sync, "_write", fail_commit)
+        assert sync_sessions(src, dst)["skipped"] == 1
+    advance(session, 125)
+    if change in FILES:
+        with (target / change).open("ab") as handle:
+            handle.write(b'\n{"native_client":true}\n')
+    elif change == "legacy_marker":
+        marker = json.loads((target / MARKER).read_bytes())
+        marker.pop("pending_hashes")
+        (target / MARKER).write_text(json.dumps(marker))
+    elif change == "rewind":
+        (session / "updates.jsonl").write_bytes(b"")
+    else:
+        src = tmp_path / "other"
+        native(src)
+    before = {p.name: p.read_bytes() for p in target.iterdir()}
+    assert sync_sessions(src, dst)["conflicts"] == 1
+    assert {p.name: p.read_bytes() for p in target.iterdir()} == before
 
 
 @pytest.mark.parametrize("change", ["content", "native_file", "other_source"])
