@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from asterun.application import Application
-from asterun.ids import RunId
+from asterun.ids import RunId, TaskId
 from asterun.backends.codex import CodexSession
 from tests.conftest import write_config
 
@@ -173,6 +173,71 @@ def test_disconnected_run_reconciles_exact_turn_without_redispatch(native_config
         assert app.handle("task.get", {"task_id": result.ids["task_id"]}).data["run"]["summary"] == "已核对"
         calls = [json.loads(line) for line in (workspace_root / "native-calls.jsonl").read_text().splitlines()]
         assert sum(call.get("method") == "turn/start" for call in calls) == 1
+    finally:
+        app.close()
+
+
+@pytest.mark.parametrize("scope", ["task", "all"])
+@pytest.mark.parametrize("change", ["binary", "legacy", "capacity"])
+def test_reconcile_preserves_config_binding_after_restart(
+    native_config, isolated_env, workspace_root, scope, change,
+):
+    state = isolated_env / "state"
+    app = Application.from_paths(native_config, state, background=True)
+    try:
+        submitted = submit(app, "disconnect")
+        task_id = submitted.ids["task_id"]
+        run_id = RunId(submitted.ids["run_id"])
+        wait_for(app, task_id, lambda data: data["run"]["status"] == "pending_reconcile")
+        if change == "legacy":
+            task = app.store.get_task(TaskId(task_id))
+            task.execution_digest = ""
+            app.store.save_task(task)
+    finally:
+        app.close()
+
+    raw = json.loads(native_config.read_text())
+    raw["revision"] = 2
+    if change == "binary":
+        replacement = isolated_env / "replacement-codex-stub"
+        replacement.write_bytes(Path(raw["backends"]["codex"]["bin"]).read_bytes())
+        replacement.chmod(0o700)
+        raw["backends"]["codex"]["bin"] = str(replacement)
+    else:
+        raw["scheduler"] = {"per_backend_concurrency": 2}
+    native_config.write_text(json.dumps(raw))
+    native_path = workspace_root / "native.json"
+    native = json.loads(native_path.read_text())
+    native["native-thread-1"]["turns"][0].update(
+        status="completed", items=[{"type": "agentMessage", "text": "已核对"}],
+    )
+    native_path.write_text(json.dumps(native))
+    audit = workspace_root / "native-calls.jsonl"
+    calls_before = audit.read_bytes()
+    app = Application.from_paths(native_config, state, background=True)
+    try:
+        applied = app.handle("config.apply", {"expected_revision": 1})
+        assert applied.ok, applied.error
+        run_before = app.store.get_run(run_id).to_dict()
+        operation_before = app.store.find_operation_for_run(run_id).to_dict()
+        inflight_before = dict(app.scheduler.inflight)
+        reconciled = app.handle("task.reconcile", {"task_id": task_id} if scope == "task" else {})
+        if change == "capacity":
+            assert reconciled.ok, reconciled.error
+            assert reconciled.data["reports"][0]["terminal"]
+            assert app.store.get_run(run_id).summary == "已核对"
+            calls = [json.loads(line) for line in audit.read_text().splitlines()]
+            assert sum(call.get("method") == "thread/read" for call in calls) == 1
+            assert sum(call.get("method") == "turn/start" for call in calls) == 1
+        else:
+            assert audit.read_bytes() == calls_before, "旧原生引用不得交给未核验的后端"
+            assert not reconciled.ok
+            assert reconciled.error["code"] == "REVISION_CONFLICT"
+            assert reconciled.error["details"]["equivalent"] is False
+            assert app.store.get_run(run_id).to_dict() == run_before
+            assert app.store.find_operation_for_run(run_id).to_dict() == operation_before
+            assert app.scheduler.inflight == inflight_before
+        assert app.store.get_task(TaskId(task_id)).config_revision == 1
     finally:
         app.close()
 

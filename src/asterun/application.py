@@ -1285,7 +1285,7 @@ class Application:
             scoped_task = self._require_task(task_id.value)
             enforce(self.policy.authorize(self.principal, "task.reconcile", scoped_task.workspace))
             self._require_grant(scoped_task.workspace)
-            self._assert_task_binding(scoped_task, purpose="terminate")
+            self._assert_task_binding(scoped_task)
             run = self.store.get_run(scoped_task.current_run_id) if scoped_task.current_run_id else None
             if self.admission is not None and run and run.status not in TERMINAL_RUN_STATUSES:
                 self.admission.guard_existing_run(run.id.value)
@@ -2509,7 +2509,7 @@ class Application:
             if not equivalent:
                 raise AsterunError(
                     REVISION_CONFLICT, "任务使用旧配置，请核对原工作区和后端后创建新任务",
-                    next_action="旧任务仍可 task-cancel / task-reconcile；需要重新执行时按当前配置创建新任务",
+                    next_action="普通对账需恢复原配置绑定；停止旧运行可用 task-cancel，或核对进程消失后用 task-reconcile --terminate；重新执行需按当前配置创建新任务",
                     details={"task_revision": task.config_revision, "current_revision": self.config.revision,
                              "equivalent": False})
         workspace = self.config.workspaces.get(task.workspace)
