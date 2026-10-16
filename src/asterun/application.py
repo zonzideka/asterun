@@ -2002,6 +2002,9 @@ class Application:
     def _drain_queue(self) -> None:
         if self._restoring:
             return
+        # 配置尚未应用是暂时的派发门禁，不能消耗恢复的排队意图。
+        if self.store.get_applied_revision() != self.config.revision:
+            return
         if self.executor is not None and self.executor.stopping.is_set():
             return
         if self._draining:

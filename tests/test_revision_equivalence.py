@@ -204,3 +204,77 @@ def test_queued_task_survives_scheduler_only_change(isolated_env: Path, workspac
         assert app2.store.get_run(RunId(run_id)).error_code != REVISION_CONFLICT
     finally:
         app2.close()
+
+
+@pytest.mark.parametrize("background", [False, True], ids=["foreground", "resident"])
+@pytest.mark.parametrize("change", ["capacity", "semantic", "legacy"])
+def test_unpaused_queue_waits_for_config_apply_after_restart(
+    isolated_env: Path, workspace_root: Path, background: bool, change: str,
+) -> None:
+    other = isolated_env / "other-workspace"
+    other.mkdir()
+    path = write_config(isolated_env / "config.json", workspace_root, extra={
+        "workspaces": {
+            "demo": {"root": str(workspace_root), "allow_non_git": True},
+            "other": {"root": str(other), "allow_non_git": True},
+        },
+        "scheduler": {"per_backend_concurrency": 1},
+    })
+    state = isolated_env / "state"
+    app = Application.from_paths(path, state, background=background)
+    try:
+        holder = app.handle("task.submit", {"workspace": "demo", "script": "wait_input"})
+        assert holder.ok, holder.error
+        submitted = app.handle("task.submit", {"workspace": "other", "script": "success"})
+        assert submitted.ok, submitted.error
+        assert submitted.data["queued"] is True
+        task_id, run_id = TaskId(submitted.ids["task_id"]), RunId(submitted.ids["run_id"])
+        task = app.store.get_task(task_id)
+        assert not task.paused
+        if change == "legacy":
+            task.execution_digest = ""
+            app.store.save_task(task)
+        assert app.backends["fake"].dispatch_count == 1
+    finally:
+        app.close()
+
+    scheduler = {"per_backend_concurrency": 2}
+    if change == "semantic":
+        scheduler["max_runs_per_task"] = 8
+    _rewrite(path, revision=2, scheduler=scheduler)
+    app2 = Application.from_paths(path, state, background=background)
+    try:
+        fake = app2.backends["fake"]
+
+        def assert_waiting() -> None:
+            run = app2.store.get_run(run_id)
+            assert run.status == RunStatus.QUEUED
+            assert run.error_code is None
+            assert app2.store.find_operation_for_run(run_id).status == OperationStatus.INTENDED
+            assert any(item.run_id == run_id for item in app2.scheduler.queue)
+            assert fake.dispatch_count == 0
+
+        assert_waiting()
+        # Read-only observation and a rejected CAS must not consume the queue.
+        validated = app2.handle("config.validate")
+        assert validated.ok and validated.data["config_apply_required"]
+        assert_waiting()
+        rejected = app2.handle("config.apply", {"expected_revision": 2})
+        assert not rejected.ok and rejected.error["code"] == REVISION_CONFLICT
+        assert_waiting()
+        applied = app2.handle("config.apply", {"expected_revision": 1})
+        assert applied.ok, applied.error
+        app2.poll()
+        run = app2.store.get_run(run_id)
+        if change == "capacity":
+            assert run.status == RunStatus.SUCCEEDED
+            assert fake.dispatch_count == 1
+        else:
+            assert run.status == RunStatus.FAILED
+            assert run.error_code == REVISION_CONFLICT
+            assert fake.dispatch_count == 0
+        app2.poll()
+        assert fake.dispatch_count == (1 if change == "capacity" else 0)
+        assert not any(item.run_id == run_id for item in app2.scheduler.queue)
+    finally:
+        app2.close()

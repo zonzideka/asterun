@@ -92,7 +92,7 @@
     },
     {
       "path": "src/asterun/application.py",
-      "sha256": "eebb2ff424a95af856910924b5638e987c6e7aa8c8252430bc7850842e378c93"
+      "sha256": "1c92cfe2f2ae2f1f3d8844e478e1e4cb14509c3de77ebd541a5678c622a0cac3"
     },
     {
       "path": "src/asterun/approval_digest.py",
