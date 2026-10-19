@@ -450,6 +450,18 @@ class SqliteStore:
             return None
         return self.get_operation(OperationId(row["id"]))
 
+    def find_operation_by_key(self, principal, action, target, idempotency_key):
+        row = self._conn.execute(
+            """
+            SELECT id FROM operations
+            WHERE principal=? AND action=? AND target=? AND idempotency_key=?
+            """,
+            (principal, action, target, idempotency_key),
+        ).fetchone()
+        if row is None:
+            return None
+        return self.get_operation(OperationId(row[0]))
+
     def get_operation(self, operation_id: OperationId) -> Operation:
         row = self._conn.execute("SELECT * FROM operations WHERE id=?", (operation_id.value,)).fetchone()
         if row is None:

@@ -613,7 +613,24 @@ class Application:
                 next_action="重新读取 config.validate 后再提交",
                 details={"expected": expected_revision, "actual": self.config.revision},
             )
-        backend_conf = self.config.get_backend(payload.get("backend"))
+        from asterun.quota.routing_entry import paid_guard, record, resolve_backend
+
+        requested_backend = payload.get("backend")
+        effective_request = requested_backend or self.config.default_backend
+        group_request = isinstance(effective_request, str) and effective_request.startswith("@")
+        pinned = self._pinned_submit_backend(payload, workspace_alias)
+        if group_request and pinned is not None:
+            # 组请求的幂等重放与会话续接沿用已绑定后端，不重新选路。
+            name, routing = pinned, None
+        elif group_request:
+            name, routing = resolve_backend(self, requested_backend)
+        else:
+            # 显式普通后端：行为与以前一致（摘要、会话绑定检查都用请求值）；
+            # 只有在不是重放/续接时才做付费保护，避免已接受的请求在重放时被新数据阻断。
+            name, routing = resolve_backend(self, requested_backend)
+            if pinned is None:
+                paid_guard(self, name)
+        backend_conf = self.config.get_backend(name)
         self._require_grok_code_permissions(backend_conf, workspace_alias)
         input_path = payload.get("path")
         resolved_path = None
@@ -639,11 +656,12 @@ class Application:
         from asterun.dependencies import validate as validate_dependencies
         dependencies = validate_dependencies(self, workspace_alias, payload.get("depends_on", []))
         now = utc_now()
+        hash_backend = effective_request if group_request else backend_conf.name
         digest = _input_hash(
             workspace_alias,
             text,
             script,
-            backend_conf.name,
+            hash_backend,
             payload.get("path"),
             str(payload.get("conversation_id") or ""),
             read_scope=read_scope,
@@ -733,6 +751,8 @@ class Application:
                     self.scheduler.admit(backend_conf.name, str(workspace.root.resolve())))
         session = replace(session, task_id=task.id, updated_at=now)
         operation, task, run, reused = self.store.commit_intent(operation, task, run, session=session)
+        if routing is not None and not reused:
+            record(self, task.id.value, run.id.value, run.role, routing)
         if reused:
             self._assert_task_binding(task)
             return ok(
@@ -1098,7 +1118,10 @@ class Application:
         if conversation_id:
             session = self.store.get_session(ConversationId(conversation_id))
         else:
-            backend_name = payload.get("backend") or self.config.default_backend
+            default_backend = self.config.default_backend
+            if isinstance(default_backend, str) and default_backend.startswith("@"):
+                default_backend = None
+            backend_name = payload.get("backend") or default_backend
             if not backend_name:
                 raise AsterunError(INVALID_REQUEST, "用 session_id 续接时需要 backend")
             found = self.store.find_session_by_native(str(backend_name), session_id)
@@ -2633,6 +2656,26 @@ class Application:
                 details={"file": self.config.revision, "applied": applied},
             )
 
+    def _pinned_submit_backend(self, payload, workspace_alias):
+        """幂等重放与会话续接沿用已绑定后端，不重新选路，也不做付费保护。"""
+        key = payload.get("idempotency_key")
+        if key:
+            finder = getattr(self.store, "find_operation_by_key", None)
+            existing = finder(self.principal.subject_id, "task.submit", workspace_alias, str(key)) if finder else None
+            if existing is not None and existing.task_id is not None:
+                return self.store.get_task(existing.task_id).backend.value
+        raw_id = str(payload.get("conversation_id") or "")
+        if raw_id:
+            try:
+                session = self.store.get_session(ConversationId(raw_id))
+            except AsterunError as error:
+                if error.code != NOT_FOUND:
+                    raise
+            else:
+                backend = getattr(session, "backend", None)
+                return getattr(backend, "value", backend) if backend else None
+        return None
+
     def _resolve_submit_session(
         self,
         payload: dict[str, Any],
@@ -2739,6 +2782,11 @@ class Application:
             return None
 
     def _backend(self, name: str | None) -> Backend:
+        if not name:
+            default_backend = self.config.default_backend
+            if isinstance(default_backend, str) and default_backend.startswith("@"):
+                from asterun.quota.routing_entry import resolve_backend
+                name = resolve_backend(self, None)[0]
         conf = self.config.get_backend(name)
         try:
             return self.backends[conf.name]
@@ -2874,6 +2922,11 @@ class Application:
         if run:
             pending = self.store.find_pending_approval(run.id)
             view["approval"] = pending.to_dict() if pending else None
+        from asterun.quota.routing_entry import view as routing_decision
+
+        decision = routing_decision(self, task.id.value)
+        if decision is not None:
+            view["routing"] = decision
         return view
 
 

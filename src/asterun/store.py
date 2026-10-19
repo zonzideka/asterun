@@ -45,6 +45,7 @@ class Store(Protocol):
     def list_task_ids(self) -> list[TaskId]: ...
     def find_operation_for_run(self, run_id: RunId) -> Operation | None: ...
     def find_idempotent_operation(self, operation: Operation) -> Operation | None: ...
+    def find_operation_by_key(self, principal: str, action: str, target: str, idempotency_key: str) -> Operation | None: ...
 
 
 class MemoryStore:
@@ -143,6 +144,9 @@ class MemoryStore:
 
     def _idempotency_key(self, operation: Operation) -> tuple[str, str, str, str]:
         return (operation.principal, operation.action, operation.target, operation.idempotency_key)
+
+    def find_operation_by_key(self, principal, action, target, idempotency_key):
+        return self._ops_by_key.get((principal, action, target, idempotency_key))
 
     def commit_intent(self, operation: Operation, task: Task, run: Run, *, session: SessionBinding | None = None) -> tuple[Operation, Task, Run, bool]:
         with self._handoff_lock:

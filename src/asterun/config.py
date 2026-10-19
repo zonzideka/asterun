@@ -395,7 +395,13 @@ def load_config(path: Path) -> AsterunConfig:
     if default_backend is not None:
         if not isinstance(default_backend, str) or not default_backend:
             raise AsterunError(INVALID_CONFIG, "default_backend 必须是非空字符串")
-        if default_backend not in backends:
+        if default_backend.startswith("@"):
+            if schema_version != 2:
+                raise AsterunError(INVALID_CONFIG, "default_backend 的候选组别名只在配置 v2 中可用")
+            groups = (raw.get("routing") or {}).get("candidate_groups") or {}
+            if default_backend[1:] not in groups:
+                raise AsterunError(INVALID_CONFIG, f"default_backend 指向未知候选组：{default_backend}")
+        elif default_backend not in backends:
             raise AsterunError(INVALID_CONFIG, f"default_backend 指向未知后端：{default_backend}")
 
     workflow = _load_workflow(raw.get("workflow"))
@@ -403,6 +409,8 @@ def load_config(path: Path) -> AsterunConfig:
         raise AsterunError(INVALID_CONFIG, "checkpoint_paths 指向未登记的工作区")
     scheduler = _load_scheduler(raw.get("scheduler"))
     entries = _load_entries(raw.get("entries"))
+    if isinstance(workflow.review_backend, str) and workflow.review_backend.startswith("@"):
+        raise AsterunError(INVALID_CONFIG, "workflow.review_backend 暂不支持候选组别名；质量审查仍用固定后端")
     if workflow.review_backend and workflow.review_backend not in backends:
         raise AsterunError(INVALID_CONFIG, f"workflow.review_backend 指向未知后端：{workflow.review_backend}")
 
