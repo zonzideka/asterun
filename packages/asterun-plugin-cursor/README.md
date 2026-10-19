@@ -2,15 +2,15 @@
 
 # Cursor local Agent 插件
 
-本插件在独立 venv 中调用 Cursor local Agent，采用 Apache-2.0，固定依赖 `cursor-sdk==1.0.31` 和 `httpx==0.28.1`。上游 API 与 wheel 摘要见 `upstream-lock.json` 和 [Cursor Python SDK 文档](https://cursor.com/docs/sdk/python)。
+本插件在独立 venv 中调用 Cursor local Agent，采用 Apache-2.0，依赖 `cursor-sdk>=1.0.31,<2` 和 `httpx==0.28.1`。`1.0.31` 是 `upstream-lock.json` 记录的已测最低版本。上游 API 与 wheel 摘要见 `upstream-lock.json` 和 [Cursor Python SDK 文档](https://cursor.com/docs/sdk/python)。
 
 ## 配置连接
 
-按核心 v2 注册 `cursor.agent`。runner 使用插件环境中 Python 的绝对路径，并附加 `-m asterun_plugin_cursor.worker`；同时固定 manifest、wheel、安装树和 runner 摘要。连接使用 `auth_mode=user_api_key`、`upstream_version=1.0.31`，通过 provider_account 的 `file:` 或 `env:` 引用注入 `CURSOR_API_KEY`。计费池由用户明确配置。
+按核心 v2 注册 `cursor.agent`。runner 使用插件环境中 Python 的绝对路径，并附加 `-m asterun_plugin_cursor.worker`；同时固定 manifest、wheel、安装树和 runner 摘要。连接使用 `auth_mode=user_api_key`。`upstream_version` 可省略，或写 1.x 中不低于 1.0.31 的版本。通过 provider_account 的 `file:` 或 `env:` 引用注入 `CURSOR_API_KEY`。计费池由用户明确配置。
 
 options 需填写 `execution_enabled=true`、`runtime=local`、账户可用的 `model`、`tools`、`disallowed_tools`、`mcp_servers={}`、`setting_sources=[]`、`state_root`、`bridge_bin` 和 `bridge_sha256`。`state_root` 使用工作区之外、归本用户所有的 0700 目录。bridge 使用安装包中已核对的实际文件和摘要，路径须为普通文件且禁止其他用户写入。超时默认 15 秒，上限 20 秒，同时受宿主 RPC 总期限约束。
 
-最小文本调用设置 `tools=[]`、`disallowed_tools=["Shell"]`。每次创建或续接会话都会重新应用工具策略；配置变化后，旧会话的续接会被阻止。当前 MCP 配置须为空。SDK bridge 使用 local 运行方式，插件以当前 OS 用户权限执行。
+最小文本调用设置 `tools=[]`、`disallowed_tools=["Shell"]`。每次创建或续接会话都会重新应用工具策略；配置变化后，旧会话的续接会被阻止。当前 MCP 配置须为空。SDK bridge 使用 local 运行方式，插件以当前 OS 用户权限执行。启动 bridge 之前，插件检查 SDK 是否仍提供所使用参数的 `CursorClient.launch_bridge`、`AgentOptions`、`LocalAgentOptions` 和 `SendOptions`，否则以 `sdk_feature_missing` 失败。
 
 ## 续接、观察和恢复
 

@@ -29,10 +29,11 @@ def agy_config(isolated_env, workspace_root, monkeypatch):
     # checks them before entering the raw-protocol fixture's no-argv contract.
     prelude = (
         f"#!{sys.executable}\nimport sys,os\n"
-        "assert sys.argv[1:]==['--input-format','stream-json','--output-format','stream-json',"
+        "if sys.argv[1:] not in (['--version'], ['--help']):\n"
+        "    assert sys.argv[1:]==['--input-format','stream-json','--output-format','stream-json',"
         "'--model','fixture-model','--disable-slash-commands','--print-timeout','5m',"
         "'--add-dir',os.getcwd()]\n"
-        "sys.argv=sys.argv[:1]\n"
+        "    sys.argv=sys.argv[:1]\n"
     )
     binary.write_text(prelude + fixture.read_text())
     binary.chmod(0o700)

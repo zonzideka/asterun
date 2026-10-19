@@ -1,7 +1,7 @@
 {
   "schema_version": "asterun-plugin/v1",
   "plugin_id": "google.antigravity-cli",
-  "plugin_version": "1.0.3",
+  "plugin_version": "1.0.4",
   "plugin_api_major": 1,
   "distribution": "asterun-plugin-antigravity",
   "entry_point": "asterun_plugin_antigravity.worker:main",
@@ -122,7 +122,7 @@
   },
   "extensions": {
     "asterun.antigravity": {
-      "upstream_version": "1.2.0",
+      "upstream_version": ">=1.2.0",
       "permission_profile": "workspace-read-v1",
       "native_resume": "unsupported",
       "approval": "unsupported",

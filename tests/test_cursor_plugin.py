@@ -134,6 +134,7 @@ def test_snapshot_failure_never_spawns_bridge(cursor_installation,isolated_env,w
 
 @pytest.mark.parametrize('field,value,reason',[
     ('auth_mode','api_key','auth_mode_mismatch'),('upstream_version','1.0.30','sdk_version_mismatch'),
+    ('upstream_version','2.0.0','sdk_version_mismatch'),
     ('capability','cloud.execute','capability_unsupported'),('binding_id','','execution_binding_required'),
     ('provider_session_id','bc-cloud','native_reference_invalid'),
 ])
@@ -142,6 +143,26 @@ def test_context_binding_rejected_before_bridge(cursor_installation,isolated_env
     result=rpc(cursor_installation,context)
     assert result['status']=='failed' and result['output']['text']==reason,result
     assert not calls(state)
+
+
+def test_sdk_version_supported_is_a_minimum_within_major():
+    sys.path.insert(0, str(ROOT/'packages/asterun-plugin-cursor/src'))
+    from asterun_plugin_cursor.runtime import sdk_version_supported
+    assert sdk_version_supported('1.0.31') and sdk_version_supported('1.0.40') and sdk_version_supported('1.2.0')
+    assert not sdk_version_supported('1.0.30') and not sdk_version_supported('2.0.0') and not sdk_version_supported('x')
+
+
+def test_missing_sdk_features_reports_each_absent_interface():
+    sys.path.insert(0, str(ROOT / 'packages/asterun-plugin-cursor/src'))
+    from types import SimpleNamespace
+    from asterun_plugin_cursor.runtime import missing_sdk_features
+    def launch_bridge(*, command, workspace, state_root, host, timeout, client_timeout, max_retries): pass
+    def options(**kwargs): pass
+    def send(*, model): pass
+    sdk = SimpleNamespace(CursorClient=SimpleNamespace(launch_bridge=launch_bridge), AgentOptions=options,
+                          LocalAgentOptions=options, SendOptions=send)
+    assert missing_sdk_features(sdk) == ["CursorClient.launch_bridge(allow_api_key_env_fallback)", "SendOptions(mcp_servers)"]
+    assert missing_sdk_features(SimpleNamespace()) == ["CursorClient.launch_bridge", "AgentOptions", "LocalAgentOptions", "SendOptions"]
 
 
 @pytest.mark.parametrize('mode,status', [('error','failed'),('eof','pending_reconcile'),('create_timeout','pending_reconcile'),
@@ -230,3 +251,18 @@ def test_native_drift_refuses_resume_without_send(cursor_installation,isolated_e
     assert result['status']=='failed' and result['output']['text']==reason,result
     assert sum(row['method']=='Send' for row in calls(state))==1
     assert not any(row['method']=='ResumeAgent' for row in calls(state))
+
+
+def test_execute_reports_missing_sdk_export_before_import(monkeypatch, tmp_path):
+    import sys as _sys, types
+    _sys.path.insert(0, str(ROOT / 'packages/asterun-plugin-cursor/src'))
+    from asterun_plugin_cursor import runtime
+    fake = types.ModuleType('cursor_sdk')
+    def launch_bridge(*, command, workspace, state_root, host, timeout, client_timeout, max_retries, allow_api_key_env_fallback): pass
+    fake.CursorClient = types.SimpleNamespace(launch_bridge=launch_bridge)
+    fake.AgentOptions = fake.LocalAgentOptions = lambda **kwargs: None
+    monkeypatch.setitem(_sys.modules, 'cursor_sdk', fake)
+    monkeypatch.setattr(runtime, 'preflight', lambda context: ({}, tmp_path, tmp_path, 10))
+    monkeypatch.setenv('CURSOR_API_KEY', 'fixture-key')
+    result = runtime.execute('execution.start', {'text': 'hi'}, {'run_id': 'run-x'})
+    assert result['status'] == 'failed' and result['output']['text'] == 'sdk_feature_missing'
