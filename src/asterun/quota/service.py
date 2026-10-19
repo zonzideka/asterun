@@ -149,6 +149,8 @@ def inspect_quota(app, payload: dict) -> dict:
 
 
 def set_quota(app, payload: dict) -> dict:
+    if payload["window_kind"] == "latch":
+        _fail("手动录入不能创建闩锁")
     scope = select_scopes(app.config, payload, single=True)[0]
     now = _now()
     valid = timestamp(payload["valid_until"], "valid_until")

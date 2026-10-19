@@ -61,7 +61,7 @@ def build_parser() -> argparse.ArgumentParser:
     quota_set_scope.add_argument("--backend")
     quota_set.add_argument("--bucket", dest="bucket_id", required=True)
     quota_set.add_argument("--window", dest="window_kind", required=True,
-                           choices=("5h", "weekly", "monthly", "billing_period", "latch", "other"))
+                           choices=("5h", "weekly", "monthly", "billing_period", "other"))
     quota_set.add_argument("--used-percent", dest="used_percent", required=True)
     quota_set.add_argument("--resets-at", dest="resets_at")
     quota_set.add_argument("--valid-until", dest="valid_until", required=True)

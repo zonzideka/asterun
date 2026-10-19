@@ -47,7 +47,7 @@ REQUEST_SCHEMAS = {
     "quota.inspect": obj({"scope_ref": IDENTIFIER, "backend": IDENTIFIER}),
     "quota.set": obj({
         "scope_ref": IDENTIFIER, "backend": IDENTIFIER, "bucket_id": IDENTIFIER,
-        "window_kind": {"type": "string", "enum": ["5h", "weekly", "monthly", "billing_period", "latch", "other"]},
+        "window_kind": {"type": "string", "enum": ["5h", "weekly", "monthly", "billing_period", "other"]},
         "used_percent": {"type": "string", "pattern": r"^(?:100(?:\.0{1,2})?|[0-9]{1,2}(?:\.[0-9]{1,2})?)$"},
         "resets_at": STRING, "valid_until": STRING,
         "window_duration_s": {"type": "integer", "minimum": 0},
