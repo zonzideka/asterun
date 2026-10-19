@@ -1889,8 +1889,11 @@ class Application:
             raise backend.unavailable_error()
         from asterun.grok_quota import guard as guard_grok_quota, scopes as grok_quota_scopes
         guard_grok_quota(self, backend_name)
-        if backend.config.kind == "grok":
-            run.native["grok_quota_scopes"] = grok_quota_scopes(self, backend_name)
+        quota_scopes = grok_quota_scopes(self, backend_name)
+        if quota_scopes:
+            run.native["quota_latch_scopes"] = quota_scopes
+            if backend.config.kind == "grok":
+                run.native["grok_quota_scopes"] = quota_scopes
         from asterun.dependencies import bind as bind_dependencies
         bind_dependencies(self, task, run)
         from asterun.checkpoints import before_dispatch
