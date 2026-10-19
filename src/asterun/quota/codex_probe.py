@@ -18,6 +18,8 @@ from asterun.usage.models import timestamp
 _BUCKET = re.compile(r"^[A-Za-z0-9_.-]{1,1024}$")
 _SOURCE = re.compile(r"^(?:probe|passive)_[A-Za-z0-9._-]{1,64}$")
 _REACHED = re.compile(r"^[a-z_]{1,32}$")
+_RESET_TYPE = re.compile(r"^[A-Za-z0-9_]{1,40}$")
+_GRANT_STATUS = re.compile(r"^[a-z_]{1,20}$")
 _ROLES = frozenset({"primary", "secondary"})
 _SNAPSHOT_KEYS = ("rateLimits", "rateLimitsByLimitId", "credits", "rateLimitResetCredits", "rateLimitReachedType")
 _MAX_INTEGER = 9007199254740991
@@ -38,7 +40,9 @@ def probe_lifetime_s(timeout_s: float) -> float:
 def scrub_rate_limits(params) -> dict:
     """只保留速率窗口、积分开关和重置券到期时间。余额、邮箱、套餐和其他字段丢掉。
 
-    通知可能与 account/rateLimits/read 的结果相同，也可能再把这份结果包进 rateLimits。
+    通知可能与 account/rateLimits/read 的结果相同，也可能再把 rateLimits 那一层包进 rateLimits。
+    层内的 credits 只留 hasCredits/unlimited，另留 rateLimitReachedType 与 spendControlReached。
+    重置券若是对象，只留 availableCount，以及每张券的 status、resetType、expiresAt。
     """
     body = _snapshot(params)
     if not body:
@@ -199,6 +203,14 @@ def _scrub_limit_body(raw: Any) -> dict | None:
         window = _scrub_window(raw[role])
         if window is not None:
             kept[role] = window
+    credits = _scrub_credits(raw.get("credits"))
+    if credits:
+        kept["credits"] = credits
+    reached = _scrub_reached(raw.get("rateLimitReachedType"))
+    if reached is not None:
+        kept["rateLimitReachedType"] = reached
+    if type(raw.get("spendControlReached")) is bool:
+        kept["spendControlReached"] = raw["spendControlReached"]
     return kept or None
 
 
@@ -209,9 +221,15 @@ def _scrub_credits(raw: Any) -> dict | None:
     return kept or None
 
 
-def _scrub_grants(raw: Any) -> list[dict] | None:
-    if not isinstance(raw, list):
-        return None
+def _scrub_grants(raw: Any) -> list[dict] | dict | None:
+    if isinstance(raw, list):
+        return _scrub_grant_list(raw)
+    if isinstance(raw, dict):
+        return _scrub_grant_object(raw)
+    return None
+
+
+def _scrub_grant_list(raw: list) -> list[dict] | None:
     grants = []
     for item in raw:
         if not isinstance(item, dict):
@@ -226,6 +244,40 @@ def _scrub_grants(raw: Any) -> list[dict] | None:
         if kept:
             grants.append(kept)
     return grants or None
+
+
+def _scrub_grant_object(raw: dict) -> dict | None:
+    kept: dict[str, Any] = {}
+    count = raw.get("availableCount")
+    if type(count) is int and 0 <= count <= _MAX_INTEGER:
+        kept["availableCount"] = count
+    credits_raw = raw.get("credits")
+    credits = []
+    if isinstance(credits_raw, list):
+        for item in credits_raw:
+            scrubbed = _scrub_reset_credit(item)
+            if scrubbed:
+                credits.append(scrubbed)
+    if credits:
+        kept["credits"] = credits
+    return kept or None
+
+
+def _scrub_reset_credit(item: Any) -> dict | None:
+    if not isinstance(item, dict):
+        return None
+    kept: dict[str, Any] = {}
+    status = item.get("status")
+    if isinstance(status, str) and _GRANT_STATUS.fullmatch(status):
+        kept["status"] = status
+    reset_type = item.get("resetType")
+    if isinstance(reset_type, str) and _RESET_TYPE.fullmatch(reset_type):
+        kept["resetType"] = reset_type
+    if type(item.get("expiresAt")) is int:
+        seconds = _grant_unix_seconds(item["expiresAt"])
+        if seconds is not None:
+            kept["expiresAt"] = seconds
+    return kept or None
 
 
 def _scrub_reached(raw: Any) -> str | list[str] | None:
@@ -249,11 +301,11 @@ def _parse_rate_limits(result, *, scope_ref, observed_at, ttl_s, source_kind, na
         return []
     observed = _as_utc(observed_at)
     version = _plain_version(native_version)
-    reached = _reached_roles(result.get("rateLimitReachedType"))
+    outer_reached = _reached_roles(result.get("rateLimitReachedType"))
     windows: list[tuple[dict, str]] = []
     seen: set[tuple[str, str]] = set()
 
-    def add(bucket_id: str, role: str, raw: Any) -> None:
+    def add(bucket_id: str, role: str, raw: Any, reached: set[str]) -> None:
         observation = _window_observation(
             raw,
             scope_ref=scope_ref,
@@ -275,19 +327,22 @@ def _parse_rate_limits(result, *, scope_ref, observed_at, ttl_s, source_kind, na
 
     limits = result.get("rateLimits")
     if isinstance(limits, dict):
-        add("codex", "primary", limits.get("primary"))
-        add("codex", "secondary", limits.get("secondary"))
+        reached = outer_reached | _reached_roles(limits.get("rateLimitReachedType"))
+        add("codex", "primary", limits.get("primary"), reached)
+        add("codex", "secondary", limits.get("secondary"), reached)
     by_id = result.get("rateLimitsByLimitId")
     if isinstance(by_id, dict):
         for limit_id, body in by_id.items():
             if not isinstance(limit_id, str) or _BUCKET.fullmatch(limit_id) is None or not isinstance(body, dict):
                 continue
-            add(limit_id, "primary", body.get("primary"))
-            add(limit_id, "secondary", body.get("secondary"))
+            reached = outer_reached | _reached_roles(body.get("rateLimitReachedType"))
+            add(limit_id, "primary", body.get("primary"), reached)
+            add(limit_id, "secondary", body.get("secondary"), reached)
 
     observations = [item for item, _role in windows]
+    credits_raw = next((item for item in _credit_maps(result) if item.get("hasCredits") is True), None)
     credits = _credits_observation(
-        result.get("credits"),
+        credits_raw,
         scope_ref=scope_ref,
         observed=observed,
         ttl_s=float(ttl_s),
@@ -296,7 +351,7 @@ def _parse_rate_limits(result, *, scope_ref, observed_at, ttl_s, source_kind, na
     )
     if credits is not None and (credits["bucket_id"], credits["window_kind"]) not in seen:
         observations.append(credits)
-    grants = _reset_grants(result.get("rateLimitResetCredits"))
+    grants = _reset_grants(result.get("rateLimitResetCredits"), observed_at=observed)
     if grants:
         target = next((item for item, role in windows if role == "primary"), None)
         if target is None and observations:
@@ -360,6 +415,26 @@ def _window_observation(
     return observation
 
 
+def _credit_maps(result: dict) -> list[dict]:
+    """顶层 credits，以及 rateLimits / rateLimitsByLimitId 内部的 credits。不读取 balance。"""
+    found: list[dict] = []
+
+    def take(container: Any) -> None:
+        if not isinstance(container, dict):
+            return
+        credits = container.get("credits")
+        if isinstance(credits, dict):
+            found.append(credits)
+
+    take(result)
+    take(result.get("rateLimits"))
+    by_id = result.get("rateLimitsByLimitId")
+    if isinstance(by_id, dict):
+        for body in by_id.values():
+            take(body)
+    return found
+
+
 def _credits_observation(raw, *, scope_ref, observed, ttl_s, source_kind, native_version) -> dict | None:
     if not isinstance(raw, dict) or raw.get("hasCredits") is not True:
         return None
@@ -381,23 +456,32 @@ def _credits_observation(raw, *, scope_ref, observed, ttl_s, source_kind, native
     return observation
 
 
-def _reset_grants(raw) -> list[dict]:
-    if not isinstance(raw, list):
-        return []
-    grouped: dict[str, int] = {}
-    order: list[str] = []
+def _reset_grants(raw, *, observed_at: datetime | None = None) -> list[dict]:
+    if isinstance(raw, dict):
+        items = raw.get("credits")
+        if not isinstance(items, list):
+            return []
+        return _collect_grants(items, observed_at=observed_at, from_dict=True)
+    if isinstance(raw, list):
+        return _collect_grants(raw, observed_at=None, from_dict=False)
+    return []
+
+
+def _collect_grants(raw, *, observed_at: datetime | None, from_dict: bool) -> list[dict]:
+    grouped: dict[tuple[str, str], int] = {}
+    order: list[tuple[str, str]] = []
     for item in raw:
         if not isinstance(item, dict):
             continue
-        if "expiresAt" in item and item.get("expiresAt") is not None:
-            moment = _grant_time(item.get("expiresAt"))
-        elif "expires_at" in item:
-            moment = _grant_time(item.get("expires_at"))
-        else:
+        if from_dict and not _grant_status_available(item):
             continue
+        moment = _dict_grant_time(item) if from_dict else _list_grant_time(item)
         if moment is None:
             continue
-        key = canonical_utc(moment)
+        if from_dict and observed_at is not None and moment <= observed_at:
+            continue
+        kind = _grant_kind(item) if from_dict else "codex_full_reset"
+        key = (canonical_utc(moment), kind)
         if key not in grouped:
             order.append(key)
             grouped[key] = 0
@@ -405,9 +489,37 @@ def _reset_grants(raw) -> list[dict]:
         if len(order) > 64:
             break
     return [
-        {"count": grouped[key], "expires_at": key, "kind": "codex_full_reset"}
+        {"count": grouped[key], "expires_at": key[0], "kind": key[1]}
         for key in order[:64]
     ]
+
+
+def _grant_status_available(item: dict) -> bool:
+    if "status" not in item or item.get("status") is None:
+        return True
+    status = item.get("status")
+    return isinstance(status, str) and status.lower() == "available"
+
+
+def _grant_kind(item: dict) -> str:
+    reset_type = item.get("resetType")
+    if isinstance(reset_type, str) and _RESET_TYPE.fullmatch(reset_type):
+        return reset_type
+    return "codex_full_reset"
+
+
+def _dict_grant_time(item: dict) -> datetime | None:
+    if "expiresAt" not in item or item.get("expiresAt") is None:
+        return None
+    return _unix_datetime(item.get("expiresAt"))
+
+
+def _list_grant_time(item: dict) -> datetime | None:
+    if "expiresAt" in item and item.get("expiresAt") is not None:
+        return _grant_time(item.get("expiresAt"))
+    if "expires_at" in item:
+        return _grant_time(item.get("expires_at"))
+    return None
 
 
 def _grant_time(value) -> datetime | None:

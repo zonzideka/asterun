@@ -10,9 +10,11 @@ from pathlib import Path
 import pytest
 
 from asterun.application import Application
+from asterun.cli import main
 from asterun.config_migration import migrate_v1_to_v2
 from asterun.errors import AsterunError
 from asterun.plugin_store import PluginStore, read_quota_snapshots
+from asterun.policy import DenyAll, Grant
 from asterun.quota.service import handle
 
 
@@ -195,3 +197,85 @@ def test_cli_rejects_latch_window_and_inspect_prints_ok(config_path: Path, isola
     ])
     assert inspected.returncode == 0, inspected.stderr + inspected.stdout
     assert json.loads(inspected.stdout)["ok"] is True
+
+
+def _raises(code: str, fn, *args) -> None:
+    with pytest.raises(AsterunError) as caught:
+        fn(*args)
+    assert caught.value.code == code
+
+
+def test_tightest_prefers_fresh_window_over_stale_higher_usage(app):
+    alias = alias_of(app)
+    scope = f"backend:{alias}"
+    store = PluginStore(app.store._conn)
+    now = datetime.now(timezone.utc)
+    stale = probe_window(scope) | {
+        "bucket_id": "stale-weekly",
+        "used_bp": 9900,
+        "observed_at": utc_z(now - timedelta(hours=3)),
+        "valid_until": utc_z(now - timedelta(hours=1)),
+        "resets_at": utc_z(now + timedelta(days=5)),
+    }
+    fresh = probe_window(scope) | {
+        "bucket_id": "fresh-weekly",
+        "used_bp": 8000,
+        "observed_at": utc_z(now - timedelta(minutes=1)),
+        "valid_until": utc_z(now + timedelta(hours=1)),
+        "resets_at": utc_z(now + timedelta(days=5)),
+    }
+    store.append_quota_snapshot(stale)
+    store.append_quota_snapshot(fresh)
+    report = handle(app, "quota.inspect", {"backend": alias})
+    tight = report["scopes"][0]["tightest"]
+    assert tight["bucket_id"] == "fresh-weekly"
+    assert tight["used_bp"] == 8000
+    assert tight["freshness"] == "fresh"
+
+    app.store._conn.execute("DELETE FROM plugin_quota_snapshots WHERE bucket_id=?", ("fresh-weekly",))
+    only_stale = handle(app, "quota.inspect", {"backend": alias})
+    stale_tight = only_stale["scopes"][0]["tightest"]
+    assert stale_tight["bucket_id"] == "stale-weekly"
+    assert stale_tight["used_bp"] == 9900
+    assert stale_tight["freshness"] == "stale"
+
+
+@pytest.mark.parametrize("method,payload_of", [
+    ("quota.set", lambda alias: manual_payload(alias)),
+    ("quota.clear", lambda alias: {"backend": alias}),
+    ("quota.refresh", lambda alias: {"backend": alias}),
+])
+def test_disabled_entry_rejects_quota_mutations(app, method, payload_of):
+    app.entry = "cli"
+    app.config.entries.cli = False
+    result = app.handle(method, payload_of(alias_of(app)))
+    assert result.ok is False
+    assert result.error["code"] == "CAPABILITY_UNSUPPORTED"
+
+
+@pytest.mark.parametrize("method,payload_of", [
+    ("quota.inspect", lambda alias: {}),
+    ("quota.set", lambda alias: manual_payload(alias)),
+])
+def test_quota_requires_policy_and_full_resource_grant(app, method, payload_of):
+    payload = payload_of(alias_of(app))
+    app.grant = Grant(resources=("demo",))
+    _raises("SCOPE_DENIED", handle, app, method, payload)
+    app.grant = Grant(expires_at="2000-01-01T00:00:00Z")
+    _raises("AUTH_REQUIRED", handle, app, method, payload)
+    app.grant = None
+    app.policy = DenyAll()
+    _raises("SCOPE_DENIED", handle, app, method, payload)
+
+
+def test_quota_inspect_cli_does_not_restore_scheduler(config_path, isolated_env, monkeypatch, capsys):
+    state = isolated_env / "quota-inspect-entry"
+    prepared = Application.from_paths(config_path, state)
+    prepared.close()
+    calls = []
+    monkeypatch.setattr(Application, "_restore_scheduler", lambda self: calls.append(self))
+    code = main(["--config", str(config_path), "--state-dir", str(state), "quota-inspect"])
+    captured = capsys.readouterr()
+    assert code == 0, captured.err + captured.out
+    assert json.loads(captured.out)["ok"] is True
+    assert calls == []

@@ -16,6 +16,7 @@ from asterun.errors import AsterunError
 from asterun.ids import BackendId, RunId, TaskId
 from asterun.plugin_store import PluginStore
 from asterun.quota.codex_probe import scrub_rate_limits
+from asterun.quota.models import canonical_utc
 from asterun.quota.passive import persist_run_quota
 from asterun.quota.service import handle
 from asterun.quota.settings import codex_quota_settings
@@ -336,6 +337,167 @@ def test_v2_quota_defaults_reject_unknown_and_out_of_range(config_path, isolated
     bad_timeout["quota"] = {"probes": {"codex_app_server": {"timeout_seconds": 31}}}
     with pytest.raises(AsterunError):
         load_config(_write(isolated_env / "quota-timeout.json", bad_timeout))
+
+
+def _real_coupon(expires_at: int, status: str, coupon_id: str) -> dict:
+    return {
+        "id": coupon_id,
+        "resetType": "codexRateLimits",
+        "status": status,
+        "grantedAt": int((NOW - timedelta(days=1)).timestamp()),
+        "expiresAt": expires_at,
+        "title": "Full reset",
+        "description": "Full reset",
+        "balance": "61639.42",
+    }
+
+
+def _real_limit_body() -> dict:
+    resets = int((NOW + timedelta(days=5)).timestamp())
+    return {
+        "limitId": "codex",
+        "limitName": None,
+        "normalModelSlug": None,
+        "primary": {"usedPercent": 49, "windowDurationMins": 10080, "resetsAt": resets},
+        "secondary": None,
+        "credits": {"hasCredits": True, "unlimited": False, "balance": "61639.42"},
+        "individualLimit": None,
+        "spendControlReached": True,
+        "planType": "pro",
+        "rateLimitReachedType": None,
+    }
+
+
+def REAL_SHAPE() -> dict:
+    """account/rateLimits/read 的实测结构，值是假的。每次返回新对象。"""
+    return {
+        "ordinaryUsageAllowed": True,
+        "rateLimits": _real_limit_body(),
+        "rateLimitsByLimitId": {"codex": _real_limit_body()},
+        "rateLimitResetCredits": {
+            "availableCount": 3,
+            "credits": [
+                _real_coupon(int((NOW + timedelta(days=3)).timestamp()), "available", "rc_one"),
+                _real_coupon(int((NOW + timedelta(days=10)).timestamp()), "available", "rc_two"),
+                _real_coupon(int((NOW + timedelta(days=10)).timestamp()), "available", "rc_three"),
+                _real_coupon(int((NOW + timedelta(days=1)).timestamp()), "used", "rc_used"),
+            ],
+        },
+        "accountId": "acct-假的-123abc",
+        "rateLimitUpsell": None,
+    }
+
+
+def _assert_real_hidden(value) -> None:
+    dumped = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+    assert "61639" not in dumped
+    assert '"pro"' not in dumped
+    assert "acct-" not in dumped
+    assert "rc_" not in dumped
+    assert "Full reset" not in dumped
+
+
+def _expected_real_grants() -> list[dict]:
+    return [
+        {"count": 1, "expires_at": canonical_utc(NOW + timedelta(days=3)), "kind": "codexRateLimits"},
+        {"count": 2, "expires_at": canonical_utc(NOW + timedelta(days=10)), "kind": "codexRateLimits"},
+    ]
+
+
+def test_real_shape_notification_and_snapshot_drop_secrets(app, tmp_path):
+    shape = REAL_SHAPE()
+    session = _session()
+    session.handle_message({"method": "account/rateLimits/updated", "params": shape})
+    status = session.to_status_dict()
+    _assert_real_hidden(status)
+    assert status["quota_rate_limits"]["params"]["rateLimits"]["primary"]["usedPercent"] == 49
+
+    wrapped = _session()
+    wrapped.handle_message({
+        "method": "account/rateLimits/updated",
+        "params": {"rateLimits": shape["rateLimits"], "accountId": shape["accountId"], "planType": "pro"},
+    })
+    wrapped_status = wrapped.to_status_dict()
+    _assert_real_hidden(wrapped_status)
+    assert wrapped_status["quota_rate_limits"]["params"]["rateLimits"]["primary"]["usedPercent"] == 49
+    assert wrapped_status["quota_rate_limits"]["params"]["rateLimits"]["credits"]["hasCredits"] is True
+
+    store = _prepare(app, tmp_path)
+    try:
+        native = {"quota_rate_limits": {"params": scrub_rate_limits(shape), "observed_at": OBSERVED_AT}}
+        run = _run(native, run_id="run-real-shape")
+        app.store.save_run(run)
+        payloads = [row[0] for row in store._conn.execute("SELECT payload FROM plugin_quota_snapshots")]
+        assert len(payloads) == 2
+        _assert_real_hidden("".join(payloads))
+        saved = PluginStore(store._conn).quota_snapshots()
+        weekly = next(item for item in saved if item["window_kind"] == "weekly")
+        assert weekly["used_bp"] == 4900
+        assert weekly["expiring_grants"] == _expected_real_grants()
+        credits = [item for item in saved if item["bucket_id"] == "codex-credits"]
+        assert len(credits) == 1 and credits[0]["paid_overage"] is True
+        app.store.save_run(run)
+        assert len(PluginStore(store._conn).quota_snapshots()) == 2
+    finally:
+        store.close()
+
+
+def test_save_run_keeps_the_run_when_the_second_snapshot_write_fails(app, tmp_path, monkeypatch):
+    store = _prepare(app, tmp_path)
+    original = PluginStore.append_quota_snapshot
+    state = {"n": 0, "raise": True}
+
+    def flaky(self, observation, namespace="ns_local"):
+        state["n"] += 1
+        if state["raise"] and state["n"] == 2:
+            raise RuntimeError("second window failed")
+        return original(self, observation, namespace)
+
+    monkeypatch.setattr(PluginStore, "append_quota_snapshot", flaky)
+    run = _run(_native_two(), run_id="run-save-atomic")
+    try:
+        app.store.save_run(run)
+        assert app.store.get_run(run.id).status == RunStatus.SUCCEEDED
+        assert store._conn.execute("SELECT payload FROM plugin_quota_snapshots").fetchall() == []
+        state["raise"] = False
+        app.store.save_run(run)
+        saved = PluginStore(store._conn).quota_snapshots()
+        assert len(saved) == 2
+        assert {item["window_kind"] for item in saved} == {"weekly", "5h"}
+        assert len({item["raw_digest"] for item in saved}) == 1
+        app.store.save_run(run)
+        assert len(PluginStore(store._conn).quota_snapshots()) == 2
+    finally:
+        store.close()
+
+
+def test_v2_projection_omits_default_quota_and_keeps_explicit_quota(config_path, isolated_env):
+    proposed = migrate_v1_to_v2(config_path)["config"]
+    assert "quota" not in proposed
+    config = load_config(_write(isolated_env / "quota-baseline.json", proposed))
+    dumped = json.dumps(config.to_dict(), sort_keys=True)
+    assert set(json.loads(dumped)) == {
+        "approval_policy",
+        "backends",
+        "billing_pools",
+        "connections",
+        "default_backend",
+        "entries",
+        "plugins",
+        "provider_accounts",
+        "revision",
+        "routing",
+        "scheduler",
+        "schema_version",
+        "source_path",
+        "workflow",
+        "workspaces",
+    }
+    assert "quota" not in json.loads(dumped)
+    explicit = json.loads(json.dumps(proposed))
+    explicit["quota"] = {"probes": {"codex_app_server": {"min_interval_seconds": 60}}}
+    loaded = load_config(_write(isolated_env / "quota-explicit.json", explicit))
+    assert "quota" in loaded.to_dict()
 
 
 def test_disabled_probe_does_not_call_codex(config_path, isolated_env, monkeypatch):

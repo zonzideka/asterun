@@ -112,16 +112,27 @@ def _window_view(item: dict, now: datetime) -> dict:
 
 
 def _tightest(windows: list[dict]) -> dict | None:
-    """最紧约束：耗尽或闩锁优先，其余取 used_bp 更高、重置更早的窗口。"""
+    """最紧约束。新鲜的耗尽或闩锁优先，其次其他新鲜窗口；过期窗口不能压过新鲜窗口。
+
+    同级再取 used_bp 更高、重置更早的窗口。只有过期窗口时仍返回其中最紧的一条。
+    """
     if not windows:
         return None
+
+    def rank(item: dict) -> int:
+        state = item["freshness"]
+        if state in _TIGHT:
+            return 0
+        if state == "fresh":
+            return 1
+        return 2
 
     def key(item: dict):
         obs = item["observation"]
         used = obs.get("used_bp")
         used_key = -(used if type(used) is int else -1)
         return (
-            0 if item["freshness"] in _TIGHT else 1,
+            rank(item),
             used_key,
             obs.get("resets_at") or "9999-12-31T23:59:59Z",
             obs.get("bucket_id") or "",
