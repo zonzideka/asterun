@@ -103,6 +103,7 @@ ENTRY_BLOCKED_WHEN_DISABLED = {
     "config.apply",
     "quota.set",
     "quota.clear",
+    "quota.refresh",
     "session.resume",
     "task.reconcile",
     "task.present",

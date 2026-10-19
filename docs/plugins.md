@@ -52,7 +52,7 @@ Agent 使用 `task-submit`。结构化工具能力使用 `capability-invoke --re
 
 输入和输出按 manifest Schema 校验，分别保存在 `Task.capability_input` 和 `Run.output`。需要可审阅的固定调用计划或代码质量流程时，使用 [capability profile](capability-profile.md)。
 
-CLI 与 MCP 共用请求定义，MCP 工具名使用下划线。`usage-inspect` 显示本地预算账本和已收到的供应商观察。`quota-inspect`（MCP `quota_inspect`）只读本地额度缓存，不查询上游。`quota-set` 手动录入额度，可信度为 low，最多 24 小时。`quota-clear` 只清除手动录入。停用后，原主体仍可按原绑定读取、取消或对账已有任务，具体动作取决于插件能力。
+CLI 与 MCP 共用请求定义，MCP 工具名使用下划线。`usage-inspect` 显示本地预算账本和已收到的供应商观察。`quota-inspect`（MCP `quota_inspect`）只读本地额度缓存，不查询上游。`quota-set` 手动录入额度，可信度为 low，最多 24 小时。`quota-clear` 只清除手动录入。`quota-refresh`（MCP `quota_refresh`）只读 Codex app-server `account/rateLimits/read`，最小间隔 60 秒，不建线程、不耗额度，不保存余额与邮箱。停用后，原主体仍可按原绑定读取、取消或对账已有任务，具体动作取决于插件能力。
 
 ## 凭据与恢复
 

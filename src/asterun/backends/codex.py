@@ -40,6 +40,7 @@ CODEX_CLIENT_METHODS = (
     "turn/interrupt",
     "model/list",
     "account/read",
+    "account/rateLimits/read",
     "account/login/start",
     "account/logout",
     "thread/list",
@@ -443,6 +444,9 @@ class CodexAppServerTransport:
 
     def read_account(self, timeout: float = 20.0) -> dict[str, Any]:
         return self.request("account/read", {}, timeout=timeout)
+
+    def read_rate_limits(self, timeout: float = 10.0) -> dict[str, Any]:
+        return self.request("account/rateLimits/read", {}, timeout)
 
     def start_thread(self, params: dict[str, Any], timeout: float = 60.0) -> dict[str, Any]:
         return self.request("thread/start", params, timeout=timeout)

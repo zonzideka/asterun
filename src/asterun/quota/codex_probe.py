@@ -1,0 +1,335 @@
+"""Codex app-server 只读额度探针。只调用 account/rateLimits/read，不建线程、不读账户。"""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+import math
+import re
+import shutil
+import tempfile
+from typing import Any
+
+from asterun.backends.codex import CodexAppServerTransport, discover_codex_bin, live_codex_enabled
+from asterun.errors import AsterunError
+from asterun.quota.models import canonical_utc
+from asterun.usage.models import timestamp
+
+_BUCKET = re.compile(r"^[A-Za-z0-9_.-]{1,1024}$")
+_SOURCE = re.compile(r"^probe_[A-Za-z0-9._-]{1,64}$")
+_ROLES = frozenset({"primary", "secondary"})
+_MAX_INTEGER = 9007199254740991
+_FIVE_HOUR_MINUTES = 300
+_WEEKLY_MINUTES = 10080
+
+
+def parse_rate_limits(
+    result: dict,
+    *,
+    scope_ref,
+    observed_at: datetime,
+    ttl_s: float = 600,
+    source_kind: str = "probe_codex",
+    native_version: str | None = None,
+) -> list[dict]:
+    """把 account/rateLimits/read 的结果收成观测 dict。结构不符时返回空列表，不抛异常。
+
+    不读取、不保存 email、planType、balance，以及其他账户字段。
+    """
+    if not isinstance(result, dict):
+        return []
+    try:
+        return _parse_rate_limits(
+            result,
+            scope_ref=scope_ref,
+            observed_at=observed_at,
+            ttl_s=ttl_s,
+            source_kind=source_kind,
+            native_version=native_version,
+        )
+    except Exception:
+        return []
+
+
+def probe_codex(
+    backend_config,
+    *,
+    scope_ref,
+    now,
+    timeout_s: float = 10.0,
+    transport_factory=CodexAppServerTransport,
+) -> dict:
+    """只读速率窗口。不调用 account/read、thread/* 或 turn/*。"""
+    if not live_codex_enabled():
+        return {"ok": False, "error_code": "LIVE_DISABLED"}
+    try:
+        binary = discover_codex_bin(backend_config.bin)
+    except Exception:
+        return {"ok": False, "error_code": "PROBE_FAILED"}
+    if binary is None:
+        return {"ok": False, "error_code": "BINARY_NOT_FOUND"}
+    transport = None
+    tmpdir = None
+    try:
+        transport = transport_factory(codex_bin=str(binary), extra_env=backend_config.extra_env)
+        tmpdir = tempfile.mkdtemp(prefix="asterun-codex-quota-")
+        transport.spawn(tmpdir)
+        initialized = transport.initialize(timeout_s)
+        payload = transport.read_rate_limits(timeout_s)
+        version = _version_from_initialize(initialized)
+        observations = parse_rate_limits(
+            payload,
+            scope_ref=scope_ref,
+            observed_at=now,
+            native_version=version,
+        )
+        return {"ok": True, "observations": observations, "native_version": version}
+    except Exception:
+        return {"ok": False, "error_code": "PROBE_FAILED"}
+    finally:
+        if transport is not None:
+            try:
+                transport.close()
+            except Exception:
+                pass
+        if tmpdir is not None:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def _parse_rate_limits(result, *, scope_ref, observed_at, ttl_s, source_kind, native_version) -> list[dict]:
+    if not isinstance(scope_ref, str) or not _plain_text(scope_ref):
+        return []
+    if not isinstance(source_kind, str) or _SOURCE.fullmatch(source_kind) is None:
+        return []
+    if isinstance(ttl_s, bool) or not isinstance(ttl_s, (int, float)) or not math.isfinite(ttl_s) or ttl_s <= 0:
+        return []
+    observed = _as_utc(observed_at)
+    version = _plain_version(native_version)
+    reached = _reached_roles(result.get("rateLimitReachedType"))
+    windows: list[tuple[dict, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(bucket_id: str, role: str, raw: Any) -> None:
+        observation = _window_observation(
+            raw,
+            scope_ref=scope_ref,
+            bucket_id=bucket_id,
+            role=role,
+            observed=observed,
+            ttl_s=float(ttl_s),
+            source_kind=source_kind,
+            native_version=version,
+            reached=reached,
+        )
+        if observation is None:
+            return
+        key = (observation["bucket_id"], observation["window_kind"])
+        if key in seen:
+            return
+        seen.add(key)
+        windows.append((observation, role))
+
+    limits = result.get("rateLimits")
+    if isinstance(limits, dict):
+        add("codex", "primary", limits.get("primary"))
+        add("codex", "secondary", limits.get("secondary"))
+    by_id = result.get("rateLimitsByLimitId")
+    if isinstance(by_id, dict):
+        for limit_id, body in by_id.items():
+            if not isinstance(limit_id, str) or _BUCKET.fullmatch(limit_id) is None or not isinstance(body, dict):
+                continue
+            add(limit_id, "primary", body.get("primary"))
+            add(limit_id, "secondary", body.get("secondary"))
+
+    observations = [item for item, _role in windows]
+    credits = _credits_observation(
+        result.get("credits"),
+        scope_ref=scope_ref,
+        observed=observed,
+        ttl_s=float(ttl_s),
+        source_kind=source_kind,
+        native_version=version,
+    )
+    if credits is not None and (credits["bucket_id"], credits["window_kind"]) not in seen:
+        observations.append(credits)
+    grants = _reset_grants(result.get("rateLimitResetCredits"))
+    if grants:
+        target = next((item for item, role in windows if role == "primary"), None)
+        if target is None and observations:
+            target = observations[0]
+        if target is not None:
+            target["expiring_grants"] = grants
+    return observations
+
+
+def _window_observation(
+    raw,
+    *,
+    scope_ref,
+    bucket_id,
+    role,
+    observed,
+    ttl_s,
+    source_kind,
+    native_version,
+    reached,
+) -> dict | None:
+    if not isinstance(raw, dict) or not isinstance(bucket_id, str) or _BUCKET.fullmatch(bucket_id) is None:
+        return None
+    used = _finite(raw.get("usedPercent"))
+    minutes = _finite(raw.get("windowDurationMins"))
+    resets = _unix_datetime(raw.get("resetsAt"))
+    if used is None or minutes is None or minutes < 0 or resets is None or resets <= observed:
+        return None
+    if minutes == _FIVE_HOUR_MINUTES:
+        window_kind = "5h"
+        duration = None
+    elif minutes == _WEEKLY_MINUTES:
+        window_kind = "weekly"
+        duration = None
+    else:
+        window_kind = "other"
+        duration = round(minutes * 60)
+        if not isinstance(duration, int) or duration < 0 or duration > _MAX_INTEGER:
+            return None
+    valid = min(observed + timedelta(seconds=ttl_s), resets)
+    if valid <= observed:
+        return None
+    observation = {
+        "scope_ref": scope_ref,
+        "bucket_id": bucket_id,
+        "window_kind": window_kind,
+        "source_kind": source_kind,
+        "confidence": "high",
+        "paid_overage": False,
+        "observed_at": canonical_utc(observed),
+        "valid_until": canonical_utc(valid),
+        "used_bp": _used_bp(used),
+        "resets_at": canonical_utc(resets),
+    }
+    if duration is not None:
+        observation["window_duration_s"] = duration
+    if native_version is not None:
+        observation["native_version"] = native_version
+    if role in reached and used >= 100:
+        observation["exhausted_hint"] = "exhausted"
+    return observation
+
+
+def _credits_observation(raw, *, scope_ref, observed, ttl_s, source_kind, native_version) -> dict | None:
+    if not isinstance(raw, dict) or raw.get("hasCredits") is not True:
+        return None
+    valid = observed + timedelta(seconds=ttl_s)
+    if valid <= observed:
+        return None
+    observation = {
+        "scope_ref": scope_ref,
+        "bucket_id": "codex-credits",
+        "window_kind": "other",
+        "source_kind": source_kind,
+        "confidence": "high",
+        "paid_overage": True,
+        "observed_at": canonical_utc(observed),
+        "valid_until": canonical_utc(valid),
+    }
+    if native_version is not None:
+        observation["native_version"] = native_version
+    return observation
+
+
+def _reset_grants(raw) -> list[dict]:
+    if not isinstance(raw, list):
+        return []
+    grouped: dict[str, int] = {}
+    order: list[str] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        if "expiresAt" in item and item.get("expiresAt") is not None:
+            moment = _grant_time(item.get("expiresAt"))
+        elif "expires_at" in item:
+            moment = _grant_time(item.get("expires_at"))
+        else:
+            continue
+        if moment is None:
+            continue
+        key = canonical_utc(moment)
+        if key not in grouped:
+            order.append(key)
+            grouped[key] = 0
+        grouped[key] += 1
+        if len(order) > 64:
+            break
+    return [
+        {"count": grouped[key], "expires_at": key, "kind": "codex_full_reset"}
+        for key in order[:64]
+    ]
+
+
+def _grant_time(value) -> datetime | None:
+    if isinstance(value, str):
+        try:
+            return timestamp(value, "expires_at")
+        except AsterunError:
+            return None
+    return _unix_datetime(value)
+
+
+def _reached_roles(value) -> set[str]:
+    if isinstance(value, str):
+        return {value} if value in _ROLES else set()
+    if isinstance(value, list):
+        return {item for item in value if item in _ROLES}
+    return set()
+
+
+def _used_bp(used: float) -> int:
+    scaled = round(used * 100)
+    if not isinstance(scaled, int):
+        scaled = int(scaled)
+    return max(0, min(10000, scaled))
+
+
+def _finite(value) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return None
+    return float(value)
+
+
+def _unix_datetime(value) -> datetime | None:
+    number = _finite(value)
+    if number is None:
+        return None
+    try:
+        return datetime.fromtimestamp(number, timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def _as_utc(value) -> datetime:
+    if not isinstance(value, datetime):
+        raise TypeError("observed_at 必须是时间")
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _plain_text(value: str) -> bool:
+    return bool(value) and value == value.strip() and len(value) <= 1024 and all(ord(char) >= 32 for char in value)
+
+
+def _plain_version(value) -> str | None:
+    if not isinstance(value, str) or not _plain_text(value) or "@" in value:
+        return None
+    return value
+
+
+def _version_from_initialize(initialized) -> str | None:
+    if not isinstance(initialized, dict):
+        return None
+    user_agent = _plain_version(initialized.get("userAgent"))
+    if user_agent is not None:
+        return user_agent
+    info = initialized.get("serverInfo")
+    if isinstance(info, dict):
+        return _plain_version(info.get("version"))
+    return None

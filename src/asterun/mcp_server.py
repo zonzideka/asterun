@@ -18,7 +18,7 @@ TOOL_METHODS = {
     "review_ack": "review.ack",
     **{name.replace(".", "_"): name for name in (
         "plugin.list", "plugin.inspect", "plugin.register", "plugin.enable", "plugin.disable",
-        "connection.setup", "usage.inspect", "quota.inspect", "quota.set", "quota.clear",
+        "connection.setup", "usage.inspect", "quota.inspect", "quota.set", "quota.clear", "quota.refresh",
         "capability.invoke", "capability.discovery", "capability.prepare", "capability.submit", "capability.get")},
     "control_upload": "control.upload",
     "control_content": "control.content",
