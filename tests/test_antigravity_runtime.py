@@ -83,6 +83,7 @@ def test_pre_session_native_error_can_be_confirmed(tmp_path):
     ("event_after_error", "step_after_error"),
     ("active_tool", "contradictory_result"), ("active_response", "contradictory_result"),
     ("changed_step", "step_type_changed"), ("retyped_tool", "step_type_changed"),
+    ("renamed_subagent", "step_type_changed"), ("tool_renamed", "step_tool_changed"),
     ("success_nonzero", "contradictory_result"),
     ("cwd_mismatch", "workspace_mismatch"), ("unsafe_permission", "unsafe_permission_mode"),
     ("unknown_permission", "unsafe_permission_mode"), ("missing_permission", "unsafe_permission_mode"),

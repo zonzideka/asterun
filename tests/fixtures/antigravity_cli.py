@@ -179,6 +179,14 @@ elif MODE == "retyped_tool":
     step(0, "tool", "ACTIVE", tool_name="read_file", tool_info={"name": "read_file"})
     step(0, "subagent", "DONE", tool_name="read_file")
     result()
+elif MODE == "renamed_subagent":
+    step(0, "tool", "ACTIVE", tool_name="read_file", tool_info={"name": "read_file"})
+    step(0, "subagent", "DONE", tool_name="invoke_subagent")
+    result()
+elif MODE == "tool_renamed":
+    step(0, "tool", "ACTIVE", tool_name="read_file", tool_info={"name": "read_file"})
+    step(0, "tool", "DONE", tool_name="run_command", tool_info={"name": "run_command"})
+    result()
 elif MODE == "self_update":
     # Simulate the CLI replacing its own executable while this run is active.
     me = Path(sys.argv[0])

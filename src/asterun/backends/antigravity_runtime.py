@@ -78,6 +78,7 @@ class _Run:
     step_errors: set[int] = field(default_factory=set)
     active_tools: set[int] = field(default_factory=set)
     subagents: set[int] = field(default_factory=set)
+    step_tools: dict[int, str] = field(default_factory=dict)
     step_states: dict[int, str] = field(default_factory=dict)
     step_types: dict[int, str] = field(default_factory=dict)
     soft_denied: bool = False
@@ -229,10 +230,14 @@ class AntigravityRuntime:
                 # CLI 1.4+ re-labels an invoke_subagent tool step as "subagent"
                 # once the delegate starts. Only that one transition is accepted.
                 if not (state.step_types[index] == "tool" and kind == "subagent"
+                        and state.step_tools.get(index) == "invoke_subagent"
                         and step.get("tool_name") == "invoke_subagent"):
                     raise _ProtocolError("step_type_changed")
             state.step_states[index] = status
             state.step_types[index] = kind
+            if kind == "tool" and isinstance(step.get("tool_name"), str):
+                if state.step_tools.setdefault(index, step["tool_name"]) != step["tool_name"]:
+                    raise _ProtocolError("step_tool_changed")
             if status == "ERROR":
                 state.step_errors.add(index)
             if kind == "subagent":

@@ -178,8 +178,10 @@ def probe_cli(binary: Path) -> dict[str, object]:
             f"agy {label} 缺少 Asterun 依赖的功能：{', '.join(missing)}",
             next_action="换用提供这些参数的官方 agy CLI 版本")
     result = {"version": label, "features": list(REQUIRED_CLI_FLAGS)}
-    with _PROBE_LOCK:
-        _PROBE_CACHE[key] = dict(result)
+    # Do not cache output that may belong to a binary replaced mid-probe.
+    if (str(binary), *(_binary_identity(binary) or ())) == key:
+        with _PROBE_LOCK:
+            _PROBE_CACHE[key] = dict(result)
     return result
 
 
@@ -333,17 +335,28 @@ class AntigravityBackend:
 
         # The CLI may update itself at any time. Every launch re-probes (the
         # probe cache is keyed by file identity), and the version used is
-        # recorded per run. A running process keeps its original image, so an
-        # update mid-run is recorded but does not change the run's outcome.
+        # recorded per run; cli_updated_during_run marks any replacement after
+        # the probe. A running process keeps its original image, so an update
+        # mid-run is recorded but does not change the run's outcome.
         try:
-            cli_version = probe_cli(binary)["version"]
+            # Bind the recorded version to one file identity: if the binary
+            # changes while probing, probe again. Any replacement after this
+            # point (before launch or mid-run) is flagged below.
+            for _attempt in range(3):
+                before = _binary_identity(binary)
+                cli_version = probe_cli(binary)["version"]
+                identity = _binary_identity(binary)
+                if identity is not None and identity == before:
+                    break
+            else:
+                raise AsterunError(BACKEND_UNAVAILABLE, "agy 可执行文件在探测期间持续变化（可能正在自更新）",
+                                   next_action="稍后重试")
         except AsterunError as exc:
             return {"status": "failed", "terminated": True, "error_code": exc.code,
                     "summary": exc.message, "native": {DISPATCH_RECEIPT_KEY: {
                         "task_id": task_id.value, "run_id": run_id.value, "stage": "preflight",
                         "prompt_attempted": False, "delivery": "not_sent", "failure_type": type(exc).__name__,
                     }}}
-        identity = _binary_identity(binary)
         result = self.runtime.run(run_id, text, command=command, env=env, cwd=workspace,
                                   expected_model=model,
                                   publish=lambda item: publish(bind_receipt(item)), stopping=stopping)
