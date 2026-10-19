@@ -82,7 +82,8 @@ def test_pre_session_native_error_can_be_confirmed(tmp_path):
     ("duplicate_result", "event_after_result"), ("double_done", "step_after_done"),
     ("event_after_error", "step_after_error"),
     ("active_tool", "contradictory_result"), ("active_response", "contradictory_result"),
-    ("changed_step", "step_type_changed"), ("success_nonzero", "contradictory_result"),
+    ("changed_step", "step_type_changed"), ("retyped_tool", "step_type_changed"),
+    ("success_nonzero", "contradictory_result"),
     ("cwd_mismatch", "workspace_mismatch"), ("unsafe_permission", "unsafe_permission_mode"),
     ("unknown_permission", "unsafe_permission_mode"), ("missing_permission", "unsafe_permission_mode"),
     ("strict_permission", "unsafe_permission_mode"), ("yolo_permission", "unsafe_permission_mode"),
@@ -219,3 +220,16 @@ def test_already_stopped_does_not_spawn(tmp_path):
 def test_timeout_must_be_finite_positive(timeout):
     with pytest.raises(ValueError):
         AntigravityRuntime(timeout=timeout)
+
+
+def test_subagent_relabel_is_accepted_but_never_reported_as_success(tmp_path):
+    result, _ = execute(tmp_path, "subagent")
+    assert result["status"] == "failed" and result["terminated"] is True
+    assert result["error_code"] == "ANTIGRAVITY_RUN_INCOMPLETE"
+    assert result["native"]["subagent_count"] == 1
+    assert result["native"][DISPATCH_RECEIPT_KEY]["failure_type"] is None
+
+
+def test_plain_success_reports_no_subagents(tmp_path):
+    result, _ = execute(tmp_path, "happy")
+    assert result["status"] == "succeeded" and result["native"]["subagent_count"] == 0

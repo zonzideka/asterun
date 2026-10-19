@@ -77,7 +77,7 @@ def parse_cli_version(text: str) -> tuple[int, int, int] | None:
 def _probe_output(binary: Path, argument: str, scratch: str) -> tuple[int, str]:
     """Run one probe argument with streamed, capped reads and group cleanup."""
     env = {"HOME": scratch, "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-           "LANG": "C.UTF-8", "AGY_CLI_DISABLE_AUTO_UPDATE": "1"}
+           "LANG": "C.UTF-8"}
     try:
         proc = subprocess.Popen([str(binary), argument], stdin=subprocess.DEVNULL,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -134,6 +134,14 @@ def _probe_output(binary: Path, argument: str, scratch: str) -> tuple[int, str]:
         # Go's flag package prints usage on stderr.
         text += "\n" + bytes(buffers[proc.stderr]).decode("utf-8", "replace")
     return code, text
+
+
+def _binary_identity(binary: Path) -> tuple[int, int, int, int] | None:
+    try:
+        info = binary.stat()
+    except OSError:
+        return None
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
 
 
 def probe_cli(binary: Path) -> dict[str, object]:
@@ -323,9 +331,27 @@ class AntigravityBackend:
                 receipt["task_id"] = task_id.value
             return result
 
+        # The CLI may update itself at any time. Every launch re-probes (the
+        # probe cache is keyed by file identity), and the version used is
+        # recorded per run. A running process keeps its original image, so an
+        # update mid-run is recorded but does not change the run's outcome.
+        try:
+            cli_version = probe_cli(binary)["version"]
+        except AsterunError as exc:
+            return {"status": "failed", "terminated": True, "error_code": exc.code,
+                    "summary": exc.message, "native": {DISPATCH_RECEIPT_KEY: {
+                        "task_id": task_id.value, "run_id": run_id.value, "stage": "preflight",
+                        "prompt_attempted": False, "delivery": "not_sent", "failure_type": type(exc).__name__,
+                    }}}
+        identity = _binary_identity(binary)
         result = self.runtime.run(run_id, text, command=command, env=env, cwd=workspace,
                                   expected_model=model,
                                   publish=lambda item: publish(bind_receipt(item)), stopping=stopping)
+        native_out = result.get("native")
+        if isinstance(native_out, dict):
+            native_out["cli_version"] = cli_version
+            if _binary_identity(binary) != identity:
+                native_out["cli_updated_during_run"] = True
         return bind_receipt(result)
 
     def request_cancel(self, run_id: RunId, script: str) -> dict[str, Any]:
