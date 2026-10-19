@@ -185,9 +185,10 @@ def execute(method, input, context):
         key = os.environ.pop("CURSOR_API_KEY", None)
         require(isinstance(key, str) and bool(key.strip()), "credential_required")
         # bridge 的模型工具可继承其环境；账户 key 只放显式 SDK 请求，不放 bridge env。
-        from cursor_sdk import CursorClient, AgentOptions, LocalAgentOptions, SendOptions
         import cursor_sdk
         require(not missing_sdk_features(cursor_sdk), "sdk_feature_missing")
+        CursorClient, AgentOptions = cursor_sdk.CursorClient, cursor_sdk.AgentOptions
+        LocalAgentOptions, SendOptions = cursor_sdk.LocalAgentOptions, cursor_sdk.SendOptions
         # SDK 1.0.31（已测试的最低版本）将 False 同时作为远程 bridge 的 Run RPC 门禁。这里是本机
         # 自建 bridge，且已移除环境 key；保持 SDK local 路由，账户仍只由显式参数提供。
         with ExitStack() as stack:

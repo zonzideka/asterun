@@ -251,3 +251,18 @@ def test_native_drift_refuses_resume_without_send(cursor_installation,isolated_e
     assert result['status']=='failed' and result['output']['text']==reason,result
     assert sum(row['method']=='Send' for row in calls(state))==1
     assert not any(row['method']=='ResumeAgent' for row in calls(state))
+
+
+def test_execute_reports_missing_sdk_export_before_import(monkeypatch, tmp_path):
+    import sys as _sys, types
+    _sys.path.insert(0, str(ROOT / 'packages/asterun-plugin-cursor/src'))
+    from asterun_plugin_cursor import runtime
+    fake = types.ModuleType('cursor_sdk')
+    def launch_bridge(*, command, workspace, state_root, host, timeout, client_timeout, max_retries, allow_api_key_env_fallback): pass
+    fake.CursorClient = types.SimpleNamespace(launch_bridge=launch_bridge)
+    fake.AgentOptions = fake.LocalAgentOptions = lambda **kwargs: None
+    monkeypatch.setitem(_sys.modules, 'cursor_sdk', fake)
+    monkeypatch.setattr(runtime, 'preflight', lambda context: ({}, tmp_path, tmp_path, 10))
+    monkeypatch.setenv('CURSOR_API_KEY', 'fixture-key')
+    result = runtime.execute('execution.start', {'text': 'hi'}, {'run_id': 'run-x'})
+    assert result['status'] == 'failed' and result['output']['text'] == 'sdk_feature_missing'
