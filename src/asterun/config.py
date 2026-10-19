@@ -182,6 +182,7 @@ class AsterunConfig:
     billing_pools: dict[str, Any] = field(default_factory=dict)
     connections: dict[str, Any] = field(default_factory=dict)
     routing: dict[str, Any] = field(default_factory=dict)
+    quota: dict[str, Any] = field(default_factory=dict)
 
     def get_workspace(self, alias: str) -> WorkspaceBinding:
         try:
@@ -228,7 +229,8 @@ class AsterunConfig:
         # v1 的摘要/历史任务依赖此投影，不能注入空的新字段改变其语义。
         if self.schema_version == 2:
             result.update(plugins=self.plugins, provider_accounts=self.provider_accounts,
-                          billing_pools=self.billing_pools, connections=self.connections, routing=self.routing)
+                          billing_pools=self.billing_pools, connections=self.connections, routing=self.routing,
+                          quota=self.quota)
         return result
 
 

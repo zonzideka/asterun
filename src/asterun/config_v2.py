@@ -10,7 +10,7 @@ from typing import Any
 from asterun.errors import AsterunError, INVALID_CONFIG, UNKNOWN_FIELD
 from asterun.plugin_api.protocol import json_copy
 
-V2_KEYS = {"plugins", "provider_accounts", "billing_pools", "connections", "routing"}
+V2_KEYS = {"plugins", "provider_accounts", "billing_pools", "connections", "routing", "quota"}
 PROVIDER_KEYS = {"provider", "credential_ref", "credential_revision", "revoked"}
 POOL_KEYS = {
     "billing_mode", "remaining", "paid_overage_allowed", "overage_verified", "meter", "local_limit",
@@ -21,6 +21,10 @@ POOL_METERS = {"requests", "turns", "tokens", "micro_usd", "wall_ms", "tool_acti
 CONNECTION_KEYS = {"plugin_id", "enabled", "provider_account_ref", "runtime_ref", "auth_mode", "billing_pool_refs", "options", "credential_ref", "upstream_version"}
 EXTERNAL_KEYS = {"enabled", "manifest_path", "runner", "installation_path", "installation_sha256", "runtime_path", "runtime_sha256", "allow_unpinned_runtime"}
 ROUTING_KEYS = {"automatic_paid_fallback", "automatic_account_switch", "default_order", "rules"}
+QUOTA_KEYS = {"probes", "passive"}
+QUOTA_PROBE_IDS = {"codex_app_server"}
+QUOTA_PROBE_KEYS = {"enabled", "ttl_seconds", "min_interval_seconds", "timeout_seconds"}
+QUOTA_PASSIVE_KEYS = {"codex_rate_limits_updated"}
 
 
 def invalid(message: str) -> None:
@@ -52,6 +56,50 @@ def flag(value: Any, where: str) -> None:
 def integer(value: Any, where: str, *, minimum: int = 0) -> None:
     if type(value) is not int or value < minimum:
         invalid(f"{where} 必须是大于等于 {minimum} 的整数")
+
+
+def integer_between(value: Any, where: str, low: int, high: int) -> None:
+    if type(value) is not int or value < low or value > high:
+        invalid(f"{where} 必须是 {low} 到 {high} 的整数")
+
+
+def default_quota() -> dict[str, Any]:
+    return {
+        "probes": {
+            "codex_app_server": {
+                "enabled": True,
+                "ttl_seconds": 600,
+                "min_interval_seconds": 60,
+                "timeout_seconds": 10,
+            }
+        },
+        "passive": {"codex_rate_limits_updated": True},
+    }
+
+
+def normalize_quota(raw: Any) -> dict[str, Any]:
+    """补齐 quota 默认值，并拒绝未知字段和越界数值。"""
+    body = mapping(raw if raw is not None else {}, "quota", QUOTA_KEYS)
+    probes = mapping(body.get("probes", {}), "quota.probes", QUOTA_PROBE_IDS)
+    probe_in = mapping(probes.get("codex_app_server", {}), "quota.probes.codex_app_server", QUOTA_PROBE_KEYS)
+    probe = default_quota()["probes"]["codex_app_server"]
+    probe = {
+        "enabled": probe_in.get("enabled", probe["enabled"]),
+        "ttl_seconds": probe_in.get("ttl_seconds", probe["ttl_seconds"]),
+        "min_interval_seconds": probe_in.get("min_interval_seconds", probe["min_interval_seconds"]),
+        "timeout_seconds": probe_in.get("timeout_seconds", probe["timeout_seconds"]),
+    }
+    flag(probe["enabled"], "quota.probes.codex_app_server.enabled")
+    integer_between(probe["ttl_seconds"], "quota.probes.codex_app_server.ttl_seconds", 60, 3600)
+    integer_between(probe["min_interval_seconds"], "quota.probes.codex_app_server.min_interval_seconds", 30, 3600)
+    integer_between(probe["timeout_seconds"], "quota.probes.codex_app_server.timeout_seconds", 1, 30)
+    passive_in = mapping(body.get("passive", {}), "quota.passive", QUOTA_PASSIVE_KEYS)
+    passive_flag = passive_in.get("codex_rate_limits_updated", True)
+    flag(passive_flag, "quota.passive.codex_rate_limits_updated")
+    return {
+        "probes": {"codex_app_server": probe},
+        "passive": {"codex_rate_limits_updated": passive_flag},
+    }
 
 
 def utc_timestamp(value: Any, where: str) -> datetime | None:
@@ -136,6 +184,7 @@ def parse_v2(raw: dict, source_path: Path) -> tuple[dict[str, dict], dict[str, d
     plugins, accounts, pools, connections, routing = (namespaces[key] for key in (
         "plugins", "provider_accounts", "billing_pools", "connections", "routing",
     ))
+    namespaces["quota"] = normalize_quota(namespaces.get("quota", {}))
     manifests = {}
     builtins = builtin_registry()
     external = PluginRegistry()

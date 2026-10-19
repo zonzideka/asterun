@@ -246,11 +246,19 @@ class Application:
             self.admission = AdmissionService(self)
             from asterun.plugins.management import sync_runtime_latches
             sync_runtime_latches(self)
+        self._bind_quota_hook()
         if restore_scheduler:
             self._restore_scheduler()
             self.local_checks.restore()
         if hasattr(self.store, "_conn"):
             self.control
+
+    def _bind_quota_hook(self) -> None:
+        if not hasattr(self.store, "quota_hook"):
+            return
+        from asterun.quota.passive import persist_run_quota
+
+        self.store.quota_hook = lambda run: persist_run_quota(self, run)
 
     @property
     def control(self):
@@ -1808,6 +1816,7 @@ class Application:
             self.admission = AdmissionService(self)
             from asterun.plugins.management import sync_runtime_latches
             sync_runtime_latches(self)
+        self._bind_quota_hook()
         self.scheduler = Scheduler(self.config.scheduler)
         self._restore_scheduler()
         self.control

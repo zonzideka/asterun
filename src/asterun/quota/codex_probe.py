@@ -15,11 +15,48 @@ from asterun.quota.models import canonical_utc
 from asterun.usage.models import timestamp
 
 _BUCKET = re.compile(r"^[A-Za-z0-9_.-]{1,1024}$")
-_SOURCE = re.compile(r"^probe_[A-Za-z0-9._-]{1,64}$")
+_SOURCE = re.compile(r"^(?:probe|passive)_[A-Za-z0-9._-]{1,64}$")
 _ROLES = frozenset({"primary", "secondary"})
+_SNAPSHOT_KEYS = ("rateLimits", "rateLimitsByLimitId", "credits", "rateLimitResetCredits", "rateLimitReachedType")
+_WINDOW_FIELDS = ("usedPercent", "windowDurationMins", "resetsAt")
 _MAX_INTEGER = 9007199254740991
 _FIVE_HOUR_MINUTES = 300
 _WEEKLY_MINUTES = 10080
+
+
+def scrub_rate_limits(params) -> dict:
+    """只保留速率窗口、积分开关和重置券到期时间。余额、邮箱、套餐和其他字段丢掉。
+
+    通知可能与 account/rateLimits/read 的结果相同，也可能再把这份结果包进 rateLimits。
+    """
+    body = _snapshot(params)
+    if not body:
+        return {}
+    kept: dict[str, Any] = {}
+    limits = _scrub_limit_body(body.get("rateLimits"))
+    if limits:
+        kept["rateLimits"] = limits
+    by_id = body.get("rateLimitsByLimitId")
+    if isinstance(by_id, dict):
+        scrubbed_ids = {}
+        for limit_id, limit_body in by_id.items():
+            if not isinstance(limit_id, str) or _BUCKET.fullmatch(limit_id) is None:
+                continue
+            windows = _scrub_limit_body(limit_body)
+            if windows:
+                scrubbed_ids[limit_id] = windows
+        if scrubbed_ids:
+            kept["rateLimitsByLimitId"] = scrubbed_ids
+    credits = _scrub_credits(body.get("credits"))
+    if credits:
+        kept["credits"] = credits
+    grants = _scrub_grants(body.get("rateLimitResetCredits"))
+    if grants:
+        kept["rateLimitResetCredits"] = grants
+    reached = _scrub_reached(body.get("rateLimitReachedType"))
+    if reached is not None:
+        kept["rateLimitReachedType"] = reached
+    return kept
 
 
 def parse_rate_limits(
@@ -56,6 +93,7 @@ def probe_codex(
     scope_ref,
     now,
     timeout_s: float = 10.0,
+    ttl_s: float = 600,
     transport_factory=CodexAppServerTransport,
 ) -> dict:
     """只读速率窗口。不调用 account/read、thread/* 或 turn/*。"""
@@ -80,6 +118,7 @@ def probe_codex(
             payload,
             scope_ref=scope_ref,
             observed_at=now,
+            ttl_s=ttl_s,
             native_version=version,
         )
         return {"ok": True, "observations": observations, "native_version": version}
@@ -93,6 +132,73 @@ def probe_codex(
                 pass
         if tmpdir is not None:
             shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def _snapshot(params: Any) -> dict:
+    if not isinstance(params, dict):
+        return {}
+    inner = params.get("rateLimits")
+    if isinstance(inner, dict) and _is_snapshot(inner) and not _is_window_map(inner):
+        return inner
+    if _is_snapshot(params):
+        return params
+    return {}
+
+
+def _is_snapshot(value: dict) -> bool:
+    return any(key in value for key in _SNAPSHOT_KEYS)
+
+
+def _is_window_map(value: dict) -> bool:
+    return any(key in value for key in ("primary", "secondary")) and "rateLimits" not in value
+
+
+def _scrub_window(raw: Any) -> dict | None:
+    if not isinstance(raw, dict):
+        return None
+    kept = {key: raw[key] for key in _WINDOW_FIELDS if key in raw}
+    return kept or None
+
+
+def _scrub_limit_body(raw: Any) -> dict | None:
+    if not isinstance(raw, dict):
+        return None
+    kept = {}
+    for role in ("primary", "secondary"):
+        if role not in raw:
+            continue
+        window = _scrub_window(raw[role])
+        if window is not None:
+            kept[role] = window
+    return kept or None
+
+
+def _scrub_credits(raw: Any) -> dict | None:
+    if not isinstance(raw, dict):
+        return None
+    kept = {key: raw[key] for key in ("hasCredits", "unlimited") if key in raw}
+    return kept or None
+
+
+def _scrub_grants(raw: Any) -> list[dict] | None:
+    if not isinstance(raw, list):
+        return None
+    grants = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        kept = {key: item[key] for key in ("expiresAt", "expires_at") if key in item}
+        if kept:
+            grants.append(kept)
+    return grants or None
+
+
+def _scrub_reached(raw: Any) -> str | list[str] | None:
+    if isinstance(raw, str):
+        return raw if "@" not in raw else None
+    if isinstance(raw, list) and all(isinstance(item, str) and "@" not in item for item in raw):
+        return list(raw)
+    return None
 
 
 def _parse_rate_limits(result, *, scope_ref, observed_at, ttl_s, source_kind, native_version) -> list[dict]:

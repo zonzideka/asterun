@@ -301,7 +301,7 @@ def test_quota_refresh_writes_throttles_and_records_probe_errors(app, monkeypatc
     app.config.backends["codex"] = BackendConfig(name="codex", kind="codex", enabled=True, bin="/bin/true")
     seen = {"n": 0, "fail": False}
 
-    def fake_probe(backend_config, *, scope_ref, now, timeout_s=10.0, transport_factory=None):
+    def fake_probe(backend_config, *, scope_ref, now, timeout_s=10.0, ttl_s=600, transport_factory=None):
         seen["n"] += 1
         seen["kind"] = backend_config.kind
         seen["scope"] = scope_ref

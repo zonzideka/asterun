@@ -1,6 +1,6 @@
 """额度快照的 inspect / set / clear，以及 Codex 只读 quota.refresh。
 
-inspect / set / clear 只读写本地缓存。refresh 只调用 account/rateLimits/read，最小间隔 60 秒，不建线程。
+inspect / set / clear 只读写本地缓存。refresh 只调用 account/rateLimits/read，最小间隔默认 60 秒，不建线程。
 quota.read 与 usage.inspect 一样针对整个实例（资源 "*"）。
 quota.write 与 config.apply 一样针对整个实例。默认操作者策略不按动作名区分，因此两者都放行。
 """
@@ -22,6 +22,7 @@ from asterun.quota.models import (
     used_bp_from_percent,
 )
 from asterun.quota.codex_probe import probe_codex
+from asterun.quota.settings import codex_quota_settings
 from asterun.usage.models import timestamp
 
 READ_ACTION = "quota.read"
@@ -211,11 +212,11 @@ def _codex_backend(config, scope: str, payload: dict):
     return config.get_backend(alias)
 
 
-def _probe_due(state, now: datetime) -> bool:
+def _probe_due(state, now: datetime, interval: timedelta = MIN_PROBE_INTERVAL) -> bool:
     if not state or not state.get("last_attempt_at"):
         return True
     elapsed = now - timestamp(state["last_attempt_at"], "last_attempt_at")
-    return elapsed >= MIN_PROBE_INTERVAL
+    return elapsed >= interval
 
 
 def _error_code(value) -> str:
@@ -252,26 +253,37 @@ def _save_probe_state(store, namespace, scope: str, now: datetime, previous, *, 
 
 
 def refresh_quota(app, payload: dict) -> dict:
-    """对 Codex 后端做只读 account/rateLimits/read。同一 scope 最小间隔 60 秒。"""
+    """对 Codex 后端做只读 account/rateLimits/read。间隔、超时和缓存时间来自 quota 配置。"""
     if app.config.schema_version == 2 and payload.get("backend") is None:
         _fail("v2 额度刷新目前只支持 backend 参数")
+    probe_settings = codex_quota_settings(app.config)["probes"]["codex_app_server"]
     scopes = select_scopes(app.config, payload, single=False)
     explicit = payload.get("scope_ref") is not None or payload.get("backend") is not None
     store, namespace = _store(app)
     now = _now()
     reports = []
+    interval = timedelta(seconds=probe_settings["min_interval_seconds"])
     for scope in scopes:
         backend = _codex_backend(app.config, scope, payload)
         if backend.kind != "codex":
             if explicit:
                 _fail("quota.refresh 只支持 Codex 后端", backend=backend.name)
             continue
+        if probe_settings["enabled"] is not True:
+            reports.append(_scope_result(scope, ok=False, error_code="PROBE_DISABLED", written=0, skipped=None))
+            continue
         previous = store.get_probe_state(scope, PROBE_ID, namespace)
-        if not _probe_due(previous, now):
+        if not _probe_due(previous, now, interval):
             reports.append(_scope_result(scope, ok=False, error_code=None, written=0, skipped="min_interval"))
             continue
         try:
-            report = probe_codex(backend, scope_ref=scope, now=now)
+            report = probe_codex(
+                backend,
+                scope_ref=scope,
+                now=now,
+                timeout_s=probe_settings["timeout_seconds"],
+                ttl_s=probe_settings["ttl_seconds"],
+            )
         except Exception:
             report = {"ok": False, "error_code": "PROBE_FAILED"}
         if not isinstance(report, dict):
