@@ -288,3 +288,84 @@ def test_view_returns_none_on_error(monkeypatch):
 
     monkeypatch.setattr(routing_entry, "latest_for_task", boom)
     assert routing_entry.view(_app(), "task-1") is None
+
+
+def test_memory_store_find_operation_by_key():
+    from asterun.contracts import Operation, OperationStatus
+    from asterun.ids import OperationId, TaskId
+    from asterun.store import MemoryStore
+
+    store = MemoryStore()
+    operation = Operation(
+        id=OperationId("op_1"),
+        idempotency_key="idem-1",
+        principal="alice",
+        action="task.submit",
+        target="ws",
+        input_hash="hash",
+        status=OperationStatus.INTENDED,
+        created_at="2026-01-01T00:00:00Z",
+        task_id=TaskId("task_1"),
+    )
+    store._ops_by_key[(operation.principal, operation.action, operation.target, operation.idempotency_key)] = operation
+    assert store.find_operation_by_key("alice", "task.submit", "ws", "idem-1") is operation
+    assert store.find_operation_by_key("alice", "task.submit", "ws", "missing") is None
+
+
+def test_pinned_submit_backend_uses_existing_operation_backend():
+    from asterun.application import Application
+
+    task = SimpleNamespace(backend=SimpleNamespace(value="backend-a"))
+    existing = SimpleNamespace(task_id="task-1")
+    seen = {}
+
+    def find_operation_by_key(principal, action, target, key):
+        seen["lookup"] = (principal, action, target, key)
+        return existing
+
+    app = SimpleNamespace(
+        store=SimpleNamespace(
+            find_operation_by_key=find_operation_by_key,
+            get_task=lambda task_id: task,
+            get_session=lambda conversation_id: (_ for _ in ()).throw(AssertionError("session unused")),
+        ),
+        principal=SimpleNamespace(subject_id="alice"),
+    )
+    pinned = Application._pinned_submit_backend(
+        app,
+        {"idempotency_key": "idem-1", "conversation_id": "conv-1"},
+        "ws",
+    )
+    assert pinned == "backend-a"
+    assert seen["lookup"] == ("alice", "task.submit", "ws", "idem-1")
+
+
+def test_pinned_submit_backend_uses_session_backend():
+    from asterun.application import Application
+    from asterun.ids import ConversationId
+
+    session = SimpleNamespace(backend=SimpleNamespace(value="backend-b"))
+    app = SimpleNamespace(
+        store=SimpleNamespace(
+            find_operation_by_key=lambda *args: None,
+            get_session=lambda conversation_id: session if conversation_id == ConversationId("conv-1") else None,
+        ),
+        principal=SimpleNamespace(subject_id="alice"),
+    )
+    assert Application._pinned_submit_backend(app, {"conversation_id": "conv-1"}, "ws") == "backend-b"
+
+
+def test_pinned_submit_backend_returns_none_without_operation_or_session():
+    from asterun.application import Application
+    from asterun.errors import NOT_FOUND, AsterunError
+
+    def get_session(conversation_id):
+        raise AsterunError(NOT_FOUND, "missing")
+
+    app = SimpleNamespace(
+        store=SimpleNamespace(get_session=get_session),
+        principal=SimpleNamespace(subject_id="alice"),
+    )
+    assert Application._pinned_submit_backend(app, {}, "ws") is None
+    assert Application._pinned_submit_backend(app, {"idempotency_key": "idem-1"}, "ws") is None
+    assert Application._pinned_submit_backend(app, {"conversation_id": "conv-1"}, "ws") is None
