@@ -170,6 +170,20 @@ elif MODE == "subagent":
     step(0, "subagent", "DONE", tool_name="invoke_subagent")
     step(1, text_delta="waiting for the delegate")
     result()
+elif MODE == "subagent_no_result":
+    step(0, "tool", "ACTIVE", tool_name="invoke_subagent", tool_info={"name": "invoke_subagent"})
+    time.sleep(30)
+elif MODE == "subagent_step_only":
+    step(0, "subagent", "ACTIVE", tool_name="invoke_subagent")
+    time.sleep(30)
+elif MODE == "subagent_with_child":
+    import subprocess
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    marker = os.environ.get("AGY_FIXTURE_READY")
+    if marker:
+        Path(marker).write_text(str(child.pid))
+    step(0, "tool", "ACTIVE", tool_name="invoke_subagent", tool_info={"name": "invoke_subagent"})
+    time.sleep(30)
 elif MODE == "subagent_lingers":
     step(0, "tool", "ACTIVE", tool_name="invoke_subagent", tool_info={"name": "invoke_subagent"})
     step(0, "subagent", "DONE", tool_name="invoke_subagent")
