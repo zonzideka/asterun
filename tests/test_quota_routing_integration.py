@@ -11,7 +11,7 @@ import pytest
 from asterun.application import Application
 from asterun.config import load_config
 from asterun.config_v2 import _ROLE_KINDS
-from asterun.errors import INVALID_CONFIG, AsterunError
+from asterun.errors import BINDING_MISMATCH, IDEMPOTENCY_CONFLICT, INVALID_CONFIG, AsterunError
 from asterun.policy import AllowConfiguredWorkspaces, Principal
 from asterun.quota import routing_entry
 
@@ -274,3 +274,64 @@ def test_default_backend_group_reference(workspace_root: Path, monkeypatch: pyte
         assert submitted.data["task"]["backend"] == "fb"
         assert viewed.data["routing"]["mode"] == "on"
         assert viewed.data["routing"]["chosen"] == "fb"
+
+
+def test_explicit_backend_same_key_different_backend_conflicts(workspace_root: Path, monkeypatch: pytest.MonkeyPatch):
+    with _open(workspace_root, monkeypatch, mode="on") as (app, _choice):
+        first = _submit(app, backend="fa", text="same-body", idempotency_key="K")
+        assert first.data["task"]["backend"] == "fa"
+        replay = app.handle(
+            "task.submit",
+            {
+                "workspace": "demo",
+                "text": "same-body",
+                "script": "success",
+                "backend": "fb",
+                "idempotency_key": "K",
+            },
+        )
+        assert not replay.ok
+        assert replay.error["code"] == IDEMPOTENCY_CONFLICT
+
+
+def test_explicit_backend_rejects_session_bound_to_other_backend(workspace_root: Path, monkeypatch: pytest.MonkeyPatch):
+    with _open(workspace_root, monkeypatch, mode="on") as (app, _choice):
+        first = _submit(app, backend="fa", text="first-turn", idempotency_key="turn-fa")
+        conversation_id = first.ids["conversation_id"]
+        rejected = app.handle(
+            "task.submit",
+            {
+                "workspace": "demo",
+                "text": "next-turn",
+                "script": "success",
+                "backend": "fb",
+                "idempotency_key": "turn-fb",
+                "conversation_id": conversation_id,
+            },
+        )
+        assert not rejected.ok
+        assert rejected.error["code"] == BINDING_MISMATCH
+        assert rejected.error["details"]["mismatches"]["backend"] == "mismatch"
+
+
+def test_explicit_replay_skips_paid_guard_after_it_would_reject(workspace_root: Path, monkeypatch: pytest.MonkeyPatch):
+    with _open(workspace_root, monkeypatch, mode="on") as (app, _choice):
+        payload = {
+            "workspace": "demo",
+            "text": "explicit-replay",
+            "script": "success",
+            "backend": "fa",
+            "idempotency_key": "K",
+        }
+        first = _ok(app.handle("task.submit", payload))
+        calls = {"n": 0}
+
+        def _reject(*_args, **_kwargs):
+            calls["n"] += 1
+            raise AsterunError("BUDGET_EXHAUSTED", "订阅窗口已耗尽，继续会使用付费额度；默认阻断")
+
+        monkeypatch.setattr(routing_entry, "paid_guard", _reject)
+        second = _ok(app.handle("task.submit", dict(payload)))
+        assert calls["n"] == 0
+        assert second.ids["task_id"] == first.ids["task_id"]
+        assert second.data["task"]["backend"] == "fa"

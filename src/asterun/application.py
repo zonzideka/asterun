@@ -616,12 +616,19 @@ class Application:
         from asterun.quota.routing_entry import paid_guard, record, resolve_backend
 
         requested_backend = payload.get("backend")
+        effective_request = requested_backend or self.config.default_backend
+        group_request = isinstance(effective_request, str) and effective_request.startswith("@")
         pinned = self._pinned_submit_backend(payload, workspace_alias)
-        if pinned is not None:
+        if group_request and pinned is not None:
+            # 组请求的幂等重放与会话续接沿用已绑定后端，不重新选路。
             name, routing = pinned, None
-        else:
+        elif group_request:
             name, routing = resolve_backend(self, requested_backend)
-            if routing is None:
+        else:
+            # 显式普通后端：行为与以前一致（摘要、会话绑定检查都用请求值）；
+            # 只有在不是重放/续接时才做付费保护，避免已接受的请求在重放时被新数据阻断。
+            name, routing = resolve_backend(self, requested_backend)
+            if pinned is None:
                 paid_guard(self, name)
         backend_conf = self.config.get_backend(name)
         self._require_grok_code_permissions(backend_conf, workspace_alias)
@@ -649,7 +656,7 @@ class Application:
         from asterun.dependencies import validate as validate_dependencies
         dependencies = validate_dependencies(self, workspace_alias, payload.get("depends_on", []))
         now = utc_now()
-        hash_backend = requested_backend if isinstance(requested_backend, str) and requested_backend.startswith("@") else backend_conf.name
+        hash_backend = effective_request if group_request else backend_conf.name
         digest = _input_hash(
             workspace_alias,
             text,
