@@ -1,10 +1,38 @@
 """从持久原生失败证据拦截同池或同额度桶的后续派发；不猜测余额、不结清未知运行。"""
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from asterun.control_protocol import digest
 from asterun.errors import AsterunError
+
+# agy 真实额度错误格式出现后在此补充
+AGY_QUOTA_PATTERNS: tuple[re.Pattern[str], ...] = ()
+_AGY_RATE_LIMIT = re.compile(r"\b429\b|RESOURCE_EXHAUSTED")
+_AGY_QUOTA_WORD = re.compile(r"quota", re.IGNORECASE)
+
+
+def classify_agy_error(status, text) -> dict | None:
+    """只在 ERROR 终态做白名单分类。返回值只有四个字段，不含供应商原文。"""
+    if status != "ERROR" or not isinstance(text, str):
+        return None
+    limited = _AGY_RATE_LIMIT.search(text) is not None
+    quota_hit = _AGY_QUOTA_WORD.search(text) is not None or any(
+        pattern.search(text) for pattern in AGY_QUOTA_PATTERNS
+    )
+    if quota_hit and (limited or any(pattern.search(text) for pattern in AGY_QUOTA_PATTERNS)):
+        kind = "quota_exhausted"
+    elif limited:
+        kind = "rate_limited"
+    else:
+        return None
+    return {
+        "kind": kind,
+        "status_code": 429,
+        "source": "native_result",
+        "provider": "antigravity",
+    }
 
 
 def model_bucket(model):

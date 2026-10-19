@@ -26,6 +26,7 @@ from asterun.quota import grok_probe
 from asterun.quota.codex_probe import probe_codex, probe_lifetime_s
 from asterun.quota.selection import resolve_prefs, score_candidate, select
 from asterun.quota.settings import codex_quota_settings, grok_quota_settings
+from asterun.quota_latch import active_latch
 from asterun.usage.models import timestamp
 
 READ_ACTION = "quota.read"
@@ -115,6 +116,18 @@ def _window_view(item: dict, now: datetime) -> dict:
     }
 
 
+def _display_latch(item: dict) -> bool:
+    obs = item.get("observation") or {}
+    return (
+        item.get("freshness") == "latched"
+        and item.get("age_s") is None
+        and obs.get("bucket_id") == "latch"
+        and obs.get("window_kind") == "latch"
+        and obs.get("source_kind") == "latch"
+    )
+
+
+
 def _reached(raw: Any, now: datetime) -> bool:
     """resets_at / valid_until 已到或无法解析。空值表示没有这一时刻。"""
     if raw is None:
@@ -168,6 +181,7 @@ def _tightest(windows: list[dict], now: datetime) -> dict | None:
         used = obs.get("used_bp")
         used_key = -(used if type(used) is int else -1)
         return (
+            0 if _display_latch(item) else 1,
             rank(item),
             used_key,
             obs.get("resets_at") or "9999-12-31T23:59:59Z",
@@ -180,13 +194,44 @@ def _tightest(windows: list[dict], now: datetime) -> dict | None:
     return {
         "bucket_id": obs["bucket_id"],
         "window_kind": obs["window_kind"],
-        "used_bp": obs["used_bp"],
-        "resets_at": obs["resets_at"],
+        "used_bp": obs.get("used_bp"),
+        "resets_at": obs.get("resets_at"),
         "source_kind": obs["source_kind"],
         "confidence": obs["confidence"],
         "freshness": winner["freshness"],
         "age_s": winner["age_s"],
         "issues": list(winner["issues"]),
+    }
+
+
+def _latch_window(app, scope: str, payload: dict) -> dict | None:
+    """v1 的 backend:<alias>，以及 v2 显式指定 backend 时，把活动闩锁做成只展示的窗口。"""
+    if getattr(app.config, "schema_version", 1) == 2:
+        alias = payload.get("backend")
+        if not isinstance(alias, str) or not alias:
+            return None
+    elif isinstance(scope, str) and scope.startswith("backend:"):
+        alias = scope.removeprefix("backend:")
+        if not alias:
+            return None
+    else:
+        return None
+    found = active_latch(app, alias)
+    if not found:
+        return None
+    return {
+        "observation": {
+            "bucket_id": "latch",
+            "window_kind": "latch",
+            "source_kind": "latch",
+            "confidence": "high",
+            "provider": found.get("provider"),
+            "status_code": found.get("status_code"),
+            "source_run_id": found.get("source_run_id"),
+        },
+        "freshness": "latched",
+        "age_s": None,
+        "issues": [],
     }
 
 
@@ -202,6 +247,9 @@ def inspect_quota(app, payload: dict) -> dict:
     for scope in scopes:
         merged = merge_observations(read_quota_snapshots(conn, scope, namespace))
         windows = [_window_view(item, now) for item in merged]
+        latch = _latch_window(app, scope, payload)
+        if latch is not None:
+            windows.insert(0, latch)
         reports.append({"scope_ref": scope, "tightest": _tightest(windows, now), "windows": windows})
     return {"scopes": reports, "upstream_queried": False}
 

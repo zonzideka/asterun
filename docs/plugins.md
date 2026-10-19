@@ -56,6 +56,8 @@ CLI 与 MCP 共用请求定义，MCP 工具名使用下划线。`usage-inspect` 
 
 Grok 额度读取走未公开 ACP 扩展 `_x.ai/billing`，默认关闭。需要在 v2 的 `quota.probes.grok_acp_billing` 同时设置 `enabled` 与 `acknowledge_undocumented`（二者默认都是 false）。探针只调用 `initialize` 和 `_x.ai/billing`，不建会话、不发提示。可信度最高为 medium。只记录已用比例、账期结束时间，以及是否开启按需付费，不保存金额。按需付费只读取布尔字段 `onDemandEnabled`，不读取金额、上限、已用量或未知字段；该字段为 false 时，即使上限大于 0 也不记为开启。`billingPeriodEnd` 可以缺省；一旦给出，过期或非法则整次解析失败，不产生观测。`ttl_seconds` 默认 900（60–3600），`min_interval_seconds` 默认 300（60–3600），`timeout_seconds` 默认 10（1–30）。v1 配置不能启用该探针。探针错误码只有三种：`AUTH_REQUIRED`（认证或登录失败）、`PROBE_TIMEOUT`（调用超时）、`SCHEMA_MISMATCH`（二进制缺失、连接关闭、进程失败，或响应无法按账单结构解析，含账期结束时间过期或非法）。不返回 `LIVE_DISABLED` 或 `PROBE_FAILED`。未设置 `ASTERUN_RUN_GROK=1` 时，服务层记 `skipped=disabled` 且不调用探针；两个开关未同时打开时，服务层记 `PROBE_DISABLED`。这两种禁用都不是探针错误码。
 
+持久的额度闩锁来自已保存的原生失败分类，不保留错误原文。Grok 的 HTTP 402 额度耗尽会停止同一计费池的后续派发。Antigravity 只在严格匹配的 429 额度耗尽时闩锁：文本含独立 token `429`（`\b429\b`）或 `RESOURCE_EXHAUSTED`，并且含 quota（不分大小写）；单纯限流不闩锁。Antigravity 按额度桶隔离，Gemini 为一组，Claude 与 GPT 为一组。解除闩锁时，v1 修改该后端的 `quota_epoch`，v2 更新计费窗口。`quota-inspect` 在对应 scope 的窗口最前显示 freshness 为 `latched` 的窗口；该窗口只展示，不写入额度缓存。
+
 ## 候选组与选路解释
 
 候选组只写在配置 v2 的 `routing.candidate_groups`。一组是同一角色、同一后端种类、同一执行选项的 1 到 8 个别名，模型可以不同。`models_allowed` 不写则不限制模型；写了才校验。`primary` 必须是成员之一。组名匹配 `^[a-z][a-z0-9_-]{0,31}$`。同一角色最多一组，不同角色的成员不能相交。未写 `candidate_groups` 或 `quota_preference` 时，配置回读不注入默认值。
