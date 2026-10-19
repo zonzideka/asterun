@@ -55,6 +55,10 @@ def build_parser() -> argparse.ArgumentParser:
     quota_inspect_scope = quota_inspect.add_mutually_exclusive_group()
     quota_inspect_scope.add_argument("--scope", dest="scope_ref")
     quota_inspect_scope.add_argument("--backend")
+    routing_explain = sub.add_parser("routing-explain", help="只解释候选组选路；不改变派发，不写库")
+    routing_explain_scope = routing_explain.add_mutually_exclusive_group(required=True)
+    routing_explain_scope.add_argument("--group", help="候选组名")
+    routing_explain_scope.add_argument("--backend", help="候选组，格式 @NAME")
     quota_set = sub.add_parser("quota-set", help="手动录入额度；可信度 low，有效期最多 24 小时")
     quota_set_scope = quota_set.add_mutually_exclusive_group(required=True)
     quota_set_scope.add_argument("--scope", dest="scope_ref")
@@ -278,6 +282,7 @@ def _load_request(args: argparse.Namespace) -> dict[str, Any]:
         "text": "text",
         "script": "script",
         "backend": "backend",
+        "group": "group",
         "task_id": "task_id",
         "cursor": "cursor",
         "page_size": "page_size",
@@ -355,13 +360,14 @@ def _app(args: argparse.Namespace, *, entry: str = "cli") -> Application:
         return app
     return Application.from_paths(config_path, state_dir, entry=entry,
                                   background=args.command in {"serve", "mcp"},
-                                  restore_scheduler=args.command not in {"usage-report", "quota-inspect"})
+                                  restore_scheduler=args.command not in {"usage-report", "quota-inspect", "routing-explain"})
 
 
 COMMAND_METHODS = {
     **{name.replace(".", "-"): name for name in (
         "plugin.list", "plugin.inspect", "plugin.register", "plugin.enable", "plugin.disable",
         "connection.setup", "usage.inspect", "quota.inspect", "quota.set", "quota.clear", "quota.refresh",
+        "routing.explain",
         "capability.invoke", "capability.discovery", "capability.prepare", "capability.submit", "capability.get")},
     "approval-assess": "approval.assess",
     "approval-apply-policy": "approval.apply-policy",

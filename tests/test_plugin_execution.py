@@ -102,7 +102,7 @@ def test_background_typed_execution_and_mcp_management(plugin_config):
         listing = handle_rpc(app, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
         names = {item["name"] for item in listing["result"]["tools"]}
         assert {"plugin_list", "plugin_disable", "capability_invoke", "usage_inspect",
-                "quota_inspect", "quota_set", "quota_clear", "quota_refresh"} <= names
+                "quota_inspect", "quota_set", "quota_clear", "quota_refresh", "routing_explain"} <= names
         result = invoke(app)
         assert result.ok and result.data["background"]
         deadline = time.monotonic() + 10

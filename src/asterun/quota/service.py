@@ -24,6 +24,7 @@ from asterun.quota.models import (
 )
 from asterun.quota import grok_probe
 from asterun.quota.codex_probe import probe_codex, probe_lifetime_s
+from asterun.quota.selection import resolve_prefs, score_candidate, select
 from asterun.quota.settings import codex_quota_settings, grok_quota_settings
 from asterun.usage.models import timestamp
 
@@ -429,12 +430,117 @@ def refresh_quota(app, payload: dict) -> dict:
     return {"scopes": reports, "upstream_queried": True}
 
 
+_EST_BP_PER_RUN = {"5h": 500, "weekly": 100, "default": 100}
+_READ_METHODS = {"quota.inspect", "routing.explain"}
+
+
+def _member_windows(app, alias: str) -> list[dict]:
+    report = inspect_quota(app, {"backend": alias})
+    windows = [window for scope in report["scopes"] for window in scope["windows"]]
+    return _attach_epoch_history(app, windows)
+
+
+def _attach_epoch_history(app, windows: list[dict]) -> list[dict]:
+    """只读附上同一 scope、同一 epoch 的历史快照。不写库。"""
+    from asterun.plugin_store import read_quota_snapshots
+
+    admission = getattr(app, "admission", None)
+    namespace = admission.namespace if admission is not None else _NAMESPACE
+    conn = app.store._conn
+    cached: dict[str, list] = {}
+    attached = []
+    for window in windows:
+        observation = window.get("observation") if isinstance(window, dict) else None
+        if not isinstance(observation, dict):
+            attached.append(window)
+            continue
+        scope = observation.get("scope_ref")
+        if not isinstance(scope, str) or not scope:
+            attached.append(window)
+            continue
+        if scope not in cached:
+            cached[scope] = read_quota_snapshots(conn, scope, namespace)
+        epoch = observation.get("window_epoch")
+        bucket = observation.get("bucket_id")
+        kind = observation.get("window_kind")
+        history = [
+            prior for prior in cached[scope]
+            if isinstance(prior, dict)
+            and prior.get("bucket_id") == bucket
+            and prior.get("window_kind") == kind
+            and prior.get("window_epoch") == epoch
+        ]
+        attached.append({**window, "history": history})
+    return attached
+
+
+def _member_latched(app, alias: str) -> bool:
+    """quota_latch 不在本版时，用 grok_quota.guard 的异常表示同池闩锁。"""
+    for module_name in ("asterun.quota_latch", "asterun.quota.quota_latch"):
+        try:
+            module = __import__(module_name, fromlist=["active_latch"])
+        except ImportError:
+            continue
+        active = getattr(module, "active_latch", None)
+        if active is not None:
+            return bool(active(app, alias))
+    from asterun.grok_quota import guard
+
+    try:
+        guard(app, alias)
+    except AsterunError:
+        return True
+    return False
+
+
+def explain_routing(app, payload: dict) -> dict:
+    """只读解释候选组。不写库，不改变派发。"""
+    group_name = payload.get("group")
+    backend = payload.get("backend")
+    if (group_name is None) == (backend is None):
+        _fail("group 与 backend 只能指定一个" if backend is not None else "需要 group 或 backend")
+    if backend is not None:
+        if not isinstance(backend, str) or not backend.startswith("@") or len(backend) == 1:
+            _fail("backend 必须是 @候选组名")
+        group_name = backend[1:]
+    config = app.config
+    routing = getattr(config, "routing", None)
+    groups = routing.get("candidate_groups") if isinstance(routing, dict) else None
+    if getattr(config, "schema_version", 1) != 2 or not isinstance(groups, dict) or not groups:
+        _fail("候选组只在 v2 配置中可用", INVALID_CONFIG)
+    group = groups.get(group_name)
+    if not isinstance(group, dict) or "members" not in group or "primary" not in group:
+        _fail(f"未知候选组：{group_name}", INVALID_CONFIG)
+    raw_prefs = routing.get("quota_preference")
+    prefs = resolve_prefs(raw_prefs if isinstance(raw_prefs, dict) else None)
+    scheduler = getattr(app, "scheduler", None)
+    now = _now()
+    scores = {}
+    for alias in group["members"]:
+        windows = _member_windows(app, alias)
+        if _member_latched(app, alias):
+            windows = [*windows, {
+                "observation": {"bucket_id": "latch", "window_kind": "latch", "source_kind": "latch"},
+                "freshness": "latched", "age_s": 0, "issues": [],
+            }]
+        inflight = scheduler.inflight_for(alias) if scheduler is not None else 0
+        scores[alias] = score_candidate(
+            windows, now=now, prefs=prefs, inflight_runs=inflight, est_bp_per_run=_EST_BP_PER_RUN,
+        )
+    chosen = select(group, scores, prefs=prefs)
+    chosen["dispatch_changed"] = False
+    chosen["preference_enabled"] = bool(prefs["enabled"])
+    return chosen
+
+
 def handle(app, method: str, payload: dict | None) -> dict:
-    if method not in {"quota.inspect", "quota.set", "quota.clear", "quota.refresh"}:
+    if method not in {"quota.inspect", "quota.set", "quota.clear", "quota.refresh", "routing.explain"}:
         _fail(f"未知额度方法：{method}")
     payload = json_copy({} if payload is None else payload)
     reject_self_reported_authority(payload)
-    _authorize(app, READ_ACTION if method == "quota.inspect" else WRITE_ACTION)
+    _authorize(app, READ_ACTION if method in _READ_METHODS else WRITE_ACTION)
+    if method == "routing.explain":
+        return explain_routing(app, payload)
     if method == "quota.inspect":
         return inspect_quota(app, payload)
     if method == "quota.set":

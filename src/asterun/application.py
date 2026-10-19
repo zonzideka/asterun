@@ -371,7 +371,7 @@ class Application:
                 return ok(self.capabilities.handle(method, payload))
             if method.startswith("control."):
                 return self._handle_control(method, payload)
-            if method.startswith("quota."):
+            if method.startswith("quota.") or method == "routing.explain":
                 from asterun.quota.service import handle as handle_quota
 
                 return ok(handle_quota(self, method, payload))
