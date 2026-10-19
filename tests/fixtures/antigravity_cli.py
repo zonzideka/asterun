@@ -170,6 +170,11 @@ elif MODE == "subagent":
     step(0, "subagent", "DONE", tool_name="invoke_subagent")
     step(1, text_delta="waiting for the delegate")
     result()
+elif MODE == "subagent_lingers":
+    step(0, "tool", "ACTIVE", tool_name="invoke_subagent", tool_info={"name": "invoke_subagent"})
+    step(0, "subagent", "DONE", tool_name="invoke_subagent")
+    result(response="waiting for the delegate")
+    time.sleep(30)
 elif MODE == "retyped_tool":
     step(0, "tool", "ACTIVE", tool_name="read_file", tool_info={"name": "read_file"})
     step(0, "subagent", "DONE", tool_name="read_file")

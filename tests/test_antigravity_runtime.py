@@ -233,3 +233,12 @@ def test_subagent_relabel_is_accepted_but_never_reported_as_success(tmp_path):
 def test_plain_success_reports_no_subagents(tmp_path):
     result, _ = execute(tmp_path, "happy")
     assert result["status"] == "succeeded" and result["native"]["subagent_count"] == 0
+
+
+def test_subagent_that_outlives_the_result_is_stopped_promptly(tmp_path):
+    started = time.monotonic()
+    result, _ = execute(tmp_path, "subagent_lingers")
+    assert time.monotonic() - started < 2.5
+    assert result["status"] == "failed" and result["terminated"] is True
+    assert result["error_code"] == "ANTIGRAVITY_RUN_INCOMPLETE"
+    assert result["native"]["subagent_count"] == 1
