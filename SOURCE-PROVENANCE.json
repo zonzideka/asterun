@@ -80,7 +80,7 @@
     },
     {
       "path": "src/asterun/__init__.py",
-      "sha256": "b4afe0fbd1b4c5829a129bbe3665d6a8f49accd068f27468991b37e5e524df55"
+      "sha256": "52e6bd560a4d8900d5f168a372d5d0cba0fa7ca8bfedfb4801b527fa73c92db2"
     },
     {
       "path": "src/asterun/__main__.py",
