@@ -1889,8 +1889,11 @@ class Application:
             raise backend.unavailable_error()
         from asterun.grok_quota import guard as guard_grok_quota, scopes as grok_quota_scopes
         guard_grok_quota(self, backend_name)
-        if backend.config.kind == "grok":
-            run.native["grok_quota_scopes"] = grok_quota_scopes(self, backend_name)
+        quota_scopes = grok_quota_scopes(self, backend_name)
+        if quota_scopes:
+            run.native["quota_latch_scopes"] = quota_scopes
+            if backend.config.kind == "grok":
+                run.native["grok_quota_scopes"] = quota_scopes
         from asterun.dependencies import bind as bind_dependencies
         bind_dependencies(self, task, run)
         from asterun.checkpoints import before_dispatch
@@ -2775,6 +2778,29 @@ class Application:
         )
         return self.store.append_event(run_id, event)
 
+    def _attach_antigravity_provider_failure(self, run: Run) -> None:
+        """用已经写在 run.summary 上的终态文本做 agy 429 分类。不复制原文。"""
+        native = run.native
+        if not isinstance(native, dict) or native.get("provider_failure"):
+            return
+        if str(run.status) != "failed" or run.error_code != "ANTIGRAVITY_RUN_FAILED":
+            return
+        backend_name = getattr(getattr(run, "backend", None), "value", None)
+        if not isinstance(backend_name, str):
+            return
+        if self.config.get_backend(backend_name).kind != "antigravity":
+            return
+        from asterun.quota_latch import classify_agy_error
+        classified = classify_agy_error("ERROR", run.summary or "")
+        if not isinstance(classified, dict):
+            return
+        native["provider_failure"] = {
+            "kind": classified["kind"],
+            "status_code": classified["status_code"],
+            "source": classified["source"],
+            "provider": classified["provider"],
+        }
+
     def _apply_backend_result(self, run: Run, result: dict[str, Any], source: str) -> None:
         external = self.admission is not None and hasattr(self.backends[run.backend.value], "bind_execution")
         if external:
@@ -2812,12 +2838,21 @@ class Application:
         terminated = bool(result.get("terminated"))
         if terminated and status == RunStatus.CANCELLED:
             self._event(run.id, EventType.RUN_TERMINATED, source, {"status": str(status)})
+        summary = str(result.get("summary") or run.summary)
+        error_code = result.get("error_code")
+        run.status = status
+        run.error_code = error_code
+        run.summary = summary
+        try:
+            self._attach_antigravity_provider_failure(run)
+        except Exception:
+            pass
         self._set_run(
             run,
             status,
             terminated=terminated,
-            error_code=result.get("error_code"),
-            summary=str(result.get("summary") or run.summary),
+            error_code=error_code,
+            summary=summary,
         )
 
     def _task_view(self, task: Task, run: Run | None, extra: dict[str, Any] | None = None) -> dict[str, Any]:

@@ -488,6 +488,8 @@ def parse_v2(raw: dict, source_path: Path) -> tuple[dict[str, dict], dict[str, d
             if kind == "antigravity" and "timeout_seconds" in options:
                 from asterun.backends.antigravity import validate_antigravity_timeout
                 validate_antigravity_timeout(options["timeout_seconds"], f"connections.{ref}.options.timeout_seconds")
+            if kind == "antigravity" and "quota_epoch" in options:
+                validate_grok_execution_options({"quota_epoch": options["quota_epoch"]}, f"connections.{ref}.options")
             for key in ("bin", "home", "model"):
                 if key in options:
                     text(options[key], f"connections.{ref}.options.{key}")
@@ -534,5 +536,7 @@ def parse_v2(raw: dict, source_path: Path) -> tuple[dict[str, dict], dict[str, d
             backends[alias]["load_user_settings"] = True
         if kind == "antigravity" and "timeout_seconds" in options:
             backends[alias]["timeout_seconds"] = options["timeout_seconds"]
+        if kind == "antigravity" and "quota_epoch" in options:
+            backends[alias]["quota_epoch"] = options["quota_epoch"]
     _validate_candidate_routing(routing, backends, connections, pools)
     return backends, namespaces

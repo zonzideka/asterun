@@ -57,6 +57,8 @@ Pass either `--scope` or `--backend`. `quota-inspect` may omit both and then lis
 
 `quota-clear` deletes only manual entries. Probe, passive, and latch rows remain.
 
+A saved Grok HTTP 402 quota exhaustion latches the same billing pool. Antigravity latches only a strict 429 quota exhaustion (an independent `429` token or `RESOURCE_EXHAUSTED`, and the word quota). A plain rate limit does not latch. Antigravity isolates quota buckets: one Gemini group, and one Claude/GPT group. Clear a latch by changing that backend's `quota_epoch` on v1, or by updating the billing window on v2. When a latch is active, `quota-inspect` shows a window with freshness `latched`. That window is display-only and is not stored.
+
 ## Configure the rest of the workflow
 
 The [installation guide](install.md) covers configuration revisions, session bindings, workflows, backups, and recovery. The [PR review guide](pr-review.md) covers snapshots, follow-up reviews, and publication. See [result delivery](review-consumer.md) for host notifications and [plugins](plugins.md) for separate plugin configuration and credential references.

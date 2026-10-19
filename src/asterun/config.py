@@ -89,6 +89,8 @@ class BackendConfig:
             result.update(home=self.home, model=self.model)
         if self.kind == "antigravity" and self.timeout_seconds is not None:
             result["timeout_seconds"] = self.timeout_seconds
+        if self.kind == "antigravity" and self.quota_epoch is not None:
+            result["quota_epoch"] = self.quota_epoch
         if self.kind == "grok":
             result.update({key: getattr(self, key) for key in GROK_EXECUTION_OPTIONS
                            if getattr(self, key) is not None})
@@ -354,6 +356,8 @@ def load_config(path: Path) -> AsterunConfig:
         if kind == "antigravity" and "timeout_seconds" in body:
             from asterun.backends.antigravity import validate_antigravity_timeout
             validate_antigravity_timeout(body["timeout_seconds"], f"backends.{name}.timeout_seconds")
+        if kind == "antigravity" and "quota_epoch" in body:
+            validate_grok_execution_options({"quota_epoch": body["quota_epoch"]}, f"backends.{name}")
         home_value = body.get("home")
         if "home" in body and (
             not isinstance(home_value, str)
