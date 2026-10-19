@@ -21,7 +21,7 @@ from asterun.quota.models import (
     merge_observations,
     used_bp_from_percent,
 )
-from asterun.quota.codex_probe import probe_codex
+from asterun.quota.codex_probe import probe_codex, probe_lifetime_s
 from asterun.quota.settings import codex_quota_settings
 from asterun.usage.models import timestamp
 
@@ -249,21 +249,28 @@ def _scope_result(scope: str, *, ok: bool, error_code, written: int, skipped) ->
     }
 
 
-def _save_probe_state(store, namespace, scope: str, now: datetime, previous, *, ok: bool, error_code) -> None:
-    if ok:
-        last_ok_at = canonical_utc(now)
-        code = None
-    else:
-        last_ok_at = None if previous is None else previous.get("last_ok_at")
-        code = error_code
-    store.put_probe_state({
-        "scope_ref": scope,
-        "probe_id": PROBE_ID,
-        "last_attempt_at": canonical_utc(now),
-        "last_ok_at": last_ok_at,
-        "last_error_code": code,
-        "lease_until": None,
-    }, namespace)
+def _save_probe_state(store, namespace, scope: str, now: datetime, previous, *, ok: bool, error_code,
+                      claimed_attempt_at: str, claimed_lease_until: str) -> None:
+    """仍持有本次写入的 last_attempt_at 与 lease_until 才写结果并释放租约。"""
+    with store.transaction():
+        current = store.get_probe_state(scope, PROBE_ID, namespace)
+        if (current is None or current.get("last_attempt_at") != claimed_attempt_at
+                or current.get("lease_until") != claimed_lease_until):
+            return
+        if ok:
+            last_ok_at = canonical_utc(now)
+            code = None
+        else:
+            last_ok_at = None if previous is None else previous.get("last_ok_at")
+            code = error_code
+        store.put_probe_state({
+            "scope_ref": scope,
+            "probe_id": PROBE_ID,
+            "last_attempt_at": claimed_attempt_at,
+            "last_ok_at": last_ok_at,
+            "last_error_code": code,
+            "lease_until": None,
+        }, namespace)
 
 
 def refresh_quota(app, payload: dict) -> dict:
@@ -298,14 +305,16 @@ def refresh_quota(app, payload: dict) -> dict:
                 claimed = False
                 skipped = "min_interval"
             else:
-                store.put_probe_state({
+                claimed_state = store.put_probe_state({
                     "scope_ref": scope,
                     "probe_id": PROBE_ID,
                     "last_attempt_at": canonical_utc(now),
                     "last_ok_at": None if previous is None else previous.get("last_ok_at"),
                     "last_error_code": None if previous is None else previous.get("last_error_code"),
-                    "lease_until": canonical_utc(now + timedelta(seconds=timeout_s + 5)),
+                    "lease_until": canonical_utc(now + timedelta(seconds=probe_lifetime_s(timeout_s))),
                 }, namespace)
+                claimed_attempt_at = claimed_state["last_attempt_at"]
+                claimed_lease_until = claimed_state["lease_until"]
                 claimed = True
                 skipped = None
         if not claimed:
@@ -343,7 +352,10 @@ def refresh_quota(app, payload: dict) -> dict:
                     store.append_quota_snapshot(observation, namespace)
                     written += 1
         finally:
-            _save_probe_state(store, namespace, scope, now, previous, ok=ok, error_code=error_code)
+            _save_probe_state(
+                store, namespace, scope, now, previous, ok=ok, error_code=error_code,
+                claimed_attempt_at=claimed_attempt_at, claimed_lease_until=claimed_lease_until,
+            )
         reports.append(_scope_result(scope, ok=ok, error_code=error_code, written=written, skipped=None))
     return {"scopes": reports, "upstream_queried": True}
 

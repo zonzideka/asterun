@@ -7,6 +7,7 @@ import math
 import re
 import shutil
 import tempfile
+import time
 from typing import Any
 
 from asterun.backends.codex import CodexAppServerTransport, discover_codex_bin, live_codex_enabled
@@ -24,6 +25,14 @@ _FIVE_HOUR_MINUTES = 300
 _WEEKLY_MINUTES = 10080
 _USED_PERCENT_MAX = 1000
 _REACHED_LIMIT = 8
+# close() 最多约 5 秒（TERM 2 秒、KILL 2 秒、reader join 1 秒）。租约留更大的关闭余量，启动另计。
+CLOSE_GRACE_S = 10
+SPAWN_GRACE_S = 5
+
+
+def probe_lifetime_s(timeout_s: float) -> float:
+    """租约长度。最大 timeout 30 秒时为 45 秒，短于 60 秒最小间隔。"""
+    return timeout_s + SPAWN_GRACE_S + CLOSE_GRACE_S
 
 
 def scrub_rate_limits(params) -> dict:
@@ -113,8 +122,16 @@ def probe_codex(
         transport = transport_factory(codex_bin=str(binary), extra_env=backend_config.extra_env)
         tmpdir = tempfile.mkdtemp(prefix="asterun-codex-quota-")
         transport.spawn(tmpdir)
-        initialized = transport.initialize(timeout_s)
-        payload = transport.read_rate_limits(timeout_s)
+        # 两次 RPC 共用 timeout_s。启动和关闭不占这段时间，由租约里的 grace 覆盖。
+        deadline = time.monotonic() + timeout_s
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return {"ok": False, "error_code": "PROBE_TIMEOUT"}
+        initialized = transport.initialize(remaining)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return {"ok": False, "error_code": "PROBE_TIMEOUT"}
+        payload = transport.read_rate_limits(remaining)
         version = _version_from_initialize(initialized)
         observations = parse_rate_limits(
             payload,
@@ -422,9 +439,17 @@ def _finite(value) -> float | None:
 
 
 def _finite_number(value) -> float | None:
-    if type(value) not in {int, float} or not math.isfinite(value):
+    try:
+        if type(value) is int:
+            if abs(value) > 10**15:
+                return None
+        elif type(value) is not float:
+            return None
+        if not math.isfinite(value):
+            return None
+        return float(value)
+    except (OverflowError, ValueError):
         return None
-    return float(value)
 
 
 def _positive_int(value) -> bool:

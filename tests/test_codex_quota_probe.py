@@ -11,7 +11,14 @@ import pytest
 from asterun.config import BackendConfig
 from asterun.errors import AsterunError
 from asterun.plugin_store import PluginStore
-from asterun.quota.codex_probe import parse_rate_limits, probe_codex
+from asterun.quota.codex_probe import (
+    CLOSE_GRACE_S,
+    SPAWN_GRACE_S,
+    parse_rate_limits,
+    probe_codex,
+    probe_lifetime_s,
+    scrub_rate_limits,
+)
 from asterun.quota.models import canonical_utc, normalize_observation
 from asterun.quota.service import PROBE_ID, handle
 from asterun.sqlite_store import SqliteStore
@@ -100,6 +107,34 @@ def test_parse_rate_limits_rejects_malformed_input():
     assert parse_rate_limits(past, scope_ref=SCOPE, observed_at=NOW) == []
     hidden = {"credits": {"hasCredits": False, "balance": "61639.42"}, "planType": "pro", "email": "a@b.c"}
     assert parse_rate_limits(hidden, scope_ref=SCOPE, observed_at=NOW) == []
+
+
+def test_huge_integers_in_rate_limit_notice_are_dropped():
+    from asterun.backends.codex import CodexAppServerTransport, CodexSession
+
+    huge = 10**400
+    notice = {
+        "rateLimits": {
+            "primary": {"usedPercent": huge, "windowDurationMins": 10080, "resetsAt": huge},
+            "secondary": None,
+        }
+    }
+    scrubbed = scrub_rate_limits(notice)
+    assert scrubbed["rateLimits"]["primary"] == {"windowDurationMins": 10080}
+    session = CodexSession(
+        session_id="thread-1",
+        transport=CodexAppServerTransport(),
+        cwd="/tmp/project",
+        model="gpt-5.5",
+        started_at="2026-10-19T00:00:00+00:00",
+    )
+    session.handle_message({"method": "account/rateLimits/updated", "params": notice})
+    status = session.to_status_dict()
+    captured = status["quota_rate_limits"]
+    assert session.method_counts["account/rateLimits/updated"] == 1
+    assert captured["params"]["rateLimits"]["primary"] == {"windowDurationMins": 10080}
+    dumped = json.dumps(status)
+    assert "1" + "0" * 400 not in dumped
 
 
 def test_parse_rate_limits_skips_bad_bucket_and_marks_only_the_reached_window():
@@ -211,8 +246,8 @@ def test_probe_codex_success_only_uses_rate_limit_read(monkeypatch, tmp_path):
     assert transport.methods == ["spawn", "initialize", "read_rate_limits", "close"]
     assert transport.codex_bin == str(binary)
     assert transport.extra_env == ("EXAMPLE=1",)
-    assert transport.init_timeout == 10.0
-    assert transport.read_timeout == 10.0
+    assert 0 < transport.init_timeout <= 10.0 + 1e-6
+    assert 0 < transport.read_timeout <= transport.init_timeout + 1e-9
     assert not Path(transport.cwd).exists()
     assert result["ok"] is True
     assert result["native_version"] == "codex-cli/9.9.9"
@@ -248,6 +283,76 @@ def test_probe_codex_initialize_failure_closes_and_hides_the_exception(monkeypat
     assert "secret" not in dumped
     assert "RuntimeError" not in dumped
     assert "@" not in dumped
+
+
+def test_probe_codex_shares_one_deadline_across_both_rpcs(monkeypatch, tmp_path):
+    monkeypatch.setenv("ASTERUN_RUN_CODEX", "1")
+    binary = _executable(tmp_path / "codex")
+    clock = {"now": 5_000.0}
+
+    def monotonic():
+        return clock["now"]
+
+    monkeypatch.setattr("asterun.quota.codex_probe.time.monotonic", monotonic)
+    holder = {}
+
+    class Overrun(_Transport):
+        def __init__(self, *, codex_bin, extra_env=()):
+            super().__init__(codex_bin=codex_bin, extra_env=extra_env)
+            holder["transport"] = self
+
+        def initialize(self, timeout=20.0):
+            self.methods.append("initialize")
+            self.init_timeout = timeout
+            clock["now"] += timeout + 1
+            return {"userAgent": "codex-cli/9.9.9"}
+
+        def read_rate_limits(self, timeout=10.0):
+            raise AssertionError("deadline already passed")
+
+    clock["now"] = 5_000.0
+    overrun = probe_codex(
+        SimpleNamespace(bin=str(binary), extra_env=()),
+        scope_ref=SCOPE,
+        now=NOW,
+        timeout_s=10,
+        transport_factory=Overrun,
+    )
+    assert overrun == {"ok": False, "error_code": "PROBE_TIMEOUT"}
+    assert holder["transport"].methods == ["spawn", "initialize", "close"]
+    assert not Path(holder["transport"].cwd).exists()
+
+    class Partial(_Transport):
+        def __init__(self, *, codex_bin, extra_env=()):
+            super().__init__(codex_bin=codex_bin, extra_env=extra_env)
+            holder["transport"] = self
+
+        def initialize(self, timeout=20.0):
+            self.methods.append("initialize")
+            self.init_timeout = timeout
+            clock["now"] += 4
+            return {"userAgent": "codex-cli/9.9.9"}
+
+        def read_rate_limits(self, timeout=10.0):
+            self.read_timeout = timeout
+            self.read_clock = clock["now"]
+            return super().read_rate_limits(timeout)
+
+    clock["now"] = 8_000.0
+    started = clock["now"]
+    partial = probe_codex(
+        SimpleNamespace(bin=str(binary), extra_env=()),
+        scope_ref=SCOPE,
+        now=NOW,
+        timeout_s=10,
+        transport_factory=Partial,
+    )
+    transport = holder["transport"]
+    assert partial["ok"] is True
+    assert transport.methods == ["spawn", "initialize", "read_rate_limits", "close"]
+    assert transport.read_timeout <= (started + 10) - transport.read_clock
+    assert transport.read_timeout <= 6
+    assert not Path(transport.cwd).exists()
 
 
 def test_probe_codex_live_disabled(monkeypatch):
@@ -424,6 +529,91 @@ def test_refresh_lease_is_single_flight_across_connections(app, monkeypatch, tmp
         assert len(PluginStore(second_conn).quota_snapshots(SCOPE)) == 1
     finally:
         second_conn.close()
+        store.close()
+
+
+def test_refresh_lease_still_in_flight_at_44_seconds(app, monkeypatch, tmp_path):
+    from asterun.quota.settings import codex_quota_settings
+
+    path = tmp_path / "quota-lifetime" / "asterun.sqlite"
+    store = SqliteStore(path)
+    app.store = store
+    store.bootstrap_applied_revision(app.config.revision)
+    app.config.backends["codex"] = BackendConfig(name="codex", kind="codex", enabled=True, bin="/bin/true")
+    second_conn = sqlite3.connect(path, isolation_level=None)
+    PluginStore(second_conn)
+    second = _sqlite_app(app.config, second_conn, app.policy, app.principal)
+    start = datetime(2026, 10, 19, 12, 0, tzinfo=timezone.utc)
+    clock = {"now": start}
+    seen = {}
+
+    def settings(config):
+        value = codex_quota_settings(config)
+        value["probes"]["codex_app_server"]["timeout_seconds"] = 30
+        return value
+
+    def fake_probe(backend_config, *, scope_ref, now, timeout_s=10.0, ttl_s=600, transport_factory=None):
+        seen["lease"] = PluginStore(app.store._conn).get_probe_state(SCOPE, PROBE_ID)["lease_until"]
+        clock["now"] = start + timedelta(seconds=44)
+        seen["during"] = handle(second, "quota.refresh", {"backend": "codex"})
+        return {"ok": True, "observations": [_weekly(scope_ref, now)], "native_version": None}
+
+    monkeypatch.setattr("asterun.quota.service._now", lambda: clock["now"])
+    monkeypatch.setattr("asterun.quota.service.codex_quota_settings", settings)
+    monkeypatch.setattr("asterun.quota.service.probe_codex", fake_probe)
+    try:
+        assert SPAWN_GRACE_S == 5 and CLOSE_GRACE_S == 10
+        assert probe_lifetime_s(30) == 45
+        first = handle(app, "quota.refresh", {"backend": "codex"})
+        assert first["scopes"][0]["ok"] is True
+        assert seen["lease"] == canonical_utc(start + timedelta(seconds=45))
+        assert seen["during"]["scopes"][0]["skipped"] == "in_flight"
+        assert seen["during"]["scopes"][0]["ok"] is False
+        assert seen["during"]["scopes"][0]["written"] == 0
+        state = PluginStore(store._conn).get_probe_state(SCOPE, PROBE_ID)
+        assert state["lease_until"] is None
+    finally:
+        second_conn.close()
+        store.close()
+
+
+def test_refresh_release_keeps_a_newer_holder(app, monkeypatch, tmp_path):
+    path = tmp_path / "quota-holder" / "asterun.sqlite"
+    store = SqliteStore(path)
+    app.store = store
+    store.bootstrap_applied_revision(app.config.revision)
+    app.config.backends["codex"] = BackendConfig(name="codex", kind="codex", enabled=True, bin="/bin/true")
+    plugin = PluginStore(app.store._conn)
+    start = datetime(2026, 10, 19, 12, 0, tzinfo=timezone.utc)
+    clock = {"now": start}
+    holder = {}
+
+    def fake_probe(backend_config, *, scope_ref, now, timeout_s=10.0, ttl_s=600, transport_factory=None):
+        clock["now"] = start + timedelta(seconds=61)
+        current = plugin.get_probe_state(SCOPE, PROBE_ID)
+        holder["original_attempt"] = current["last_attempt_at"]
+        plugin.put_probe_state({
+            **current,
+            "last_attempt_at": canonical_utc(clock["now"]),
+            "lease_until": canonical_utc(clock["now"] - timedelta(seconds=1)),
+        })
+        holder["stolen"] = plugin.get_probe_state(SCOPE, PROBE_ID)
+        return {"ok": True, "observations": [_weekly(scope_ref, now)], "native_version": None}
+
+    monkeypatch.setattr("asterun.quota.service._now", lambda: clock["now"])
+    monkeypatch.setattr("asterun.quota.service.probe_codex", fake_probe)
+    try:
+        first = handle(app, "quota.refresh", {"backend": "codex"})
+        stolen = holder["stolen"]
+        assert stolen["last_attempt_at"] != holder["original_attempt"]
+        assert stolen["lease_until"] == canonical_utc(start + timedelta(seconds=60))
+        state = plugin.get_probe_state(SCOPE, PROBE_ID)
+        assert state["last_attempt_at"] == stolen["last_attempt_at"]
+        assert state["lease_until"] == stolen["lease_until"]
+        assert state == stolen
+        assert first["scopes"][0]["written"] == 1
+        assert len(plugin.quota_snapshots(SCOPE)) == 1
+    finally:
         store.close()
 
 
