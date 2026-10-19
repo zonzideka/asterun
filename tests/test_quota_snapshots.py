@@ -118,6 +118,26 @@ def test_normalize_observation_rejects_invalid_unknown_and_sensitive_values(muta
         assert "valid_until" in error.details["missing"]
 
 
+def test_normalize_observation_rejects_manual_constraints():
+    reject(normalize_observation, window(confidence="high"))
+    reject(normalize_observation, window(paid_overage=True))
+    reject(normalize_observation, window(window_kind="latch"))
+    reject(normalize_observation, window(
+        observed_at="2026-10-01T00:00:00Z",
+        valid_until="2026-10-02T00:00:01Z",
+        resets_at="2026-10-09T00:00:00Z",
+    ))
+    allowed = normalize_observation(window(
+        observed_at="2026-10-01T00:00:00Z",
+        valid_until="2026-10-02T00:00:00Z",
+        resets_at="2026-10-09T00:00:00Z",
+    ))
+    assert allowed["source_kind"] == "manual"
+    assert allowed["confidence"] == "low"
+    assert allowed["paid_overage"] is False
+    assert allowed["valid_until"] == "2026-10-02T00:00:00Z"
+
+
 def test_window_epoch_must_be_absent_without_resets_at():
     reject(normalize_observation, window(resets_at=None, window_epoch="2026-10-08T00:00:00Z"))
     got = normalize_observation(window(resets_at=None))
@@ -229,6 +249,21 @@ def test_merge_keeps_latest_and_flags_cross_source_conflict():
     assert [(item["observation"]["bucket_id"], item["observation"]["window_kind"]) for item in separate] == [("a", "5h"), ("b", "weekly")]
     assert merge_observations([]) == []
     reject(merge_observations, {"scope_ref": "backend:codex"})
+
+
+def test_merge_prefers_newer_reset_window_without_cross_window_conflict():
+    # 99% 与 1% 只隔两分钟，但 resets_at 不属于同一窗口。结果取较新窗口的 1%。
+    base = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    assert _merged([
+        window(
+            source_kind="probe_codex", confidence="high", used_bp=9900,
+            observed_at=at(base + timedelta(minutes=2)), resets_at=at(base + timedelta(days=7)),
+        ),
+        window(
+            source_kind="manual", used_bp=100,
+            observed_at=at(base), resets_at=at(base + timedelta(days=14)),
+        ),
+    ]) == [("manual", 100, [])]
 
 
 def test_normalize_probe_state_roundtrip_and_rejection():

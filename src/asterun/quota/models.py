@@ -111,6 +111,13 @@ def normalize_observation(value: Any) -> dict[str, Any]:
         _fail("confidence 无效")
     if type(value["paid_overage"]) is not bool:
         _fail("paid_overage 必须为布尔值")
+    if value["source_kind"] == "manual":
+        if value["confidence"] != "low":
+            _fail("手动录入的 confidence 必须为 low")
+        if value["paid_overage"] is not False:
+            _fail("手动录入的 paid_overage 必须为 false")
+        if value["window_kind"] == "latch":
+            _fail("手动录入不能创建闩锁")
     if "used_bp" in value:
         integer(value["used_bp"], "used_bp", nullable=True)
         if value["used_bp"] is not None and value["used_bp"] > 10000:
@@ -126,6 +133,8 @@ def normalize_observation(value: Any) -> dict[str, Any]:
     resets = timestamp(value["resets_at"], "resets_at", nullable=True) if "resets_at" in value else None
     if resets is not None and valid > resets:
         _fail("valid_until 不能晚于 resets_at")
+    if value["source_kind"] == "manual" and valid - observed > MANUAL_MAX_TTL:
+        _fail("手动录入的有效期不能超过 24 小时")
     epoch = window_epoch_from(resets)
     if "window_epoch" in value and value["window_epoch"] is not None:
         supplied = timestamp(value["window_epoch"], "window_epoch")
@@ -266,9 +275,10 @@ def freshness(obs: dict[str, Any] | None, now: datetime | str) -> dict[str, Any]
 
 
 def merge_observations(observations: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """同一 (scope_ref, bucket_id, window_kind) 取 observed_at 最新。
+    """同一 (scope_ref, bucket_id, window_kind) 内，先取 resets_at 最新的重置窗口。
 
-    最新一条前后 5 分钟内，不同来源的 used_bp 相差超过 1000 时，改取较大的 used_bp，并标 source_conflict。
+    该窗口内取 observed_at 最新。最新一条前后 5 分钟内，不同来源的 used_bp 相差超过 1000 时，
+    改取较大的 used_bp，并标 source_conflict。两条观测的窗口标记都存在且不同时，不跨窗口比较。
     """
     if not isinstance(observations, list):
         _fail("额度合并输入必须是数组")
@@ -284,7 +294,44 @@ def _observed(obs: dict) -> datetime:
     return timestamp(obs.get("observed_at"), "observed_at")
 
 
+def _reset_moment(obs: dict) -> datetime | None:
+    raw = obs.get("resets_at")
+    if raw is None:
+        return None
+    return timestamp(raw, "resets_at")
+
+
+def _window_marker(obs: dict) -> str | None:
+    """重置窗口身份。已有 window_epoch 时用它，否则把 resets_at 截到分钟。"""
+    epoch = obs.get("window_epoch")
+    if isinstance(epoch, str) and epoch:
+        return epoch
+    moment = _reset_moment(obs)
+    if moment is None:
+        return None
+    return window_epoch_from(moment)
+
+
+def _different_windows(left: dict, right: dict) -> bool:
+    left_marker, right_marker = _window_marker(left), _window_marker(right)
+    return left_marker is not None and right_marker is not None and left_marker != right_marker
+
+
+def _in_latest_reset_window(group: list[dict]) -> list[dict]:
+    """只保留 resets_at 最新的窗口。没有重置时间的观测不与有窗口的观测混在一起。"""
+    ranked = [(obs, _window_marker(obs), _reset_moment(obs)) for obs in group]
+    dated = [item for item in ranked if item[2] is not None]
+    if not dated:
+        return group
+    latest = max(item[2] for item in dated)
+    markers = {item[1] for item in dated if item[2] == latest and item[1] is not None}
+    if not markers:
+        return group
+    return [obs for obs, marker, _moment in ranked if marker in markers]
+
+
 def _merge_group(group: list[dict]) -> dict[str, Any]:
+    group = _in_latest_reset_window(group)
     ordered = sorted(group, key=lambda obs: (
         _observed(obs), str(obs.get("source_kind")), obs["used_bp"] if type(obs.get("used_bp")) is int else -1))
     latest = ordered[-1]
@@ -293,7 +340,7 @@ def _merge_group(group: list[dict]) -> dict[str, Any]:
     conflict = False
     for index, left in enumerate(recent):
         for right in recent[index + 1:]:
-            if left.get("source_kind") == right.get("source_kind"):
+            if left.get("source_kind") == right.get("source_kind") or _different_windows(left, right):
                 continue
             left_bp, right_bp = left.get("used_bp"), right.get("used_bp")
             if type(left_bp) is int and type(right_bp) is int and abs(left_bp - right_bp) > CONFLICT_BP:

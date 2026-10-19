@@ -43,6 +43,20 @@ Codex 在绑定校验通过后，可通过 `task-submit --conversation-id ID` �
 
 普通 Codex 任务默认仍以 `untrusted` 和 `workspace-write` 运行。需要在工作区沙箱内自动执行、只在越界时询问时，按[安装说明](install.md#原生审批模式)把该后端的 `approval_policy` 设为 `on-request`。这与实例级审批规则是两项配置。
 
+## 额度缓存
+
+`quota-inspect`、`quota-set` 和 `quota-clear` 管理本机额度缓存。三者都需要 SQLite 状态目录，否则返回 `CONFIG_REQUIRED`。
+
+范围用 `--scope` 或 `--backend`，二者只能指定一个。`quota-inspect` 可以省略范围，这时列出已配置的全部 scope。`quota-set` 和 `quota-clear` 必须指定其中一个。
+
+`quota-inspect` 的权限与 `usage-inspect` 相同，只读整个实例。它只读本地缓存，不写库，也不查询上游。
+
+`quota-set` 和 `quota-clear` 的权限与 `config-apply` 相同。实例停用时，这两项会被拦截。
+
+`quota-set` 还需要 `--bucket`、`--window`（`5h`、`weekly`、`monthly`、`billing_period` 或 `other`）、`--used-percent` 和 `--valid-until`。可选 `--resets-at`、`--window-duration-s` 和 `--exhausted`。手动录入的可信度为 low，有效期不超过 24 小时，不能创建闩锁。
+
+`quota-clear` 只删除手动录入，探针、被动采集和闩锁保留。
+
 ## 后续配置
 
 [安装说明](install.md)包含配置修订、会话绑定、工作流、备份和恢复。[PR 审查](pr-review.md)说明快照、复审与发布；[结果交付](review-consumer.md)说明宿主通知接入；[插件说明](plugins.md)说明独立插件的配置与凭据引用。

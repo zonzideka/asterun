@@ -351,7 +351,7 @@ def _app(args: argparse.Namespace, *, entry: str = "cli") -> Application:
         return app
     return Application.from_paths(config_path, state_dir, entry=entry,
                                   background=args.command in {"serve", "mcp"},
-                                  restore_scheduler=args.command != "usage-report")
+                                  restore_scheduler=args.command not in {"usage-report", "quota-inspect"})
 
 
 COMMAND_METHODS = {

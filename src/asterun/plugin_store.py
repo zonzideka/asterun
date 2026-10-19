@@ -120,6 +120,35 @@ def _conflict(message="插件执行绑定已关联不同内容"):
     raise AsterunError("BINDING_MISMATCH", message)
 
 
+def _load_quota_snapshots(conn, scope_ref, namespace) -> list[dict]:
+    """只做 SELECT。按 observed_at、rowid 排序，与 PluginStore.quota_snapshots 相同。"""
+    text(namespace, "namespace_id")
+    if scope_ref is None:
+        rows = conn.execute(
+            "SELECT payload,rowid FROM plugin_quota_snapshots WHERE namespace_id=?",
+            (namespace,),
+        ).fetchall()
+    else:
+        text(scope_ref, "scope_ref")
+        rows = conn.execute(
+            "SELECT payload,rowid FROM plugin_quota_snapshots WHERE namespace_id=? AND scope_ref=?",
+            (namespace, scope_ref),
+        ).fetchall()
+    loaded = [(_load(raw), rowid) for raw, rowid in rows]
+    loaded.sort(key=lambda item: (timestamp(item[0]["observed_at"], "observed_at"), item[1]))
+    return [item[0] for item in loaded]
+
+
+def read_quota_snapshots(conn, scope_ref, namespace="ns_local") -> list[dict]:
+    """只读已有额度快照。表不存在时返回空列表，不建表、不开写事务。"""
+    found = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='plugin_quota_snapshots'"
+    ).fetchone()
+    if found is None:
+        return []
+    return _load_quota_snapshots(conn, scope_ref, namespace)
+
+
 def _evidence(values):
     if isinstance(values, dict):
         values = [values]
@@ -519,18 +548,7 @@ class PluginStore:
         return {"id": row_id, "namespace_id": namespace, "observation": observation}
 
     def quota_snapshots(self, scope_ref=None, namespace="ns_local"):
-        text(namespace, "namespace_id")
-        if scope_ref is None:
-            rows = self._conn.execute(
-                "SELECT payload,rowid FROM plugin_quota_snapshots WHERE namespace_id=?", (namespace,)).fetchall()
-        else:
-            text(scope_ref, "scope_ref")
-            rows = self._conn.execute(
-                "SELECT payload,rowid FROM plugin_quota_snapshots WHERE namespace_id=? AND scope_ref=?",
-                (namespace, scope_ref)).fetchall()
-        loaded = [(_load(raw), rowid) for raw, rowid in rows]
-        loaded.sort(key=lambda item: (timestamp(item[0]["observed_at"], "observed_at"), item[1]))
-        return [item[0] for item in loaded]
+        return _load_quota_snapshots(self._conn, scope_ref, namespace)
 
     def clear_manual(self, scope_ref, namespace="ns_local"):
         """只删除该 scope 的 manual 行，保留探针、被动采集和闩锁。"""

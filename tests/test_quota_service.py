@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -11,7 +12,7 @@ import pytest
 from asterun.application import Application
 from asterun.config_migration import migrate_v1_to_v2
 from asterun.errors import AsterunError
-from asterun.plugin_store import PluginStore
+from asterun.plugin_store import PluginStore, read_quota_snapshots
 from asterun.quota.service import handle
 
 
@@ -147,10 +148,23 @@ def test_clear_leaves_non_manual_probe(app):
 
 
 def test_inspect_does_not_write(app):
-    alias = alias_of(app)
-    before = app.store._conn.total_changes
-    handle(app, "quota.inspect", {"backend": alias})
-    assert app.store._conn.total_changes == before
+    conn = app.store._conn
+    conn.execute("PRAGMA query_only=ON")
+    try:
+        report = handle(app, "quota.inspect", {})
+    finally:
+        conn.execute("PRAGMA query_only=OFF")
+    assert report["upstream_queried"] is False
+    assert "scopes" in report
+
+
+def test_read_quota_snapshots_missing_table_creates_nothing():
+    conn = sqlite3.connect(":memory:")
+    try:
+        assert read_quota_snapshots(conn, "backend:fake") == []
+        assert conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall() == []
+    finally:
+        conn.close()
 
 
 def test_v2_inspect_scopes_match_billing_pools(managed):
@@ -171,9 +185,12 @@ def test_cli_rejects_latch_window_and_inspect_prints_ok(config_path: Path, isola
     assert "invalid choice" in rejected.stderr
     assert "latch" in rejected.stderr
 
+    state = isolated_env / "cli-quota-state"
+    opened = Application.from_paths(config_path, state)
+    opened.close()
     inspected = _run([
         "--config", str(config_path),
-        "--state-dir", str(isolated_env / "cli-quota-state"),
+        "--state-dir", str(state),
         "quota-inspect",
     ])
     assert inspected.returncode == 0, inspected.stderr + inspected.stdout

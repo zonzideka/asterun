@@ -137,12 +137,16 @@ def _tightest(windows: list[dict]) -> dict | None:
 
 
 def inspect_quota(app, payload: dict) -> dict:
+    from asterun.plugin_store import read_quota_snapshots
+
     scopes = select_scopes(app.config, payload, single=False)
-    store, namespace = _store(app)
+    admission = getattr(app, "admission", None)
+    namespace = admission.namespace if admission is not None else _NAMESPACE
+    conn = app.store._conn
     now = _now()
     reports = []
     for scope in scopes:
-        merged = merge_observations(store.quota_snapshots(scope, namespace))
+        merged = merge_observations(read_quota_snapshots(conn, scope, namespace))
         windows = [_window_view(item, now) for item in merged]
         reports.append({"scope_ref": scope, "tightest": _tightest(windows), "windows": windows})
     return {"scopes": reports, "upstream_queried": False}
