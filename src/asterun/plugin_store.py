@@ -58,6 +58,12 @@ _SCHEMA = (
         namespace_id TEXT NOT NULL, scope_ref TEXT NOT NULL, probe_id TEXT NOT NULL,
         last_attempt_at TEXT, last_ok_at TEXT, last_error_code TEXT, lease_until TEXT,
         PRIMARY KEY(namespace_id, scope_ref, probe_id))""",
+    """CREATE TABLE IF NOT EXISTS plugin_routing_decisions (
+        namespace_id TEXT, id TEXT PRIMARY KEY, task_id TEXT, run_id TEXT, role TEXT,
+        group_name TEXT, chosen TEXT, primary_alias TEXT, mode TEXT, reason_code TEXT,
+        payload TEXT, evaluated_at TEXT)""",
+    """CREATE INDEX IF NOT EXISTS idx_plugin_routing_decisions_key
+        ON plugin_routing_decisions(namespace_id, group_name, evaluated_at)""",
 )
 SCHEMA = ";\n".join(_SCHEMA) + ";\n"
 TABLE_COLUMNS = {
@@ -77,6 +83,13 @@ QUOTA_TABLE_COLUMNS = {
     "plugin_quota_probe_state": {
         "namespace_id", "scope_ref", "probe_id", "last_attempt_at", "last_ok_at",
         "last_error_code", "lease_until",
+    },
+}
+# 路由决策随 PR6 补上，不升 schema。旧备份可以没有；出现时列必须完全一致。
+ROUTING_TABLE_COLUMNS = {
+    "plugin_routing_decisions": {
+        "namespace_id", "id", "task_id", "run_id", "role", "group_name", "chosen",
+        "primary_alias", "mode", "reason_code", "payload", "evaluated_at",
     },
 }
 QUOTA_SNAPSHOT_LIMIT = 500

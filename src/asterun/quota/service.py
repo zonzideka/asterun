@@ -541,16 +541,8 @@ def _member_latched(app, alias: str) -> bool:
     return False
 
 
-def explain_routing(app, payload: dict) -> dict:
-    """只读解释候选组。不写库，不改变派发。"""
-    group_name = payload.get("group")
-    backend = payload.get("backend")
-    if (group_name is None) == (backend is None):
-        _fail("group 与 backend 只能指定一个" if backend is not None else "需要 group 或 backend")
-    if backend is not None:
-        if not isinstance(backend, str) or not backend.startswith("@") or len(backend) == 1:
-            _fail("backend 必须是 @候选组名")
-        group_name = backend[1:]
+def evaluate_group(app, group_name, *, sticky=None) -> dict:
+    """对组成员计算窗口、闩锁、在途与评分，并返回 select 结果。不写库。"""
     config = app.config
     routing = getattr(config, "routing", None)
     groups = routing.get("candidate_groups") if isinstance(routing, dict) else None
@@ -575,7 +567,23 @@ def explain_routing(app, payload: dict) -> dict:
         scores[alias] = score_candidate(
             windows, now=now, prefs=prefs, inflight_runs=inflight, est_bp_per_run=_EST_BP_PER_RUN,
         )
-    chosen = select(group, scores, prefs=prefs)
+    return select(group, scores, prefs=prefs, sticky=sticky)
+
+
+def explain_routing(app, payload: dict) -> dict:
+    """只读解释候选组。不写库，不改变派发。"""
+    group_name = payload.get("group")
+    backend = payload.get("backend")
+    if (group_name is None) == (backend is None):
+        _fail("group 与 backend 只能指定一个" if backend is not None else "需要 group 或 backend")
+    if backend is not None:
+        if not isinstance(backend, str) or not backend.startswith("@") or len(backend) == 1:
+            _fail("backend 必须是 @候选组名")
+        group_name = backend[1:]
+    chosen = evaluate_group(app, group_name)
+    routing = getattr(app.config, "routing", None)
+    raw_prefs = routing.get("quota_preference") if isinstance(routing, dict) else None
+    prefs = resolve_prefs(raw_prefs if isinstance(raw_prefs, dict) else None)
     chosen["dispatch_changed"] = False
     chosen["preference_enabled"] = bool(prefs["enabled"])
     return chosen
