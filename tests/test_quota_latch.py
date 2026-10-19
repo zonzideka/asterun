@@ -267,6 +267,81 @@ def test_apply_result_writes_agy_provider_failure_and_rate_limit_does_not_latch(
     assert kept.native["provider_failure"]["kind"] == "quota_exhausted"
 
 
+def _runtime_native_for_result_error(error):
+    """走 runtime 结果行，不启动 agy。error 只参与分类，不进入 native。"""
+    from asterun.backends.antigravity_runtime import AntigravityRuntime, _Run
+
+    state = _Run("run_runtime_error")
+    result = {"status": "ERROR", "response": "", "error": error, "conversation_id": ""}
+    line = json.dumps({"event": "result", "result": result}).encode()
+    assert AntigravityRuntime._event(state, line) is True
+    return state.native()
+
+
+def test_runtime_result_error_latches_quota_without_raw_text(tmp_path):
+    from asterun.application import Application
+
+    quota_error = "Error 429: Quota exceeded for quota metric X"
+    quota_native = _runtime_native_for_result_error(quota_error)
+    assert quota_native["provider_failure"]["kind"] == "quota_exhausted"
+    assert set(quota_native["provider_failure"]) == {"kind", "status_code", "source", "provider"}
+    assert "Quota exceeded" not in json.dumps(quota_native)
+
+    rate_native = _runtime_native_for_result_error("429 Too Many Requests")
+    assert rate_native["provider_failure"]["kind"] == "rate_limited"
+    assert "429 Too Many Requests" not in json.dumps(rate_native)
+
+    home = tmp_path / "agy"
+    home.mkdir()
+    backend = _Backend("antigravity", home=str(home), model="gemini-2.5-pro")
+    app = _App({"agy": backend})
+    app.admission = None
+    latch_scopes = scopes(app, "agy")
+
+    def save_run(run):
+        runs = app.store._runs
+        for index, existing in enumerate(runs):
+            if existing.id == run.id:
+                runs[index] = run
+                return
+        runs.append(run)
+
+    app.store.save_run = save_run
+    app._attach_antigravity_provider_failure = lambda run: Application._attach_antigravity_provider_failure(app, run)
+    app._set_run = lambda run, status, **updates: Application._set_run(app, run, status, **updates)
+
+    def apply(run_id, native):
+        run = Run(
+            id=RunId(run_id),
+            task_id=TaskId("tsk_agy_runtime"),
+            backend=BackendId("agy"),
+            status=RunStatus.RUNNING,
+            created_at="2026-01-01T00:00:00Z",
+            summary="先前摘要",
+            native={"quota_latch_scopes": list(latch_scopes)},
+        )
+        Application._apply_backend_result_inner(app, run, {
+            "status": "failed",
+            "terminated": True,
+            "error_code": "ANTIGRAVITY_RUN_FAILED",
+            "summary": "",
+            "native": native,
+        }, "backend.antigravity")
+        return run
+
+    limited = apply("run_runtime_limited", rate_native)
+    assert limited.native["provider_failure"]["kind"] == "rate_limited"
+    assert active_latch(app, "agy") is None
+
+    exhausted = apply("run_runtime_exhausted", quota_native)
+    assert exhausted.native["provider_failure"]["kind"] == "quota_exhausted"
+    assert "Quota exceeded" not in json.dumps(exhausted.native)
+    assert exhausted.summary == "先前摘要"
+    latch = active_latch(app, "agy")
+    assert latch["source_run_id"] == "run_runtime_exhausted"
+    assert latch["provider"] == "antigravity"
+
+
 def _utc_z(moment: datetime) -> str:
     return moment.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 

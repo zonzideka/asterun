@@ -40,6 +40,37 @@ _DENIED = re.compile(
     r"(?:cannot|can't|unable to)[^\n]{0,80}(?:ask|obtain)[^\n]{0,80}(?:approval|permission)",
     re.IGNORECASE,
 )
+# agy 真实额度错误格式出现后在此补充
+AGY_QUOTA_PATTERNS: tuple[re.Pattern[str], ...] = ()
+_AGY_RATE_LIMIT = re.compile(r"\b429\b|RESOURCE_EXHAUSTED")
+_AGY_QUOTA_WORD = re.compile(r"quota", re.IGNORECASE)
+_PROVIDER_FAILURE_KEYS = ("kind", "status_code", "source", "provider")
+
+
+def classify_agy_error(status, text) -> dict | None:
+    """只在 ERROR 终态做白名单分类。返回值只有四个字段，不含供应商原文。"""
+    if status != "ERROR" or not isinstance(text, str):
+        return None
+    limited = _AGY_RATE_LIMIT.search(text) is not None
+    quota_hit = _AGY_QUOTA_WORD.search(text) is not None or any(
+        pattern.search(text) for pattern in AGY_QUOTA_PATTERNS
+    )
+    if quota_hit and (limited or any(pattern.search(text) for pattern in AGY_QUOTA_PATTERNS)):
+        kind = "quota_exhausted"
+    elif limited:
+        kind = "rate_limited"
+    else:
+        return None
+    return {
+        "kind": kind,
+        "status_code": 429,
+        "source": "native_result",
+        "provider": "antigravity",
+    }
+
+
+def _provider_failure(classified: dict) -> dict[str, Any]:
+    return {key: classified[key] for key in _PROVIDER_FAILURE_KEYS}
 
 
 class _ProtocolError(Exception):
@@ -92,6 +123,7 @@ class _Run:
     stdout_bytes: int = 0
     stderr_bytes: int = 0
     events_seen: int = 0
+    provider_failure: dict[str, Any] | None = None
 
     def native(self) -> dict[str, Any]:
         native: dict[str, Any] = {
@@ -120,6 +152,8 @@ class _Run:
                     native[name] = self.result[name]
             if "usage" in self.result:
                 native["usage_scope"] = "session"
+        if self.provider_failure is not None:
+            native["provider_failure"] = _provider_failure(self.provider_failure)
         return native
 
 
@@ -297,10 +331,15 @@ class AntigravityRuntime:
                 state.result[name] = result[name]
         if usage is not None:
             state.result["usage"] = {k: v for k, v in usage.items() if k in USAGE_KEYS}
-        if result.get("error"):
-            if not isinstance(result["error"], str):
+        error = result.get("error")
+        if error:
+            if not isinstance(error, str):
                 raise _ProtocolError("invalid_result_error")
             state.result["has_error"] = True
+        error_text = error if isinstance(error, str) else ""
+        classified = classify_agy_error(status, error_text + result["response"])
+        if classified is not None:
+            state.provider_failure = _provider_failure(classified)
         state.text = _bounded_text(result["response"])
         state.text_truncated |= state.text != result["response"]
         return True
