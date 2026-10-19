@@ -50,6 +50,8 @@ LEGACY_MODEL_ALIASES = {"grok-build": "grok-4.6"}
 DEFAULT_GROK_MODEL = "grok-4.6"
 VALID_REASONING_EFFORTS = frozenset({"low", "medium", "high"})
 GROK_ACP_METHODS = ("initialize", "session/new", "session/prompt")
+# 额度读取不进入派发白名单。方法名与 quota.grok_probe.GROK_BILLING_METHOD 保持一致。
+GROK_QUOTA_METHODS = ("initialize", "_x.ai/billing")
 DISPATCH_RECEIPT_KEY = "asterun.grok_dispatch_v1"
 PRE_PROMPT_STAGES = frozenset({"preflight", "spawn", "initialize", "session/new"})
 CODE_TOOLS = (
@@ -262,6 +264,12 @@ class GrokAcpTransport:
             build_session_prompt_params(session_id=session_id, text=text),
             timeout=timeout,
         )
+
+    def read_billing(self, timeout: float) -> dict[str, Any]:
+        """未公开额度扩展。不在 GROK_ACP_METHODS 派发白名单里。"""
+        from asterun.quota.grok_probe import GROK_BILLING_METHOD
+
+        return self.request(GROK_BILLING_METHOD, {}, timeout)
 
     def request(self, method: str, params: dict[str, Any] | None = None, timeout: float = 30.0) -> dict[str, Any]:
         return self._transport.request(method, params, timeout)

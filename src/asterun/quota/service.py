@@ -1,6 +1,7 @@
-"""额度快照的 inspect / set / clear，以及 Codex 只读 quota.refresh。
+"""额度快照的 inspect / set / clear，以及只读 quota.refresh。
 
-inspect / set / clear 只读写本地缓存。refresh 只调用 account/rateLimits/read，最小间隔默认 60 秒，不建线程。
+inspect / set / clear 只读写本地缓存。Codex refresh 只调用 account/rateLimits/read。
+Grok refresh 只有显式开启未公开探针时才调用 `_x.ai/billing`。最小间隔内不建线程。
 quota.read 与 usage.inspect 一样针对整个实例（资源 "*"）。
 quota.write 与 config.apply 一样针对整个实例。默认操作者策略不按动作名区分，因此两者都放行。
 """
@@ -21,13 +22,15 @@ from asterun.quota.models import (
     merge_observations,
     used_bp_from_percent,
 )
+from asterun.quota import grok_probe
 from asterun.quota.codex_probe import probe_codex, probe_lifetime_s
-from asterun.quota.settings import codex_quota_settings
+from asterun.quota.settings import codex_quota_settings, grok_quota_settings
 from asterun.usage.models import timestamp
 
 READ_ACTION = "quota.read"
 WRITE_ACTION = "quota.write"
 PROBE_ID = "codex.app_server.rate_limits"
+GROK_PROBE_ID = "grok.acp.billing"
 MIN_PROBE_INTERVAL = timedelta(seconds=60)
 _NAMESPACE = "ns_local"
 _TIGHT = ("exhausted", "latched")
@@ -249,10 +252,10 @@ def _error_code(value) -> str:
     return "PROBE_FAILED"
 
 
-def _scope_result(scope: str, *, ok: bool, error_code, written: int, skipped) -> dict:
+def _scope_result(scope: str, *, probe_id: str, ok: bool, error_code, written: int, skipped) -> dict:
     return {
         "scope_ref": scope,
-        "probe_id": PROBE_ID,
+        "probe_id": probe_id,
         "ok": ok,
         "error_code": error_code,
         "written": written,
@@ -260,11 +263,11 @@ def _scope_result(scope: str, *, ok: bool, error_code, written: int, skipped) ->
     }
 
 
-def _save_probe_state(store, namespace, scope: str, now: datetime, previous, *, ok: bool, error_code,
+def _save_probe_state(store, namespace, scope: str, now: datetime, previous, *, probe_id: str, ok: bool, error_code,
                       claimed_attempt_at: str, claimed_lease_until: str) -> None:
     """仍持有本次写入的 last_attempt_at 与 lease_until 才写结果并释放租约。"""
     with store.transaction():
-        current = store.get_probe_state(scope, PROBE_ID, namespace)
+        current = store.get_probe_state(scope, probe_id, namespace)
         if (current is None or current.get("last_attempt_at") != claimed_attempt_at
                 or current.get("lease_until") != claimed_lease_until):
             return
@@ -276,7 +279,7 @@ def _save_probe_state(store, namespace, scope: str, now: datetime, previous, *, 
             code = error_code
         store.put_probe_state({
             "scope_ref": scope,
-            "probe_id": PROBE_ID,
+            "probe_id": probe_id,
             "last_attempt_at": claimed_attempt_at,
             "last_ok_at": last_ok_at,
             "last_error_code": code,
@@ -284,90 +287,107 @@ def _save_probe_state(store, namespace, scope: str, now: datetime, previous, *, 
         }, namespace)
 
 
+def _refresh_probe_scope(store, namespace, scope: str, now: datetime, *, probe_id: str, settings: dict, call) -> dict:
+    """占用租约、遵守最小间隔，并只在仍持有租约时写回结果。call(timeout_s, ttl_s) 执行具体探针。"""
+    interval = _probe_interval(settings)
+    raw_timeout = settings["timeout_seconds"]
+    timeout_s = raw_timeout if type(raw_timeout) is int else 10
+    with store.transaction():
+        previous = store.get_probe_state(scope, probe_id, namespace)
+        if _lease_active(previous, now):
+            claimed = False
+            skipped = "in_flight"
+        elif not _probe_due(previous, now, interval):
+            claimed = False
+            skipped = "min_interval"
+        else:
+            claimed_state = store.put_probe_state({
+                "scope_ref": scope,
+                "probe_id": probe_id,
+                "last_attempt_at": canonical_utc(now),
+                "last_ok_at": None if previous is None else previous.get("last_ok_at"),
+                "last_error_code": None if previous is None else previous.get("last_error_code"),
+                "lease_until": canonical_utc(now + timedelta(seconds=probe_lifetime_s(timeout_s))),
+            }, namespace)
+            claimed_attempt_at = claimed_state["last_attempt_at"]
+            claimed_lease_until = claimed_state["lease_until"]
+            claimed = True
+            skipped = None
+    if not claimed:
+        return _scope_result(scope, probe_id=probe_id, ok=False, error_code=None, written=0, skipped=skipped)
+    ok = False
+    error_code = "PROBE_FAILED"
+    written = 0
+    try:
+        try:
+            report = call(raw_timeout, settings["ttl_seconds"])
+        except Exception:
+            report = {"ok": False, "error_code": "PROBE_FAILED"}
+        if not isinstance(report, dict):
+            report = {"ok": False, "error_code": "PROBE_FAILED"}
+        ok = report.get("ok") is True
+        error_code = None if ok else _error_code(report.get("error_code"))
+        observations = report.get("observations") if ok else None
+        if ok and not isinstance(observations, list):
+            ok = False
+            error_code = "PROBE_FAILED"
+        elif ok and any(not isinstance(item, dict) for item in observations):
+            ok = False
+            error_code = "PROBE_FAILED"
+        elif ok:
+            for item in observations:
+                observation = dict(item)
+                observation["scope_ref"] = scope
+                store.append_quota_snapshot(observation, namespace)
+                written += 1
+    finally:
+        _save_probe_state(
+            store, namespace, scope, now, previous, probe_id=probe_id, ok=ok, error_code=error_code,
+            claimed_attempt_at=claimed_attempt_at, claimed_lease_until=claimed_lease_until,
+        )
+    return _scope_result(scope, probe_id=probe_id, ok=ok, error_code=error_code, written=written, skipped=None)
+
+
 def refresh_quota(app, payload: dict) -> dict:
-    """对 Codex 后端做只读 account/rateLimits/read。间隔、超时和缓存时间来自 quota 配置。"""
+    """按后端种类做只读额度刷新。间隔、超时和缓存时间来自 quota 配置。"""
     if app.config.schema_version == 2 and payload.get("backend") is None:
         _fail("v2 额度刷新目前只支持 backend 参数")
-    probe_settings = codex_quota_settings(app.config)["probes"]["codex_app_server"]
     scopes = select_scopes(app.config, payload, single=False)
     explicit = payload.get("scope_ref") is not None or payload.get("backend") is not None
     store, namespace = _store(app)
     now = _now()
     reports = []
-    interval = _probe_interval(probe_settings)
-    timeout_s = probe_settings["timeout_seconds"]
-    if type(timeout_s) is not int:
-        timeout_s = 10
+    codex_settings = codex_quota_settings(app.config)["probes"]["codex_app_server"]
+    grok_settings = grok_quota_settings(app.config)["probes"]["grok_acp_billing"]
     for scope in scopes:
         backend = _codex_backend(app.config, scope, payload)
-        if backend.kind != "codex":
-            if explicit:
-                _fail("quota.refresh 只支持 Codex 后端", backend=backend.name)
-            continue
-        if probe_settings["enabled"] is not True:
-            reports.append(_scope_result(scope, ok=False, error_code="PROBE_DISABLED", written=0, skipped=None))
-            continue
-        with store.transaction():
-            previous = store.get_probe_state(scope, PROBE_ID, namespace)
-            if _lease_active(previous, now):
-                claimed = False
-                skipped = "in_flight"
-            elif not _probe_due(previous, now, interval):
-                claimed = False
-                skipped = "min_interval"
-            else:
-                claimed_state = store.put_probe_state({
-                    "scope_ref": scope,
-                    "probe_id": PROBE_ID,
-                    "last_attempt_at": canonical_utc(now),
-                    "last_ok_at": None if previous is None else previous.get("last_ok_at"),
-                    "last_error_code": None if previous is None else previous.get("last_error_code"),
-                    "lease_until": canonical_utc(now + timedelta(seconds=probe_lifetime_s(timeout_s))),
-                }, namespace)
-                claimed_attempt_at = claimed_state["last_attempt_at"]
-                claimed_lease_until = claimed_state["lease_until"]
-                claimed = True
-                skipped = None
-        if not claimed:
-            reports.append(_scope_result(scope, ok=False, error_code=None, written=0, skipped=skipped))
-            continue
-        ok = False
-        error_code = "PROBE_FAILED"
-        written = 0
-        try:
-            try:
-                report = probe_codex(
-                    backend,
-                    scope_ref=scope,
-                    now=now,
-                    timeout_s=probe_settings["timeout_seconds"],
-                    ttl_s=probe_settings["ttl_seconds"],
-                )
-            except Exception:
-                report = {"ok": False, "error_code": "PROBE_FAILED"}
-            if not isinstance(report, dict):
-                report = {"ok": False, "error_code": "PROBE_FAILED"}
-            ok = report.get("ok") is True
-            error_code = None if ok else _error_code(report.get("error_code"))
-            observations = report.get("observations") if ok else None
-            if ok and not isinstance(observations, list):
-                ok = False
-                error_code = "PROBE_FAILED"
-            elif ok and any(not isinstance(item, dict) for item in observations):
-                ok = False
-                error_code = "PROBE_FAILED"
-            elif ok:
-                for item in observations:
-                    observation = dict(item)
-                    observation["scope_ref"] = scope
-                    store.append_quota_snapshot(observation, namespace)
-                    written += 1
-        finally:
-            _save_probe_state(
-                store, namespace, scope, now, previous, ok=ok, error_code=error_code,
-                claimed_attempt_at=claimed_attempt_at, claimed_lease_until=claimed_lease_until,
-            )
-        reports.append(_scope_result(scope, ok=ok, error_code=error_code, written=written, skipped=None))
+        if backend.kind == "codex":
+            if codex_settings["enabled"] is not True:
+                reports.append(_scope_result(
+                    scope, probe_id=PROBE_ID, ok=False, error_code="PROBE_DISABLED", written=0, skipped=None,
+                ))
+                continue
+            reports.append(_refresh_probe_scope(
+                store, namespace, scope, now, probe_id=PROBE_ID, settings=codex_settings,
+                call=lambda timeout_s, ttl_s, backend=backend, scope=scope: probe_codex(
+                    backend, scope_ref=scope, now=now, timeout_s=timeout_s, ttl_s=ttl_s,
+                ),
+            ))
+        elif backend.kind == "grok":
+            acknowledged = grok_settings["enabled"] is True and grok_settings["acknowledge_undocumented"] is True
+            if not acknowledged:
+                reports.append(_scope_result(
+                    scope, probe_id=GROK_PROBE_ID, ok=False, error_code="PROBE_DISABLED", written=0, skipped=None,
+                ))
+                continue
+            reports.append(_refresh_probe_scope(
+                store, namespace, scope, now, probe_id=GROK_PROBE_ID, settings=grok_settings,
+                call=lambda timeout_s, ttl_s, backend=backend, scope=scope: grok_probe.probe_grok(
+                    backend, scope_ref=scope, now=now, timeout_s=timeout_s, ttl_s=ttl_s,
+                ),
+            ))
+        elif explicit:
+            _fail("quota.refresh 只支持 Codex 后端", backend=backend.name)
     return {"scopes": reports, "upstream_queried": True}
 
 
