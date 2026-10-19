@@ -67,6 +67,12 @@ human 接管协调本机编排所有权并等待受管轮次结束。完整工�
 
 长期任务使用 `asterun --config <配置> --state-dir <目录> serve`，调用方加 `--connect`；stdio MCP 也可拥有常驻执行器。单次 CLI 只推进当次可执行阶段。
 
+## 额度缓存
+
+`quota.inspect`（CLI `quota-inspect`，MCP `quota_inspect`）与 `usage.inspect` 一样只读整个实例。它只读本地额度缓存，不写库，不查询上游。`quota.set`（`quota-set` / `quota_set`）和 `quota.clear`（`quota-clear` / `quota_clear`）与 `config.apply` 同级；实例停用时被拦截。三者都需要 SQLite 状态目录，否则返回 `CONFIG_REQUIRED`。
+
+范围用 `--scope` 或 `--backend`。`quota-inspect` 可省略范围并列出已配置的全部 scope；`quota-set` 和 `quota-clear` 必须指定其中一个。`quota-set` 需要 `--bucket`、`--window`（`5h`、`weekly`、`monthly`、`billing_period` 或 `other`）、`--used-percent`、`--valid-until`，可选 `--resets-at`、`--window-duration-s`、`--exhausted`。手动录入可信度为 low，有效期不超过 24 小时，不能创建闩锁。`quota-clear` 只删除手动录入。
+
 ## 离线样例
 
 在仓库根目录创建环境，然后将下面的 Python 代码保存为 `/tmp/asterun-control-demo.py`。脚本为每次运行创建临时工作区与状态目录，使用 fake 后端，并在退出时清理。

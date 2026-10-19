@@ -67,6 +67,12 @@ Standard data is returned in Asterun's outer `Envelope.data`; errors appear in `
 
 For long-running work, start `asterun --config <config> --state-dir <directory> serve` and add `--connect` to caller commands. stdio MCP can also own a resident executor. A one-shot CLI advances only the phases it can execute during that invocation.
 
+## Quota cache
+
+`quota.inspect` (CLI `quota-inspect`, MCP `quota_inspect`) is read-only for the whole instance, the same as `usage.inspect`. It reads the local quota cache, does not write the database, and does not query upstream. `quota.set` (`quota-set` / `quota_set`) and `quota.clear` (`quota-clear` / `quota_clear`) have the same permission level as `config.apply` and are rejected when the instance is disabled. All three need a SQLite state directory; otherwise they return `CONFIG_REQUIRED`.
+
+Pass either `--scope` or `--backend`. `quota-inspect` may omit both and then lists every configured scope; `quota-set` and `quota-clear` require one of them. `quota-set` requires `--bucket`, `--window` (`5h`, `weekly`, `monthly`, `billing_period`, or `other`), `--used-percent`, and `--valid-until`. Optional flags are `--resets-at`, `--window-duration-s`, and `--exhausted`. A manual entry is low confidence, lasts at most 24 hours, and cannot create a latch. `quota-clear` deletes only manual entries.
+
 ## Offline example
 
 Create an environment from the repository root, then save the Python code below as `/tmp/asterun-control-demo.py`. Each run creates a temporary workspace and state directory, uses the fake backend, and cleans up on exit. The example retains its fixed Chinese task text for reproducibility.

@@ -181,6 +181,16 @@ def _validate_snapshot(path: Path) -> int:
             actual = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
             if not columns[table] <= actual:
                 raise AsterunError(INVALID_REQUEST, "备份数据库表结构不兼容")
+        if version >= 6:
+            # 额度表随 PR1 补上，不升 schema。旧备份两张都没有时照常通过；只出现一张或列被改过则拒绝。
+            from asterun.plugin_store import QUOTA_TABLE_COLUMNS
+            present = [name for name in QUOTA_TABLE_COLUMNS if name in tables]
+            if present and len(present) != len(QUOTA_TABLE_COLUMNS):
+                raise AsterunError(INVALID_REQUEST, "备份数据库表结构不兼容")
+            for name in present:
+                actual = {row[1] for row in conn.execute(f"PRAGMA table_info({name})")}
+                if QUOTA_TABLE_COLUMNS[name] != actual:
+                    raise AsterunError(INVALID_REQUEST, "备份数据库表结构不兼容")
         if conn.execute("SELECT 1 FROM sqlite_master WHERE type IN ('trigger', 'view') LIMIT 1").fetchone():
             raise AsterunError(INVALID_REQUEST, "备份含有未支持的触发器或视图")
         revision = conn.execute("SELECT value FROM meta WHERE key='applied_config_revision'").fetchone()

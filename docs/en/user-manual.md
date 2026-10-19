@@ -43,6 +43,20 @@ Enable [project registration](codex-projects.md) to associate the same native Co
 
 Ordinary Codex tasks still run with `untrusted` and `workspace-write` by default. To run automatically inside the workspace sandbox and ask only when escalating, set that backend's `approval_policy` to `on-request` as described in the [installation guide](install.md#native-approval-mode). This is separate from the instance approval rules.
 
+## Quota cache
+
+`quota-inspect`, `quota-set`, and `quota-clear` manage the local quota cache. All three need a SQLite state directory; otherwise they return `CONFIG_REQUIRED`.
+
+Pass either `--scope` or `--backend`. `quota-inspect` may omit both and then lists every configured scope. `quota-set` and `quota-clear` require one of them.
+
+`quota-inspect` has the same permission as `usage-inspect`: read-only for the whole instance. It reads the local cache, does not write the database, and does not query upstream.
+
+`quota-set` and `quota-clear` have the same permission level as `config-apply`. Both are rejected when the instance is disabled.
+
+`quota-set` also requires `--bucket`, `--window` (`5h`, `weekly`, `monthly`, `billing_period`, or `other`), `--used-percent`, and `--valid-until`. Optional flags are `--resets-at`, `--window-duration-s`, and `--exhausted`. A manual entry is low confidence, lasts at most 24 hours, and cannot create a latch.
+
+`quota-clear` deletes only manual entries. Probe, passive, and latch rows remain.
+
 ## Configure the rest of the workflow
 
 The [installation guide](install.md) covers configuration revisions, session bindings, workflows, backups, and recovery. The [PR review guide](pr-review.md) covers snapshots, follow-up reviews, and publication. See [result delivery](review-consumer.md) for host notifications and [plugins](plugins.md) for separate plugin configuration and credential references.
