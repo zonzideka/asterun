@@ -2,7 +2,13 @@
 
 # 首版发行说明
 
-当前公开源码版本为 `0.1.0a20`，正式稳定版 `0.1.0` 尚未发布。本次预发布的安装资产和校验文件见[对应版本发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a20)。首版范围已冻结，发布准备集中在现有行为、兼容和打包修复。项目采用 [Apache-2.0](../LICENSE)。`v0.1.0a20` 标签尚未打出，发行页上的文件要等该标签进入 `main` 且发行工作流成功之后才会出现。
+当前公开源码版本为 `0.1.0a21`，正式稳定版 `0.1.0` 尚未发布。本次预发布的安装资产和校验文件见[对应版本发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a21)。首版范围已冻结，发布准备集中在现有行为、兼容和打包修复。项目采用 [Apache-2.0](../LICENSE)。`v0.1.0a21` 标签尚未打出，发行页上的文件要等该标签进入 `main` 且发行工作流成功之后才会出现。
+
+## 0.1.0a21
+
+相对 2026-10-14 已发布的 [`v0.1.0a20`](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a20)，本版去掉对客户端版本的硬性限定。内置 Antigravity 后端不再绑定 agy CLI 1.2.0：派发前在临时 HOME 中运行 `agy --version` 与 `agy --help`（仅在后端启用且 `ASTERUN_RUN_ANTIGRAVITY=1` 时；输出最多 64 KiB，15 秒超时并结束进程组），要求版本不低于 1.2.0 且具备 `--input-format`、`--output-format`、`--model`、`--disable-slash-commands`、`--print-timeout`、`--add-dir`，否则给出明确错误；`backend-inspect` 新增 `cli_version`。profile 不再按 1.2.0 哈希清单核对内置技能、按平台钉定 `webm_encoder`、固定 Playwright 缓存 `1.57.0`，改为结构化检查（内置技能只允许本人所有、不可执行、不超过 128 KiB 的 `.md` 及 CLI 的 `.checksum`/`keep.txt`；encoder 为他人不可写的普通文件，不超过 64 MiB；缓存允许任意 `x.y.z` 空目录）；字节级固定改为可选，通过 `ASTERUN_ANTIGRAVITY_PINS` 指向 JSON 清单。接受新 CLI 的 `jetbox_summaries_proto.pb` 与空的 `mcp_config.json`。子进程环境加入 `AGY_CLI_DISABLE_AUTO_UPDATE=1`；实测 1.3.2 的 `stream-json` 模式不认该变量，agy 须放在不可写目录。外部 Antigravity 插件升到 `1.0.4`：worker 要求 CLI 不低于 1.2.0 并检查同一组参数（`upstream_feature_missing`），新增可选 `pins` 选项。Cursor 插件升到 `1.0.1`：依赖改为 `cursor-sdk>=1.0.31,<2`，并在启动 bridge 前检查所用 SDK 接口（`sdk_feature_missing`）。已用真实 agy 1.3.2（Linux x86_64）跑通只读任务。协议、SQLite schema 6、配置 schema 与标准 skill 最低接口 `0.1.0a14` 不变；Jules 插件仍为 `1.0.0`。
+
+尚未打 `v0.1.0a21`。资产要等该标签进入 `main` 且发行工作流成功之后，才会出现在[发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a21)。本次资产为核心 wheel、源码包、`asterun-skill-0.1.0a21.zip`、三个外部插件的 wheel 与源码包（Antigravity `1.0.4`，Cursor `1.0.1`，Jules `1.0.0`），以及 `SHA256SUMS`。
 
 ## 0.1.0a20
 
