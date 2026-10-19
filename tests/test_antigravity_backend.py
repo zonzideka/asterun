@@ -245,3 +245,23 @@ def test_binary_replaced_during_probe_is_probed_again(agy_config, isolated_env, 
         assert "cli_updated_during_run" not in final["run"]["native"]
     finally:
         app.close()
+
+
+def test_subagent_without_result_settles_quickly_and_frees_the_slot(agy_config, isolated_env):
+    binary = Path(json.loads(agy_config.read_text())["backends"]["agy"]["bin"])
+    original = binary.read_text()
+    binary.write_text(original.replace('MODE = os.environ.get("AGY_FIXTURE_MODE", "happy")', "MODE = 'subagent_no_result'"))
+    app = Application.from_paths(agy_config, isolated_env / "state", background=True)
+    try:
+        payload = {"workspace": "demo", "backend": "agy", "text": "input", "idempotency_key": "one"}
+        first = app.handle("task.submit", payload)
+        assert first.ok, first.error
+        final = wait(app, first.ids["task_id"], "failed")
+        assert final["run"]["error_code"] == "ANTIGRAVITY_RUN_INCOMPLETE"
+        assert final["run"]["terminated"] is True
+        binary.write_text(original)
+        second = app.handle("task.submit", {**payload, "idempotency_key": "two"})
+        assert second.ok, second.error
+        assert wait(app, second.ids["task_id"], "succeeded")["run"]["status"] == "succeeded"
+    finally:
+        app.close()
