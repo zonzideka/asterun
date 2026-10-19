@@ -72,6 +72,10 @@ def build_parser() -> argparse.ArgumentParser:
     quota_clear_scope.add_argument("--scope", dest="scope_ref")
     quota_clear_scope.add_argument("--backend")
     quota_clear.add_argument("--source", choices=("manual",))
+    quota_refresh = sub.add_parser("quota-refresh", help="只读刷新 Codex 额度；最小间隔 60 秒，不建线程、不耗额度")
+    quota_refresh_scope = quota_refresh.add_mutually_exclusive_group()
+    quota_refresh_scope.add_argument("--scope", dest="scope_ref")
+    quota_refresh_scope.add_argument("--backend")
     report = sub.add_parser("usage-report", help="汇总指定工作区、会话或任务的全部运行用量；不是账单")
     report.add_argument("--workspace")
     report.add_argument("--task-id")
@@ -357,7 +361,7 @@ def _app(args: argparse.Namespace, *, entry: str = "cli") -> Application:
 COMMAND_METHODS = {
     **{name.replace(".", "-"): name for name in (
         "plugin.list", "plugin.inspect", "plugin.register", "plugin.enable", "plugin.disable",
-        "connection.setup", "usage.inspect", "quota.inspect", "quota.set", "quota.clear",
+        "connection.setup", "usage.inspect", "quota.inspect", "quota.set", "quota.clear", "quota.refresh",
         "capability.invoke", "capability.discovery", "capability.prepare", "capability.submit", "capability.get")},
     "approval-assess": "approval.assess",
     "approval-apply-policy": "approval.apply-policy",

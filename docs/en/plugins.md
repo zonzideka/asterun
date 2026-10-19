@@ -6,7 +6,7 @@ Install a plugin in a separate environment, then register it with Asterun. Built
 
 ## Configuration and migration
 
-In v2, `plugins` stores installation registrations, `provider_accounts` holds provider identity references, `connections` pins authentication, environment, and model, `billing_pools` describes shared resource pools, and `backends` aliases point to connections. Start with the [offline fake example](../../examples/plugins/fake-v2.json).
+In v2, `plugins` stores installation registrations, `provider_accounts` holds provider identity references, `connections` pins authentication, environment, and model, `billing_pools` describes shared resource pools, and `backends` aliases point to connections. The optional `quota` section configures the Codex quota probe and passive collection; fields and defaults are below. Start with the [offline fake example](../../examples/plugins/fake-v2.json).
 
 Inspect a migration candidate for a v1 configuration:
 
@@ -52,7 +52,7 @@ Agents use `task-submit`. Structured tool capabilities use `capability-invoke --
 
 Inputs and outputs are validated against the manifest Schema and stored in `Task.capability_input` and `Run.output`. For a reviewable fixed plan or a code-quality workflow, use the [capability profile](capability-profile.md).
 
-CLI and MCP share request definitions; MCP tool names use underscores. `usage-inspect` shows the local budget ledger and provider observations already received. `quota-inspect` (MCP `quota_inspect`) reads the local quota cache and does not query upstream. `quota-set` records a manual entry at low confidence for at most 24 hours. `quota-clear` removes only manual entries. After disabling a plugin, the original principal can still read, cancel, or reconcile existing tasks under their original bindings, subject to the plugin's capabilities.
+CLI and MCP share request definitions; MCP tool names use underscores. `usage-inspect` shows the local budget ledger and provider observations already received. `quota-inspect` (MCP `quota_inspect`) reads the local quota cache and does not query upstream. `quota-set` records a manual entry at low confidence for at most 24 hours. `quota-clear` removes only manual entries. `quota-refresh` (MCP `quota_refresh`) only reads the Codex app-server method `account/rateLimits/read`, keeps a default minimum interval of 60 seconds, does not start a thread or consume quota, and does not store balances or email addresses. When a Codex run receives `account/rateLimits/updated`, the run writes that snapshot into the quota cache at completion with source `passive_codex`, and does not store balance, email, or plan. The v2 `quota` section controls the probe and this passive collection: `probes.codex_app_server.enabled` defaults to true, `ttl_seconds` defaults to 600 (60–3600), `min_interval_seconds` defaults to 60 (60–3600), and `timeout_seconds` defaults to 10 (1–30); `passive.codex_rate_limits_updated` defaults to true. Unknown fields are rejected. After disabling a plugin, the original principal can still read, cancel, or reconcile existing tasks under their original bindings, subject to the plugin's capabilities.
 
 ## Credentials and recovery
 

@@ -1,12 +1,14 @@
-"""额度快照的 inspect / set / clear。只读写本地缓存，不探活、不启动客户端。
+"""额度快照的 inspect / set / clear，以及 Codex 只读 quota.refresh。
 
+inspect / set / clear 只读写本地缓存。refresh 只调用 account/rateLimits/read，最小间隔默认 60 秒，不建线程。
 quota.read 与 usage.inspect 一样针对整个实例（资源 "*"）。
 quota.write 与 config.apply 一样针对整个实例。默认操作者策略不按动作名区分，因此两者都放行。
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import re
 from typing import Any
 
 from asterun.errors import CONFIG_REQUIRED, INVALID_CONFIG, INVALID_REQUEST, AsterunError
@@ -19,12 +21,17 @@ from asterun.quota.models import (
     merge_observations,
     used_bp_from_percent,
 )
+from asterun.quota.codex_probe import probe_codex, probe_lifetime_s
+from asterun.quota.settings import codex_quota_settings
 from asterun.usage.models import timestamp
 
 READ_ACTION = "quota.read"
 WRITE_ACTION = "quota.write"
+PROBE_ID = "codex.app_server.rate_limits"
+MIN_PROBE_INTERVAL = timedelta(seconds=60)
 _NAMESPACE = "ns_local"
 _TIGHT = ("exhausted", "latched")
+_ERROR_CODE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
 
 
 def _now() -> datetime:
@@ -196,8 +203,165 @@ def clear_quota(app, payload: dict) -> dict:
     return {"scope_ref": scope, "source": "manual", "cleared": cleared, "upstream_queried": False}
 
 
+def _codex_backend(config, scope: str, payload: dict):
+    if config.schema_version == 2:
+        return config.get_backend(payload.get("backend"))
+    alias = scope.removeprefix("backend:")
+    if alias == scope or not alias:
+        _fail("未知额度 scope", INVALID_CONFIG, scope_ref=scope)
+    return config.get_backend(alias)
+
+
+def _probe_interval(probe_settings: dict) -> timedelta:
+    raw = probe_settings.get("min_interval_seconds")
+    seconds = raw if type(raw) is int else int(MIN_PROBE_INTERVAL.total_seconds())
+    return timedelta(seconds=max(int(MIN_PROBE_INTERVAL.total_seconds()), seconds))
+
+
+def _probe_due(state, now: datetime, interval: timedelta = MIN_PROBE_INTERVAL) -> bool:
+    if not state or not state.get("last_attempt_at"):
+        return True
+    elapsed = now - timestamp(state["last_attempt_at"], "last_attempt_at")
+    return elapsed >= interval
+
+
+def _lease_active(state, now: datetime) -> bool:
+    raw = None if not state else state.get("lease_until")
+    if not raw:
+        return False
+    return timestamp(raw, "lease_until") > now
+
+
+def _error_code(value) -> str:
+    if isinstance(value, str) and _ERROR_CODE.fullmatch(value) is not None:
+        return value
+    return "PROBE_FAILED"
+
+
+def _scope_result(scope: str, *, ok: bool, error_code, written: int, skipped) -> dict:
+    return {
+        "scope_ref": scope,
+        "probe_id": PROBE_ID,
+        "ok": ok,
+        "error_code": error_code,
+        "written": written,
+        "skipped": skipped,
+    }
+
+
+def _save_probe_state(store, namespace, scope: str, now: datetime, previous, *, ok: bool, error_code,
+                      claimed_attempt_at: str, claimed_lease_until: str) -> None:
+    """仍持有本次写入的 last_attempt_at 与 lease_until 才写结果并释放租约。"""
+    with store.transaction():
+        current = store.get_probe_state(scope, PROBE_ID, namespace)
+        if (current is None or current.get("last_attempt_at") != claimed_attempt_at
+                or current.get("lease_until") != claimed_lease_until):
+            return
+        if ok:
+            last_ok_at = canonical_utc(now)
+            code = None
+        else:
+            last_ok_at = None if previous is None else previous.get("last_ok_at")
+            code = error_code
+        store.put_probe_state({
+            "scope_ref": scope,
+            "probe_id": PROBE_ID,
+            "last_attempt_at": claimed_attempt_at,
+            "last_ok_at": last_ok_at,
+            "last_error_code": code,
+            "lease_until": None,
+        }, namespace)
+
+
+def refresh_quota(app, payload: dict) -> dict:
+    """对 Codex 后端做只读 account/rateLimits/read。间隔、超时和缓存时间来自 quota 配置。"""
+    if app.config.schema_version == 2 and payload.get("backend") is None:
+        _fail("v2 额度刷新目前只支持 backend 参数")
+    probe_settings = codex_quota_settings(app.config)["probes"]["codex_app_server"]
+    scopes = select_scopes(app.config, payload, single=False)
+    explicit = payload.get("scope_ref") is not None or payload.get("backend") is not None
+    store, namespace = _store(app)
+    now = _now()
+    reports = []
+    interval = _probe_interval(probe_settings)
+    timeout_s = probe_settings["timeout_seconds"]
+    if type(timeout_s) is not int:
+        timeout_s = 10
+    for scope in scopes:
+        backend = _codex_backend(app.config, scope, payload)
+        if backend.kind != "codex":
+            if explicit:
+                _fail("quota.refresh 只支持 Codex 后端", backend=backend.name)
+            continue
+        if probe_settings["enabled"] is not True:
+            reports.append(_scope_result(scope, ok=False, error_code="PROBE_DISABLED", written=0, skipped=None))
+            continue
+        with store.transaction():
+            previous = store.get_probe_state(scope, PROBE_ID, namespace)
+            if _lease_active(previous, now):
+                claimed = False
+                skipped = "in_flight"
+            elif not _probe_due(previous, now, interval):
+                claimed = False
+                skipped = "min_interval"
+            else:
+                claimed_state = store.put_probe_state({
+                    "scope_ref": scope,
+                    "probe_id": PROBE_ID,
+                    "last_attempt_at": canonical_utc(now),
+                    "last_ok_at": None if previous is None else previous.get("last_ok_at"),
+                    "last_error_code": None if previous is None else previous.get("last_error_code"),
+                    "lease_until": canonical_utc(now + timedelta(seconds=probe_lifetime_s(timeout_s))),
+                }, namespace)
+                claimed_attempt_at = claimed_state["last_attempt_at"]
+                claimed_lease_until = claimed_state["lease_until"]
+                claimed = True
+                skipped = None
+        if not claimed:
+            reports.append(_scope_result(scope, ok=False, error_code=None, written=0, skipped=skipped))
+            continue
+        ok = False
+        error_code = "PROBE_FAILED"
+        written = 0
+        try:
+            try:
+                report = probe_codex(
+                    backend,
+                    scope_ref=scope,
+                    now=now,
+                    timeout_s=probe_settings["timeout_seconds"],
+                    ttl_s=probe_settings["ttl_seconds"],
+                )
+            except Exception:
+                report = {"ok": False, "error_code": "PROBE_FAILED"}
+            if not isinstance(report, dict):
+                report = {"ok": False, "error_code": "PROBE_FAILED"}
+            ok = report.get("ok") is True
+            error_code = None if ok else _error_code(report.get("error_code"))
+            observations = report.get("observations") if ok else None
+            if ok and not isinstance(observations, list):
+                ok = False
+                error_code = "PROBE_FAILED"
+            elif ok and any(not isinstance(item, dict) for item in observations):
+                ok = False
+                error_code = "PROBE_FAILED"
+            elif ok:
+                for item in observations:
+                    observation = dict(item)
+                    observation["scope_ref"] = scope
+                    store.append_quota_snapshot(observation, namespace)
+                    written += 1
+        finally:
+            _save_probe_state(
+                store, namespace, scope, now, previous, ok=ok, error_code=error_code,
+                claimed_attempt_at=claimed_attempt_at, claimed_lease_until=claimed_lease_until,
+            )
+        reports.append(_scope_result(scope, ok=ok, error_code=error_code, written=written, skipped=None))
+    return {"scopes": reports, "upstream_queried": True}
+
+
 def handle(app, method: str, payload: dict | None) -> dict:
-    if method not in {"quota.inspect", "quota.set", "quota.clear"}:
+    if method not in {"quota.inspect", "quota.set", "quota.clear", "quota.refresh"}:
         _fail(f"未知额度方法：{method}")
     payload = json_copy({} if payload is None else payload)
     reject_self_reported_authority(payload)
@@ -206,4 +370,6 @@ def handle(app, method: str, payload: dict | None) -> dict:
         return inspect_quota(app, payload)
     if method == "quota.set":
         return set_quota(app, payload)
+    if method == "quota.refresh":
+        return refresh_quota(app, payload)
     return clear_quota(app, payload)

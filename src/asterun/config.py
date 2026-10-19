@@ -182,6 +182,8 @@ class AsterunConfig:
     billing_pools: dict[str, Any] = field(default_factory=dict)
     connections: dict[str, Any] = field(default_factory=dict)
     routing: dict[str, Any] = field(default_factory=dict)
+    quota: dict[str, Any] | None = field(default_factory=dict)
+    quota_explicit: bool = False
 
     def get_workspace(self, alias: str) -> WorkspaceBinding:
         try:
@@ -229,6 +231,8 @@ class AsterunConfig:
         if self.schema_version == 2:
             result.update(plugins=self.plugins, provider_accounts=self.provider_accounts,
                           billing_pools=self.billing_pools, connections=self.connections, routing=self.routing)
+            if self.quota_explicit:
+                result["quota"] = self.quota
         return result
 
 
@@ -412,6 +416,7 @@ def load_config(path: Path) -> AsterunConfig:
         scheduler=scheduler,
         entries=entries,
         approval_policy=approval_policy,
+        quota_explicit=schema_version == 2 and "quota" in raw,
         **v2_namespaces,
     )
 

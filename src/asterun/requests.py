@@ -54,6 +54,7 @@ REQUEST_SCHEMAS = {
         "exhausted": {"type": "boolean"},
     }, ["bucket_id", "window_kind", "used_percent", "valid_until"]),
     "quota.clear": obj({"scope_ref": IDENTIFIER, "backend": IDENTIFIER, "source": {"type": "string", "enum": ["manual"]}}),
+    "quota.refresh": obj({"scope_ref": IDENTIFIER, "backend": IDENTIFIER}),
     "usage.report": obj({"workspace": IDENTIFIER, "task_id": IDENTIFIER, "conversation_id": IDENTIFIER,
                          "include_runs": {"type": "boolean"}, "include_observations": {"type": "boolean"},
                          "page_size": {"type": "integer", "minimum": 1, "maximum": 100},
