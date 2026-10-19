@@ -52,7 +52,7 @@ Agent 使用 `task-submit`。结构化工具能力使用 `capability-invoke --re
 
 输入和输出按 manifest Schema 校验，分别保存在 `Task.capability_input` 和 `Run.output`。需要可审阅的固定调用计划或代码质量流程时，使用 [capability profile](capability-profile.md)。
 
-CLI 与 MCP 共用请求定义，MCP 工具名使用下划线。`usage-inspect` 显示本地预算账本和已收到的供应商观察。`quota-inspect`（MCP `quota_inspect`）只读本地额度缓存，不查询上游。`quota-set` 手动录入额度，可信度为 low，最多 24 小时。`quota-clear` 只清除手动录入。`quota-refresh`（MCP `quota_refresh`）只读 Codex app-server `account/rateLimits/read`，最小间隔默认 60 秒，不建线程、不耗额度，不保存余额与邮箱。Codex 运行中收到 `account/rateLimits/updated` 时，运行结束写入额度缓存，来源 `passive_codex`，不保存余额、邮箱或套餐。v2 的 `quota` 段控制探针和这项被动采集：`probes.codex_app_server.enabled` 默认 true，`ttl_seconds` 默认 600（60–3600），`min_interval_seconds` 默认 60（30–3600），`timeout_seconds` 默认 10（1–30）；`passive.codex_rate_limits_updated` 默认 true。未知字段会被拒绝。停用后，原主体仍可按原绑定读取、取消或对账已有任务，具体动作取决于插件能力。
+CLI 与 MCP 共用请求定义，MCP 工具名使用下划线。`usage-inspect` 显示本地预算账本和已收到的供应商观察。`quota-inspect`（MCP `quota_inspect`）只读本地额度缓存，不查询上游。`quota-set` 手动录入额度，可信度为 low，最多 24 小时。`quota-clear` 只清除手动录入。`quota-refresh`（MCP `quota_refresh`）只读 Codex app-server `account/rateLimits/read`，最小间隔默认 60 秒，不建线程、不耗额度，不保存余额与邮箱。Codex 运行中收到 `account/rateLimits/updated` 时，运行结束写入额度缓存，来源 `passive_codex`，不保存余额、邮箱或套餐。v2 的 `quota` 段控制探针和这项被动采集：`probes.codex_app_server.enabled` 默认 true，`ttl_seconds` 默认 600（60–3600），`min_interval_seconds` 默认 60（60–3600），`timeout_seconds` 默认 10（1–30）；`passive.codex_rate_limits_updated` 默认 true。未知字段会被拒绝。停用后，原主体仍可按原绑定读取、取消或对账已有任务，具体动作取决于插件能力。
 
 ## 凭据与恢复
 

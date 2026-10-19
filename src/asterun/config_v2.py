@@ -91,7 +91,7 @@ def normalize_quota(raw: Any) -> dict[str, Any]:
     }
     flag(probe["enabled"], "quota.probes.codex_app_server.enabled")
     integer_between(probe["ttl_seconds"], "quota.probes.codex_app_server.ttl_seconds", 60, 3600)
-    integer_between(probe["min_interval_seconds"], "quota.probes.codex_app_server.min_interval_seconds", 30, 3600)
+    integer_between(probe["min_interval_seconds"], "quota.probes.codex_app_server.min_interval_seconds", 60, 3600)
     integer_between(probe["timeout_seconds"], "quota.probes.codex_app_server.timeout_seconds", 1, 30)
     passive_in = mapping(body.get("passive", {}), "quota.passive", QUOTA_PASSIVE_KEYS)
     passive_flag = passive_in.get("codex_rate_limits_updated", True)

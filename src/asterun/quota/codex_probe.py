@@ -16,12 +16,14 @@ from asterun.usage.models import timestamp
 
 _BUCKET = re.compile(r"^[A-Za-z0-9_.-]{1,1024}$")
 _SOURCE = re.compile(r"^(?:probe|passive)_[A-Za-z0-9._-]{1,64}$")
+_REACHED = re.compile(r"^[a-z_]{1,32}$")
 _ROLES = frozenset({"primary", "secondary"})
 _SNAPSHOT_KEYS = ("rateLimits", "rateLimitsByLimitId", "credits", "rateLimitResetCredits", "rateLimitReachedType")
-_WINDOW_FIELDS = ("usedPercent", "windowDurationMins", "resetsAt")
 _MAX_INTEGER = 9007199254740991
 _FIVE_HOUR_MINUTES = 300
 _WEEKLY_MINUTES = 10080
+_USED_PERCENT_MAX = 1000
+_REACHED_LIMIT = 8
 
 
 def scrub_rate_limits(params) -> dict:
@@ -156,7 +158,17 @@ def _is_window_map(value: dict) -> bool:
 def _scrub_window(raw: Any) -> dict | None:
     if not isinstance(raw, dict):
         return None
-    kept = {key: raw[key] for key in _WINDOW_FIELDS if key in raw}
+    kept: dict[str, Any] = {}
+    if "usedPercent" in raw:
+        used = _finite_number(raw["usedPercent"])
+        if used is not None and 0 <= used <= _USED_PERCENT_MAX:
+            kept["usedPercent"] = raw["usedPercent"]
+    if "windowDurationMins" in raw and _positive_int(raw["windowDurationMins"]):
+        kept["windowDurationMins"] = raw["windowDurationMins"]
+    if "resetsAt" in raw:
+        resets = _finite_number(raw["resetsAt"])
+        if resets is not None and resets > 0:
+            kept["resetsAt"] = raw["resetsAt"]
     return kept or None
 
 
@@ -176,7 +188,7 @@ def _scrub_limit_body(raw: Any) -> dict | None:
 def _scrub_credits(raw: Any) -> dict | None:
     if not isinstance(raw, dict):
         return None
-    kept = {key: raw[key] for key in ("hasCredits", "unlimited") if key in raw}
+    kept = {key: raw[key] for key in ("hasCredits", "unlimited") if key in raw and type(raw[key]) is bool}
     return kept or None
 
 
@@ -187,7 +199,13 @@ def _scrub_grants(raw: Any) -> list[dict] | None:
     for item in raw:
         if not isinstance(item, dict):
             continue
-        kept = {key: item[key] for key in ("expiresAt", "expires_at") if key in item}
+        kept = {}
+        for key in ("expiresAt", "expires_at"):
+            if key not in item:
+                continue
+            seconds = _grant_unix_seconds(item[key])
+            if seconds is not None:
+                kept[key] = seconds
         if kept:
             grants.append(kept)
     return grants or None
@@ -195,8 +213,12 @@ def _scrub_grants(raw: Any) -> list[dict] | None:
 
 def _scrub_reached(raw: Any) -> str | list[str] | None:
     if isinstance(raw, str):
-        return raw if "@" not in raw else None
-    if isinstance(raw, list) and all(isinstance(item, str) and "@" not in item for item in raw):
+        return raw if _REACHED.fullmatch(raw) else None
+    if (
+        isinstance(raw, list)
+        and len(raw) <= _REACHED_LIMIT
+        and all(isinstance(item, str) and _REACHED.fullmatch(item) for item in raw)
+    ):
         return list(raw)
     return None
 
@@ -396,9 +418,56 @@ def _used_bp(used: float) -> int:
 
 
 def _finite(value) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+    return _finite_number(value)
+
+
+def _finite_number(value) -> float | None:
+    if type(value) not in {int, float} or not math.isfinite(value):
         return None
     return float(value)
+
+
+def _positive_int(value) -> bool:
+    return type(value) is int and value > 0
+
+
+def _grant_unix_seconds(value) -> int | None:
+    """解析成时间后再写成 int unix 秒。数字和 ISO 字符串都可以，失败则丢掉。"""
+    if type(value) in {int, float}:
+        if _finite_number(value) is None or value <= 0:
+            return None
+        moment = _unix_datetime(value)
+    elif isinstance(value, str):
+        moment = _parse_iso_utc(value)
+    else:
+        return None
+    if moment is None:
+        return None
+    try:
+        seconds = round(moment.timestamp())
+    except (OverflowError, OSError, ValueError):
+        return None
+    if type(seconds) is not int or seconds <= 0:
+        return None
+    return seconds
+
+
+def _parse_iso_utc(value: str) -> datetime | None:
+    text = value.strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    try:
+        return parsed.astimezone(timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def _unix_datetime(value) -> datetime | None:

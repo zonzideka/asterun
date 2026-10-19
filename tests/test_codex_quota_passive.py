@@ -8,6 +8,7 @@ import pytest
 from asterun.application import Application
 from asterun.backends.codex import CodexAppServerTransport, CodexSession
 from asterun.config import BackendConfig, load_config
+from asterun.control_protocol import digest
 from asterun.config_migration import migrate_v1_to_v2
 from asterun.config_v2 import default_quota
 from asterun.contracts import Run, RunStatus
@@ -66,6 +67,38 @@ def _assert_scrubbed(value) -> None:
     assert "@" not in dumped
 
 
+_FORBIDDEN = ("secret", "@", "balance", "8642097531", "Bearer")
+
+
+def _assert_no_secrets(value) -> None:
+    dumped = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+    for needle in _FORBIDDEN:
+        assert needle not in dumped
+
+
+def _malicious_notice() -> dict:
+    return {
+        "rateLimits": {
+            "primary": {
+                "usedPercent": {"email": "a@b.c", "token": "secret"},
+                "windowDurationMins": 10080,
+                "resetsAt": "x@y",
+            },
+            "secondary": {
+                "usedPercent": 10,
+                "windowDurationMins": 300,
+                "resetsAt": _future(),
+            },
+        },
+        "credits": {"hasCredits": {"balance": 8642097531}, "unlimited": False},
+        "rateLimitResetCredits": [
+            {"expiresAt": {"k": "v"}},
+            {"expires_at": "2026-10-25T00:00:00Z"},
+        ],
+        "rateLimitReachedType": "Bearer abc",
+    }
+
+
 def test_session_scrubs_rate_limit_notification_without_thread_id():
     session = _session()
     session.handle_message({"method": "account/rateLimits/updated", "params": _notice()})
@@ -75,6 +108,49 @@ def test_session_scrubs_rate_limit_notification_without_thread_id():
     assert captured["observed_at"]
     _assert_scrubbed(captured)
     _assert_scrubbed(status)
+
+
+def test_scrub_drops_structured_secrets_from_status_events_prompt_and_snapshot(app, tmp_path, monkeypatch):
+    monkeypatch.setattr("asterun.backends.codex.time.time", lambda: 1700000000.0)
+    notice = _malicious_notice()
+    session = _session()
+    session.handle_message({"method": "account/rateLimits/updated", "params": notice})
+    status = session.to_status_dict()
+    _assert_no_secrets(status)
+    _assert_no_secrets(status["recent_events"])
+    kept = status["quota_rate_limits"]["params"]
+    assert kept["rateLimits"]["secondary"]["usedPercent"] == 10
+    assert "usedPercent" not in kept["rateLimits"]["primary"]
+    assert "resetsAt" not in kept["rateLimits"]["primary"]
+    assert "hasCredits" not in kept["credits"]
+    assert kept["rateLimitResetCredits"] == [{"expires_at": 1792886400}]
+    assert "rateLimitReachedType" not in kept
+
+    class FakePromptTransport(CodexAppServerTransport):
+        def on_message(self, cb):
+            self.cb = cb
+
+        def start_thread(self, params, timeout=60.0):
+            return {"thread": {"id": "thread-1"}}
+
+        def start_turn(self, params, timeout=900.0):
+            self.cb({"method": "account/rateLimits/updated", "params": notice})
+            self.cb({"method": "turn/completed", "params": {"turn": {"id": "turn-1", "status": "completed"}}})
+            return {"turn": {"id": "turn-1"}}
+
+    result = FakePromptTransport().run_text_prompt(text="hello", cwd="/tmp/project", model="gpt-5.5", timeout=1)
+    _assert_no_secrets(result.to_dict())
+    _assert_no_secrets(result.recent_events)
+
+    store = _prepare(app, tmp_path)
+    try:
+        assert persist_run_quota(app, _run({"quota_rate_limits": session.quota_rate_limits}, run_id="run-scrub")) == 1
+        payloads = [row[0] for row in store._conn.execute("SELECT payload FROM plugin_quota_snapshots")]
+        assert len(payloads) == 1
+        _assert_no_secrets(payloads)
+        _assert_no_secrets("".join(payloads))
+    finally:
+        store.close()
 
 
 def test_session_accepts_rate_limits_wrapped_one_level():
@@ -167,6 +243,47 @@ def test_persist_run_quota_swallows_append_errors(app, tmp_path, monkeypatch):
         store.close()
 
 
+def _native_two():
+    payload = {
+        "rateLimits": {
+            "primary": {"usedPercent": 48, "windowDurationMins": 10080, "resetsAt": _future()},
+            "secondary": {"usedPercent": 12, "windowDurationMins": 300, "resetsAt": _future()},
+        }
+    }
+    return {
+        "quota_rate_limits": {
+            "params": scrub_rate_limits(payload),
+            "observed_at": OBSERVED_AT,
+        }
+    }
+
+
+def test_persist_run_quota_rolls_back_partial_batch(app, tmp_path, monkeypatch):
+    store = _prepare(app, tmp_path)
+    original = PluginStore.append_quota_snapshot
+    state = {"n": 0, "raise": True}
+
+    def flaky(self, observation, namespace="ns_local"):
+        state["n"] += 1
+        if state["raise"] and state["n"] == 2:
+            raise RuntimeError("second window failed")
+        return original(self, observation, namespace)
+
+    monkeypatch.setattr(PluginStore, "append_quota_snapshot", flaky)
+    run = _run(_native_two(), run_id="run-atomic")
+    try:
+        assert persist_run_quota(app, run) == 0
+        assert store._conn.execute("SELECT payload FROM plugin_quota_snapshots").fetchall() == []
+        state["raise"] = False
+        assert persist_run_quota(app, run) == 2
+        saved = PluginStore(store._conn).quota_snapshots()
+        assert len(saved) == 2
+        assert {item["window_kind"] for item in saved} == {"weekly", "5h"}
+        assert len({item["raw_digest"] for item in saved}) == 1
+    finally:
+        store.close()
+
+
 def _write(path, raw):
     path.write_text(json.dumps(raw), encoding="utf-8")
     return path
@@ -180,8 +297,13 @@ def test_v2_quota_defaults_reject_unknown_and_out_of_range(config_path, isolated
     path = isolated_env / "quota-v2.json"
     config = load_config(_write(path, proposed))
     assert config.quota == default_quota()
-    assert config.to_dict()["quota"] == default_quota()
+    assert config.quota_explicit is False
+    projected = config.to_dict()
+    assert "quota" not in projected
+    assert digest(projected) == digest({key: value for key, value in projected.items() if key != "quota"})
     assert codex_quota_settings(load_config(config_path)) == default_quota()
+    config.quota = None
+    assert codex_quota_settings(config) == default_quota()
 
     unknown = json.loads(json.dumps(proposed))
     unknown["quota"] = {"probes": {"codex_app_server": {"enabled": True}}, "balance": "61639.42"}
@@ -194,9 +316,22 @@ def test_v2_quota_defaults_reject_unknown_and_out_of_range(config_path, isolated
         with pytest.raises(AsterunError):
             load_config(_write(isolated_env / "quota-range.json", out_of_range))
     low_interval = json.loads(json.dumps(proposed))
-    low_interval["quota"] = {"probes": {"codex_app_server": {"min_interval_seconds": 29}}}
+    low_interval["quota"] = {"probes": {"codex_app_server": {"min_interval_seconds": 59}}}
     with pytest.raises(AsterunError):
         load_config(_write(isolated_env / "quota-interval.json", low_interval))
+    high_interval = json.loads(json.dumps(proposed))
+    high_interval["quota"] = {"probes": {"codex_app_server": {"min_interval_seconds": 3601}}}
+    with pytest.raises(AsterunError):
+        load_config(_write(isolated_env / "quota-interval-high.json", high_interval))
+    accepted = json.loads(json.dumps(proposed))
+    accepted["quota"] = {"probes": {"codex_app_server": {"min_interval_seconds": 60}}}
+    loaded = load_config(_write(isolated_env / "quota-interval-ok.json", accepted))
+    assert loaded.quota_explicit is True
+    assert loaded.quota["probes"]["codex_app_server"]["min_interval_seconds"] == 60
+    assert loaded.to_dict()["quota"]["probes"]["codex_app_server"]["min_interval_seconds"] == 60
+    top = json.loads(json.dumps(proposed))
+    top["quota"] = {"probes": {"codex_app_server": {"min_interval_seconds": 3600}}}
+    assert load_config(_write(isolated_env / "quota-interval-top.json", top)).quota["probes"]["codex_app_server"]["min_interval_seconds"] == 3600
     bad_timeout = json.loads(json.dumps(proposed))
     bad_timeout["quota"] = {"probes": {"codex_app_server": {"timeout_seconds": 31}}}
     with pytest.raises(AsterunError):

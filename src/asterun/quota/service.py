@@ -212,11 +212,24 @@ def _codex_backend(config, scope: str, payload: dict):
     return config.get_backend(alias)
 
 
+def _probe_interval(probe_settings: dict) -> timedelta:
+    raw = probe_settings.get("min_interval_seconds")
+    seconds = raw if type(raw) is int else int(MIN_PROBE_INTERVAL.total_seconds())
+    return timedelta(seconds=max(int(MIN_PROBE_INTERVAL.total_seconds()), seconds))
+
+
 def _probe_due(state, now: datetime, interval: timedelta = MIN_PROBE_INTERVAL) -> bool:
     if not state or not state.get("last_attempt_at"):
         return True
     elapsed = now - timestamp(state["last_attempt_at"], "last_attempt_at")
     return elapsed >= interval
+
+
+def _lease_active(state, now: datetime) -> bool:
+    raw = None if not state else state.get("lease_until")
+    if not raw:
+        return False
+    return timestamp(raw, "lease_until") > now
 
 
 def _error_code(value) -> str:
@@ -249,6 +262,7 @@ def _save_probe_state(store, namespace, scope: str, now: datetime, previous, *, 
         "last_attempt_at": canonical_utc(now),
         "last_ok_at": last_ok_at,
         "last_error_code": code,
+        "lease_until": None,
     }, namespace)
 
 
@@ -262,7 +276,10 @@ def refresh_quota(app, payload: dict) -> dict:
     store, namespace = _store(app)
     now = _now()
     reports = []
-    interval = timedelta(seconds=probe_settings["min_interval_seconds"])
+    interval = _probe_interval(probe_settings)
+    timeout_s = probe_settings["timeout_seconds"]
+    if type(timeout_s) is not int:
+        timeout_s = 10
     for scope in scopes:
         backend = _codex_backend(app.config, scope, payload)
         if backend.kind != "codex":
@@ -272,39 +289,61 @@ def refresh_quota(app, payload: dict) -> dict:
         if probe_settings["enabled"] is not True:
             reports.append(_scope_result(scope, ok=False, error_code="PROBE_DISABLED", written=0, skipped=None))
             continue
-        previous = store.get_probe_state(scope, PROBE_ID, namespace)
-        if not _probe_due(previous, now, interval):
-            reports.append(_scope_result(scope, ok=False, error_code=None, written=0, skipped="min_interval"))
+        with store.transaction():
+            previous = store.get_probe_state(scope, PROBE_ID, namespace)
+            if _lease_active(previous, now):
+                claimed = False
+                skipped = "in_flight"
+            elif not _probe_due(previous, now, interval):
+                claimed = False
+                skipped = "min_interval"
+            else:
+                store.put_probe_state({
+                    "scope_ref": scope,
+                    "probe_id": PROBE_ID,
+                    "last_attempt_at": canonical_utc(now),
+                    "last_ok_at": None if previous is None else previous.get("last_ok_at"),
+                    "last_error_code": None if previous is None else previous.get("last_error_code"),
+                    "lease_until": canonical_utc(now + timedelta(seconds=timeout_s + 5)),
+                }, namespace)
+                claimed = True
+                skipped = None
+        if not claimed:
+            reports.append(_scope_result(scope, ok=False, error_code=None, written=0, skipped=skipped))
             continue
-        try:
-            report = probe_codex(
-                backend,
-                scope_ref=scope,
-                now=now,
-                timeout_s=probe_settings["timeout_seconds"],
-                ttl_s=probe_settings["ttl_seconds"],
-            )
-        except Exception:
-            report = {"ok": False, "error_code": "PROBE_FAILED"}
-        if not isinstance(report, dict):
-            report = {"ok": False, "error_code": "PROBE_FAILED"}
-        ok = report.get("ok") is True
-        error_code = None if ok else _error_code(report.get("error_code"))
+        ok = False
+        error_code = "PROBE_FAILED"
         written = 0
-        observations = report.get("observations") if ok else None
-        if ok and not isinstance(observations, list):
-            ok = False
-            error_code = "PROBE_FAILED"
-        elif ok and any(not isinstance(item, dict) for item in observations):
-            ok = False
-            error_code = "PROBE_FAILED"
-        elif ok:
-            for item in observations:
-                observation = dict(item)
-                observation["scope_ref"] = scope
-                store.append_quota_snapshot(observation, namespace)
-                written += 1
-        _save_probe_state(store, namespace, scope, now, previous, ok=ok, error_code=error_code)
+        try:
+            try:
+                report = probe_codex(
+                    backend,
+                    scope_ref=scope,
+                    now=now,
+                    timeout_s=probe_settings["timeout_seconds"],
+                    ttl_s=probe_settings["ttl_seconds"],
+                )
+            except Exception:
+                report = {"ok": False, "error_code": "PROBE_FAILED"}
+            if not isinstance(report, dict):
+                report = {"ok": False, "error_code": "PROBE_FAILED"}
+            ok = report.get("ok") is True
+            error_code = None if ok else _error_code(report.get("error_code"))
+            observations = report.get("observations") if ok else None
+            if ok and not isinstance(observations, list):
+                ok = False
+                error_code = "PROBE_FAILED"
+            elif ok and any(not isinstance(item, dict) for item in observations):
+                ok = False
+                error_code = "PROBE_FAILED"
+            elif ok:
+                for item in observations:
+                    observation = dict(item)
+                    observation["scope_ref"] = scope
+                    store.append_quota_snapshot(observation, namespace)
+                    written += 1
+        finally:
+            _save_probe_state(store, namespace, scope, now, previous, ok=ok, error_code=error_code)
         reports.append(_scope_result(scope, ok=ok, error_code=error_code, written=written, skipped=None))
     return {"scopes": reports, "upstream_queried": True}
 

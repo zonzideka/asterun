@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -354,5 +355,120 @@ def test_quota_refresh_writes_throttles_and_records_probe_errors(app, monkeypatc
         assert len(still["scopes"][0]["windows"]) == 1
         assert still["scopes"][0]["windows"][0]["observation"]["used_bp"] == 4800
         assert seen["n"] == 2
+    finally:
+        store.close()
+
+
+def _sqlite_app(config, conn, policy, principal):
+    """第二条独立连接上的额度入口。不复用第一条连接的事务。"""
+
+    class Store:
+        def __init__(self):
+            self._conn = conn
+
+        def get_applied_revision(self):
+            row = self._conn.execute("SELECT value FROM meta WHERE key='applied_config_revision'").fetchone()
+            return None if row is None else int(row[0])
+
+    class App:
+        def __init__(self):
+            self.config = config
+            self.store = Store()
+            self.policy = policy
+            self.principal = principal
+            self.grant = None
+            self.admission = None
+
+        def _require_grant(self, resource):
+            from asterun.application import utc_now
+            from asterun.policy import enforce_grant
+            enforce_grant(self.grant, resource, utc_now())
+
+        def _require_applied_config(self):
+            applied = self.store.get_applied_revision()
+            if applied != self.config.revision:
+                raise AsterunError("REVISION_CONFLICT", "配置尚未应用到第二条连接")
+
+    return App()
+
+
+def test_refresh_lease_is_single_flight_across_connections(app, monkeypatch, tmp_path):
+    path = tmp_path / "quota-flight" / "asterun.sqlite"
+    store = SqliteStore(path)
+    app.store = store
+    store.bootstrap_applied_revision(app.config.revision)
+    app.config.backends["codex"] = BackendConfig(name="codex", kind="codex", enabled=True, bin="/bin/true")
+    second_conn = sqlite3.connect(path, isolation_level=None)
+    PluginStore(second_conn)
+    second = _sqlite_app(app.config, second_conn, app.policy, app.principal)
+    calls = {"n": 0}
+    seen = {}
+
+    def fake_probe(backend_config, *, scope_ref, now, timeout_s=10.0, ttl_s=600, transport_factory=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            seen["during"] = handle(second, "quota.refresh", {"backend": "codex"})
+        return {"ok": True, "observations": [_weekly(scope_ref, now)], "native_version": None}
+
+    monkeypatch.setattr("asterun.quota.service.probe_codex", fake_probe)
+    try:
+        first = handle(app, "quota.refresh", {"backend": "codex"})
+        assert calls["n"] == 1
+        assert first["scopes"][0]["ok"] is True
+        assert first["scopes"][0]["written"] == 1
+        assert seen["during"]["scopes"][0]["skipped"] == "in_flight"
+        assert seen["during"]["scopes"][0]["written"] == 0
+        assert seen["during"]["scopes"][0]["ok"] is False
+        state = PluginStore(store._conn).get_probe_state(SCOPE, PROBE_ID)
+        assert state["lease_until"] is None
+        assert len(PluginStore(second_conn).quota_snapshots(SCOPE)) == 1
+    finally:
+        second_conn.close()
+        store.close()
+
+
+def test_refresh_interval_floor_is_60_seconds(app, monkeypatch, tmp_path):
+    from asterun.quota.settings import codex_quota_settings
+
+    path = tmp_path / "quota-floor" / "asterun.sqlite"
+    store = SqliteStore(path)
+    app.store = store
+    store.bootstrap_applied_revision(app.config.revision)
+    app.config.backends["codex"] = BackendConfig(name="codex", kind="codex", enabled=True, bin="/bin/true")
+    calls = {"n": 0}
+
+    def short(config):
+        settings = codex_quota_settings(config)
+        settings["probes"]["codex_app_server"]["min_interval_seconds"] = 30
+        return settings
+
+    def fake_probe(backend_config, *, scope_ref, now, timeout_s=10.0, ttl_s=600, transport_factory=None):
+        calls["n"] += 1
+        return {"ok": True, "observations": [_weekly(scope_ref, now)], "native_version": None}
+
+    monkeypatch.setattr("asterun.quota.service.codex_quota_settings", short)
+    monkeypatch.setattr("asterun.quota.service.probe_codex", fake_probe)
+    try:
+        assert handle(app, "quota.refresh", {"backend": "codex"})["scopes"][0]["ok"] is True
+        plugin_store = PluginStore(app.store._conn)
+        state = plugin_store.get_probe_state(SCOPE, PROBE_ID)
+        moment = datetime.now(timezone.utc)
+        plugin_store.put_probe_state({
+            **state,
+            "last_attempt_at": canonical_utc(moment - timedelta(seconds=45)),
+            "lease_until": None,
+        })
+        skipped = handle(app, "quota.refresh", {"backend": "codex"})
+        assert skipped["scopes"][0]["skipped"] == "min_interval"
+        assert calls["n"] == 1
+        plugin_store.put_probe_state({
+            **plugin_store.get_probe_state(SCOPE, PROBE_ID),
+            "last_attempt_at": canonical_utc(moment - timedelta(seconds=61)),
+            "lease_until": None,
+        })
+        again = handle(app, "quota.refresh", {"backend": "codex"})
+        assert again["scopes"][0]["skipped"] is None
+        assert again["scopes"][0]["ok"] is True
+        assert calls["n"] == 2
     finally:
         store.close()

@@ -62,13 +62,16 @@ def _persist_run_quota(app, run) -> int:
     from asterun.plugin_store import PluginStore
 
     store = PluginStore(app.store._conn)
-    if any(row.get("raw_digest") == raw_digest for row in store.quota_snapshots(scope)):
-        return 0
-    written = 0
-    for item in observations:
-        observation = dict(item)
-        observation["scope_ref"] = scope
-        observation["raw_digest"] = raw_digest
-        store.append_quota_snapshot(observation)
-        written += 1
-    return written
+    # 幂等检查和整批窗口在同一个事务里。嵌套写入是 SAVEPOINT，失败则整批回滚。
+    # 有该 digest 的行就说明上次整批已经提交，直接跳过。
+    with store.transaction():
+        if any(row.get("raw_digest") == raw_digest for row in store.quota_snapshots(scope)):
+            return 0
+        written = 0
+        for item in observations:
+            observation = dict(item)
+            observation["scope_ref"] = scope
+            observation["raw_digest"] = raw_digest
+            store.append_quota_snapshot(observation)
+            written += 1
+        return written

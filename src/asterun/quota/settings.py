@@ -12,7 +12,8 @@ def codex_quota_settings(config) -> dict:
     if getattr(config, "schema_version", 1) != 2:
         return settings
     raw = getattr(config, "quota", None)
-    if not isinstance(raw, dict) or not raw:
+    # 未写 quota 段时配置对象上可以是 None；调用方仍拿到同一组默认值。
+    if raw is None or not isinstance(raw, dict) or not raw:
         return settings
     probe_in = raw.get("probes") if isinstance(raw.get("probes"), dict) else {}
     probe_in = probe_in.get("codex_app_server") if isinstance(probe_in.get("codex_app_server"), dict) else {}
