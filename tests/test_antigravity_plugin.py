@@ -112,7 +112,7 @@ def submit(app):
     return result
 
 
-SOURCE_COMMIT = "0856557fb199170f970a527cd30d73ad9cbfd405"
+SOURCE_COMMIT = "2b8c655662b17fe834dab29a57dc6cbf5fd16e22"
 
 
 def test_verify_source_covers_every_vendor_file_without_assert(tmp_path):
@@ -474,3 +474,11 @@ def test_standalone_worker_rejects_bad_wire_before_any_native_spawn(antigravity_
     reply = json.loads(result.stdout)
     assert reply["error"] == {"code": -32600, "message": "invalid_request"}
     assert result.stderr == b"" and not list(tmp_path.iterdir())
+
+
+def test_plugin_runtime_copy_does_not_claim_group_ownership():
+    import importlib, sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages/asterun-plugin-antigravity/src"))
+    runtime = importlib.import_module("asterun_plugin_antigravity._vendor.runtime")
+    assert runtime._OWNS_PROCESS_GROUP is False
+    assert runtime.AntigravityRuntime._group_gone(object()) is False

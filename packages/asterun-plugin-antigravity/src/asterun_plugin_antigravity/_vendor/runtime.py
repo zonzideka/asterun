@@ -25,6 +25,10 @@ MAX_EVENTS = 8192
 MAX_SUMMARY_BYTES = 32 * 1024
 CANCEL_GRACE = 0.5
 TERMINATE_GRACE = 0.3
+# True when agy runs in its own session/process group that this runtime may
+# signal and inspect. The plugin copy sets this to False (the host owns the
+# worker group), so it never claims a delegated run's processes are gone.
+_OWNS_PROCESS_GROUP = False
 PROGRESS_INTERVAL = 1.0
 USAGE_KEYS = {"input_tokens", "output_tokens", "thinking_tokens", "cache_read_tokens", "total_tokens"}
 # These are diagnostics, never permission grants. Keep a rolling suffix so a notice
@@ -78,6 +82,7 @@ class _Run:
     active_tools: set[int] = field(default_factory=set)
     subagents: set[int] = field(default_factory=set)
     step_tools: dict[int, str] = field(default_factory=dict)
+    cleaned: bool = False
     step_states: dict[int, str] = field(default_factory=dict)
     step_types: dict[int, str] = field(default_factory=dict)
     soft_denied: bool = False
@@ -364,7 +369,7 @@ class AntigravityRuntime:
             state.failure_type = type(error).__name__
             return self._unknown(state)
         finally:
-            if state.proc is not None:
+            if state.proc is not None and not state.cleaned:
                 self._cleanup(state.proc)
             with self._lock:
                 self._runs.pop(run_id.value, None)
@@ -372,6 +377,8 @@ class AntigravityRuntime:
 
     @staticmethod
     def _group_gone(proc: subprocess.Popen) -> bool:
+        if not _OWNS_PROCESS_GROUP:
+            return False
         # Killed group members are reaped asynchronously; allow a short window.
         deadline = time.monotonic() + 1.0
         while True:
@@ -391,6 +398,8 @@ class AntigravityRuntime:
         # the scheduler slot is released immediately instead of after a timeout.
         assert state.proc is not None
         self._cleanup(state.proc)
+        # Never signal this PGID again: once gone, the number may be reused.
+        state.cleaned = True
         if state.proc.poll() is None or not self._group_gone(state.proc):
             state.failure_type = "subagent_process_alive"
             return self._unknown(state)
