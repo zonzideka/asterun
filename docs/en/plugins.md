@@ -52,7 +52,7 @@ Agents use `task-submit`. Structured tool capabilities use `capability-invoke --
 
 Inputs and outputs are validated against the manifest Schema and stored in `Task.capability_input` and `Run.output`. For a reviewable fixed plan or a code-quality workflow, use the [capability profile](capability-profile.md).
 
-CLI and MCP share request definitions; MCP tool names use underscores. `usage-inspect` shows the local budget ledger and provider observations already received. After disabling a plugin, the original principal can still read, cancel, or reconcile existing tasks under their original bindings, subject to the plugin's capabilities.
+CLI and MCP share request definitions; MCP tool names use underscores. `usage-inspect` shows the local budget ledger and provider observations already received. `quota-inspect` (MCP `quota_inspect`) reads the local quota cache and does not query upstream. `quota-set` records a manual entry at low confidence for at most 24 hours. `quota-clear` removes only manual entries. After disabling a plugin, the original principal can still read, cancel, or reconcile existing tasks under their original bindings, subject to the plugin's capabilities.
 
 ## Credentials and recovery
 

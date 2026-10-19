@@ -101,6 +101,8 @@ ENTRY_BLOCKED_WHEN_DISABLED = {
     "task.cancel",
     "task.handoff",
     "config.apply",
+    "quota.set",
+    "quota.clear",
     "session.resume",
     "task.reconcile",
     "task.present",
@@ -360,6 +362,10 @@ class Application:
                 return ok(self.capabilities.handle(method, payload))
             if method.startswith("control."):
                 return self._handle_control(method, payload)
+            if method.startswith("quota."):
+                from asterun.quota.service import handle as handle_quota
+
+                return ok(handle_quota(self, method, payload))
             if method.startswith("plugin.") or method in {"connection.setup", "usage.inspect"}:
                 from asterun.plugins.management import handle
                 return ok(handle(self, method, payload))
