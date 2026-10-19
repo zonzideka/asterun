@@ -2,13 +2,19 @@
 
 # 首版发行说明
 
-当前公开源码版本为 `0.1.0a22`，正式稳定版 `0.1.0` 尚未发布。本次预发布的安装资产和校验文件见[对应版本发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a22)。首版范围已冻结，发布准备集中在现有行为、兼容和打包修复。项目采用 [Apache-2.0](../LICENSE)。`v0.1.0a22` 标签尚未打出，发行页上的文件要等该标签进入 `main` 且发行工作流成功之后才会出现。
+当前公开源码版本为 `0.1.0a23`，正式稳定版 `0.1.0` 尚未发布。本次预发布的安装资产和校验文件见[对应版本发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a23)。首版范围已冻结，发布准备集中在现有行为、兼容和打包修复。项目采用 [Apache-2.0](../LICENSE)。`v0.1.0a23` 标签尚未打出，发行页上的文件要等该标签进入 `main` 且发行工作流成功之后才会出现。
+
+## 0.1.0a23
+
+相对 2026-10-19 已发布的 [`v0.1.0a22`](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a22)，本版修复 agy 1.4 派出子代理后不返回 result、任务跑满超时进入待对账并占住并发槽位的问题。内置 Antigravity 后端在看到第一个子代理信号（`invoke_subagent` 工具步骤，或被改报为 `subagent` 的步骤）时立即结束整个进程组，不再等待 result；确认进程和进程组都已退出后记为 failed、`terminated=true`、`ANTIGRAVITY_RUN_INCOMPLETE`（`failure_type=subagent_delegated`），并立即释放并发槽位；无法确认退出时保持待对账（`subagent_process_alive`），不误报终态。a22 中“收到 result 后进程仍不退出”的情况并入同一逻辑。确认退出后不再对原进程组号发信号，以免误伤被复用的组号。agy 1.4.2 没有关闭子代理的参数，本版只改代码。外部 Antigravity 插件升到 `1.0.6`：插件里 agy 不在独立进程组，无法确认整组退出，看到子代理后结束进程但保持待对账。已用真实 agy 1.4.2 复测：诱发子代理的列目录任务在看到子代理帧后立即以未完成结束，无残留进程。协议、SQLite schema 6、配置 schema 与标准 skill 最低接口 `0.1.0a14` 不变；Cursor 插件仍为 `1.0.1`，Jules 插件仍为 `1.0.0`。
+
+尚未打 `v0.1.0a23`。资产要等该标签进入 `main` 且发行工作流成功之后，才会出现在[发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a23)。本次资产为核心 wheel、源码包、`asterun-skill-0.1.0a23.zip`、三个外部插件的 wheel 与源码包（Antigravity `1.0.6`，Cursor `1.0.1`，Jules `1.0.0`），以及 `SHA256SUMS`。
 
 ## 0.1.0a22
 
 相对 2026-10-19 已发布的 [`v0.1.0a21`](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a21)，本版让客户端默认跟随最新版，不再由 Asterun 关闭自动更新。Antigravity：子进程与版本探测都不再设置 `AGY_CLI_DISABLE_AUTO_UPDATE`，agy 可放在可写目录自行升级；每次启动按可执行文件身份（dev、inode、大小、mtime）重新探测，探测前后身份不一致就重探（最多 3 次，否则 `BACKEND_UNAVAILABLE`），运行证据记录 `cli_version`，探测之后二进制被替换（启动前或运行中）记 `cli_updated_during_run=true`，结果照常判定。agy 1.4 会把 `invoke_subagent` 工具步骤改报为 `subagent`：只接受原步骤与新帧都为 `invoke_subagent` 的这一种变化，工具步骤中途改名判 `step_tool_changed`；出现子代理委派时，收到 result 即停止并清理进程组，记为 `ANTIGRAVITY_RUN_INCOMPLETE`（`subagent_count`），不再等子代理跑满超时。Grok：新目录 `config.toml` 写 `[cli] auto_update = true`，校验时 `auto_update` 由操作者决定（须为布尔值），其他键仍须完全一致；不再导出 `GROK_DISABLE_AUTOUPDATER`。外部 Antigravity 插件升到 `1.0.5`（vendored profile/runtime 同步）。已用真实 agy 1.4.2 跑通只读读文件任务，并确认诱发子代理的任务按未完成结束且无残留进程。协议、SQLite schema 6、配置 schema 与标准 skill 最低接口 `0.1.0a14` 不变；Cursor 插件仍为 `1.0.1`，Jules 插件仍为 `1.0.0`。
 
-尚未打 `v0.1.0a22`。资产要等该标签进入 `main` 且发行工作流成功之后，才会出现在[发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a22)。本次资产为核心 wheel、源码包、`asterun-skill-0.1.0a22.zip`、三个外部插件的 wheel 与源码包（Antigravity `1.0.5`，Cursor `1.0.1`，Jules `1.0.0`），以及 `SHA256SUMS`。
+`v0.1.0a22` 已于 2026-10-19 发布，资产见[发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a22)：核心 wheel、源码包、`asterun-skill-0.1.0a22.zip`、三个外部插件的 wheel 与源码包（Antigravity `1.0.5`，Cursor `1.0.1`，Jules `1.0.0`），以及 `SHA256SUMS`。
 
 ## 0.1.0a21
 
