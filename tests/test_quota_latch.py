@@ -342,6 +342,38 @@ def test_runtime_result_error_latches_quota_without_raw_text(tmp_path):
     assert latch["provider"] == "antigravity"
 
 
+def test_classify_exception_keeps_confirmed_failure(monkeypatch):
+    """分类抛错时结果行仍按 ERROR 收成 failed，且不写 provider_failure。"""
+    from asterun.backends import antigravity_runtime as agy_runtime
+
+    def explode(status, text):
+        raise RuntimeError("classify failed")
+
+    monkeypatch.setattr(agy_runtime, "classify_agy_error", explode)
+    state = agy_runtime._Run("run_classify_raises")
+    payload = {
+        "status": "ERROR",
+        "response": "native failure text",
+        "error": "429 quota exceeded",
+        "conversation_id": "",
+    }
+    line = json.dumps({"event": "result", "result": payload}).encode()
+    assert agy_runtime.AntigravityRuntime._event(state, line) is True
+    assert state.provider_failure is None
+    assert state.result is not None and state.result["status"] == "ERROR"
+    finished = agy_runtime.AntigravityRuntime._snapshot(
+        state,
+        status="failed",
+        terminated=True,
+        error_code="ANTIGRAVITY_RUN_FAILED",
+        summary=state.text or "Antigravity 返回原生失败终态",
+    )
+    assert finished["status"] == "failed"
+    assert finished["error_code"] == "ANTIGRAVITY_RUN_FAILED"
+    assert finished["terminated"] is True
+    assert "provider_failure" not in finished["native"]
+
+
 def _utc_z(moment: datetime) -> str:
     return moment.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 

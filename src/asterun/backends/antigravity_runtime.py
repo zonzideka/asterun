@@ -152,8 +152,13 @@ class _Run:
                     native[name] = self.result[name]
             if "usage" in self.result:
                 native["usage_scope"] = "session"
-        if self.provider_failure is not None:
-            native["provider_failure"] = _provider_failure(self.provider_failure)
+        # 缺字段或非 dict 时不输出，避免 native() 抛错把已确认终态打成未决。
+        failure = self.provider_failure
+        try:
+            if isinstance(failure, dict) and all(key in failure for key in _PROVIDER_FAILURE_KEYS):
+                native["provider_failure"] = _provider_failure(failure)
+        except Exception:
+            pass
         return native
 
 
@@ -336,10 +341,17 @@ class AntigravityRuntime:
             if not isinstance(error, str):
                 raise _ProtocolError("invalid_result_error")
             state.result["has_error"] = True
-        error_text = error if isinstance(error, str) else ""
-        classified = classify_agy_error(status, error_text + result["response"])
-        if classified is not None:
-            state.provider_failure = _provider_failure(classified)
+        # 分类失败只跳过 provider_failure，不改已确认的结果终态。
+        try:
+            raw_error = result.get("error")
+            raw_response = result.get("response")
+            error_text = raw_error if isinstance(raw_error, str) else ""
+            response_text = raw_response if isinstance(raw_response, str) else ""
+            classified = classify_agy_error(status, error_text + "\n" + response_text)
+            if classified is not None:
+                state.provider_failure = _provider_failure(classified)
+        except Exception:
+            state.provider_failure = None
         state.text = _bounded_text(result["response"])
         state.text_truncated |= state.text != result["response"]
         return True
