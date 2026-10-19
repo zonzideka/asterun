@@ -20,19 +20,19 @@
     },
     {
       "path": "packages/asterun-plugin-antigravity/src/asterun_plugin_antigravity/_vendor/profile.py",
-      "sha256": "2a583be9fe240cd28eb94aa77b25c0c2046e6839cca7cbb27ccd32172dc920f7"
+      "sha256": "03ceec03f40eb96222810da9614766f294d951d6e1a51f3e9c67674d348c6609"
     },
     {
       "path": "packages/asterun-plugin-antigravity/src/asterun_plugin_antigravity/_vendor/runtime.py",
-      "sha256": "7659dc393967438a4b4a07eaee2c43d2dd50d359dfd1c896e82831049c65155c"
+      "sha256": "6e9e3fd02d12e79c70c689258367f42575fe93c224f2a0e50ec14fadcac2b9da"
     },
     {
       "path": "packages/asterun-plugin-antigravity/src/asterun_plugin_antigravity/manifest.json",
-      "sha256": "da4ac8d6ddcd1cf8b6715a25a401f184bc9611c890fa0cedde0fc6ef4f542565"
+      "sha256": "802e94c15d048063a119fed2edb3ea460c0f961490b54cc395c1b5818d93ff21"
     },
     {
       "path": "packages/asterun-plugin-antigravity/src/asterun_plugin_antigravity/vendor-source.json",
-      "sha256": "d46491269b4ca33ab319e645683bf5a88170bfde83abdd63c42c73b40a00804c"
+      "sha256": "3a0b83caacb65fd06150bbb0f10aa124c2f911290c471d82370780ba0bf7d27c"
     },
     {
       "path": "packages/asterun-plugin-antigravity/src/asterun_plugin_antigravity/worker.py",
@@ -80,7 +80,7 @@
     },
     {
       "path": "src/asterun/__init__.py",
-      "sha256": "52e6bd560a4d8900d5f168a372d5d0cba0fa7ca8bfedfb4801b527fa73c92db2"
+      "sha256": "b0f944194f17acc75fbfb2ca60551d663a2feca3e7f1fc579430c615813ee8f8"
     },
     {
       "path": "src/asterun/__main__.py",
@@ -88,7 +88,7 @@
     },
     {
       "path": "src/asterun/antigravity_profile.py",
-      "sha256": "83cddc1004d1561d94ae50d608278658e4c3b3369c0aac8114cc839ff064ac03"
+      "sha256": "1636a20d3c9babe163724f4bcc27c60e92ff0e0522d1383a3531f1dc7dbe0e90"
     },
     {
       "path": "src/asterun/application.py",
@@ -108,11 +108,11 @@
     },
     {
       "path": "src/asterun/backends/antigravity.py",
-      "sha256": "bf3b471630475a23195f434e8b2d4e8b0ba443c510fb4e7f0746786bf4f89a0c"
+      "sha256": "9e579e06d3f1efac4d7f991baf816194cc7c0d8b4be11a291652823607e00d66"
     },
     {
       "path": "src/asterun/backends/antigravity_runtime.py",
-      "sha256": "b8f496643b6b336feffcbda8d7610e9a530674067b4a05ae2c3c07908514988d"
+      "sha256": "afca959e275c58487a006606372130550a85fb6822c7b3210d76844eea9b063e"
     },
     {
       "path": "src/asterun/backends/base.py",
@@ -244,7 +244,7 @@
     },
     {
       "path": "src/asterun/grok_profile.py",
-      "sha256": "d63675865780984611fbc204514593bf9a3b46b0f49bd8bd8d1aa74b34b0055b"
+      "sha256": "de95295f562467cee803a07d58b1541f492125fe8b88589490f0d0104826c9e6"
     },
     {
       "path": "src/asterun/home.py",

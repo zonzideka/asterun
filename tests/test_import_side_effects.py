@@ -35,7 +35,7 @@ print(asterun.__version__)
         env=env,
     )
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "0.1.0a21"
+    assert result.stdout.strip() == "0.1.0a22"
     assert list(home.iterdir()) == []
     assert not (tmp_path / "missing-asterun-home").exists()
 
