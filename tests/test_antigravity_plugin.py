@@ -196,7 +196,7 @@ def test_pinned_options_fail_before_native_spawn(antigravity_installation, isola
 
 
 @pytest.mark.parametrize("field,value,reason", [("auth_mode", "api_key", "auth_mode_mismatch"),
-    ("upstream_version", "1.2.1", "upstream_version_mismatch"), ("provider_session_id", "exact-native-session", "native_resume_unsupported"),
+    ("upstream_version", "1.1.9", "upstream_version_mismatch"), ("provider_session_id", "exact-native-session", "native_resume_unsupported"),
     ("capability", "agent.resume", "capability_unsupported")])
 def test_context_mode_and_explicit_resume_never_fallback(antigravity_installation, isolated_env, workspace_root, field, value, reason):
     native = setup_native(isolated_env, workspace_root, antigravity_installation)
@@ -231,11 +231,19 @@ def test_effective_profile_rejects_weaker_native_permissions(antigravity_install
 
 def test_actual_binary_version_is_checked_without_dispatch(antigravity_installation, isolated_env, workspace_root):
     native = setup_native(isolated_env, workspace_root, antigravity_installation)
-    native["binary"].write_text(native["binary"].read_text().replace('print("1.2.0")', 'print("1.2.1")'))
+    native["binary"].write_text(native["binary"].read_text().replace('print("1.2.0")', 'print("1.1.9")'))
     native["options"]["binary_sha256"] = hashlib.sha256(native["binary"].read_bytes()).hexdigest()
     result = call_native(antigravity_installation, native)
     assert result["reason"] == "upstream_version_mismatch"
     assert native["marker"].read_text() == "version\n"
+
+
+def test_newer_binary_version_is_not_a_mismatch(antigravity_installation, isolated_env, workspace_root):
+    native = setup_native(isolated_env, workspace_root, antigravity_installation)
+    native["binary"].write_text(native["binary"].read_text().replace('print("1.2.0")', 'print("1.3.2")'))
+    native["options"]["binary_sha256"] = hashlib.sha256(native["binary"].read_bytes()).hexdigest()
+    result = call_native(antigravity_installation, native)
+    assert result.get("reason") != "upstream_version_mismatch"
 
 
 @pytest.mark.parametrize("method", ["execution.observe", "execution.cancel", "execution.reconcile"])

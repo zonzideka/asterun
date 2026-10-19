@@ -2,11 +2,11 @@
 
 # Cursor local Agent plugin
 
-This optional Apache-2.0 plugin runs Cursor local Agent from a separate virtual environment. It pins `cursor-sdk==1.0.31` and `httpx==0.28.1`. See `upstream-lock.json` for API sources and wheel digests, and the [Cursor Python SDK documentation](https://cursor.com/docs/sdk/python) for the upstream interface.
+This optional Apache-2.0 plugin runs Cursor local Agent from a separate virtual environment. It depends on `cursor-sdk>=1.0.31,<2` and `httpx==0.28.1`. `1.0.31` is the tested minimum recorded in `upstream-lock.json`. See `upstream-lock.json` for API sources and wheel digests, and the [Cursor Python SDK documentation](https://cursor.com/docs/sdk/python) for the upstream interface.
 
 ## Configure the connection
 
-Register `cursor.agent` in core configuration v2. Set the runner to the absolute path of Python in the plugin environment, followed by `-m asterun_plugin_cursor.worker`. Pin the manifest, wheel, installed tree, and runner digests. Use `auth_mode=user_api_key` and `upstream_version=1.0.31`; inject `CURSOR_API_KEY` through a provider_account `file:` or `env:` reference. The user must configure the billing pool explicitly.
+Register `cursor.agent` in core configuration v2. Set the runner to the absolute path of Python in the plugin environment, followed by `-m asterun_plugin_cursor.worker`. Pin the manifest, wheel, installed tree, and runner digests. Use `auth_mode=user_api_key`. `upstream_version` may be omitted, or set to a 1.x version that is at least 1.0.31. Inject `CURSOR_API_KEY` through a provider_account `file:` or `env:` reference. The user must configure the billing pool explicitly.
 
 Required options are `execution_enabled=true`, `runtime=local`, an account-accessible `model`, `tools`, `disallowed_tools`, `mcp_servers={}`, `setting_sources=[]`, `state_root`, `bridge_bin`, and `bridge_sha256`. `state_root` must be a mode-0700 directory owned by the current user and located outside the workspace. Use the verified bridge file from the installed package and its digest. The path must identify a regular file that other users cannot write. The timeout defaults to 15 seconds, with a maximum of 20; the host RPC deadline also applies.
 

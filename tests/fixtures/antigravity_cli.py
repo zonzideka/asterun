@@ -10,6 +10,16 @@ import time
 MODE = os.environ.get("AGY_FIXTURE_MODE", "happy")
 SESSION = "fixture-conversation-123"
 
+if sys.argv[1:] == ["--version"]:
+    print(os.environ.get("AGY_FIXTURE_VERSION", "1.3.2"))
+    raise SystemExit(0)
+if sys.argv[1:] == ["--help"]:
+    print("Usage of agy:", file=sys.stderr)
+    for flag in ("--add-dir", "--disable-slash-commands", "--input-format", "--model",
+                 "--output-format", "--print-timeout"):
+        print(f"  {flag}  fixture", file=sys.stderr)
+    raise SystemExit(0)
+
 
 def emit(value):
     print(json.dumps(value), flush=True)

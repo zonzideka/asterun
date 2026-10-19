@@ -21,7 +21,19 @@ from ._vendor.profile import build_environment, validate_home, validate_workspac
 from ._vendor.runtime import AntigravityRuntime
 
 PROTOCOL = "asterun-worker/v1"
-VERSION = "1.2.0"
+MIN_VERSION = (1, 2, 0)
+MIN_VERSION_TEXT = "1.2.0"
+_VERSION_TEXT = re.compile(
+    r"(?:(?:Antigravity(?: CLI)?|agy)\s+)?v?([0-9]{1,4})\.([0-9]{1,4})\.([0-9]{1,4})(?:[-+][0-9A-Za-z.-]{1,64})?",
+    re.IGNORECASE,
+)
+
+
+def _parse_version(text):
+    match = _VERSION_TEXT.fullmatch(text.strip()) if isinstance(text, str) else None
+    return None if match is None else (int(match[1]), int(match[2]), int(match[3]))
+
+
 MAX_FRAME = 256 * 1024
 _OPTIONS = {"bin", "binary_sha256", "home", "model", "execution_enabled", "timeout_seconds"}
 _METHODS = {"plugin.describe", "connection.inspect", "capability.prepare", "execution.start",
@@ -105,8 +117,10 @@ def _version(binary, *, cwd, env):
                     if key.fileobj is proc.stdout:
                         output.extend(data)
             proc.wait(timeout=max(.01, deadline - time.monotonic()))
-        if proc.returncode != 0 or not re.fullmatch(r"(?:(?:Antigravity(?: CLI)?|agy)\s+)?v?1\.2\.0", output.decode("utf-8").strip(), re.IGNORECASE):
+        detected = _parse_version(output.decode("utf-8")) if proc.returncode == 0 else None
+        if detected is None or detected < MIN_VERSION:
             raise Rejected("upstream_version_mismatch")
+        return ".".join(map(str, detected))
     except (OSError, ValueError, UnicodeError, subprocess.TimeoutExpired):
         raise Rejected("version_unavailable") from None
     finally:
@@ -149,7 +163,10 @@ def _preflight(context):
         raise Rejected("execution_not_enabled")
     if context.get("auth_mode") != "native_account" or not context.get("provider_account_ref"):
         raise Rejected("auth_mode_mismatch")
-    if context.get("upstream_version") != VERSION:
+    # The connection may declare the CLI version it was set up with; any
+    # release at or above the minimum is accepted. The binary is probed below.
+    declared = context.get("upstream_version")
+    if declared is not None and ((_parse_version(declared) or (0, 0, 0)) < MIN_VERSION):
         raise Rejected("upstream_version_mismatch")
     if context.get("capability") != "agent.execute":
         raise Rejected("capability_unsupported")
@@ -220,7 +237,7 @@ def handle(method, input, context):
     if method == "plugin.describe":
         return {"manifest": _manifest(), "support": dict(_UNSUPPORTED)}
     if method == "connection.inspect":
-        return {"authenticated": "not_verified", "upstream_version": VERSION,
+        return {"authenticated": "not_verified", "upstream_version": None, "minimum_upstream_version": MIN_VERSION_TEXT,
                 "support": dict(_UNSUPPORTED), "billing_verified": False, "native_client_visible": "not_verified"}
     if method == "usage.observe":
         return {"supported": False, "quota": "unsupported", "remaining": None, "usage": []}

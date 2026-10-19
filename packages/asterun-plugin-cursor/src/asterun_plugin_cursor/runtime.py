@@ -11,7 +11,19 @@ from pathlib import Path
 import re
 import stat
 
-SDK_VERSION = "1.0.31"
+MIN_SDK_VERSION = (1, 0, 31)
+MIN_SDK_VERSION_TEXT = "1.0.31"
+
+
+def sdk_version_supported(value):
+    """Any cursor-sdk 1.x release at or above the tested minimum."""
+    match = re.fullmatch(r"([0-9]{1,4})\.([0-9]{1,4})\.([0-9]{1,4})(?:[.+-][0-9A-Za-z.+-]{0,64})?", value) if isinstance(value, str) else None
+    if match is None:
+        return False
+    parsed = (int(match[1]), int(match[2]), int(match[3]))
+    return parsed[0] == MIN_SDK_VERSION[0] and parsed >= MIN_SDK_VERSION
+
+
 OPTIONS = {"model", "runtime", "state_root", "bridge_bin", "bridge_sha256", "execution_enabled",
            "tools", "disallowed_tools", "mcp_servers", "setting_sources", "timeout_seconds"}
 TERMINAL = {"finished": "succeeded", "error": "failed", "cancelled": "cancelled"}
@@ -51,7 +63,7 @@ def preflight(context):
     require(isinstance(options, dict) and not set(options) - OPTIONS, "invalid_options")
     require(options.get("execution_enabled") is True, "execution_not_enabled")
     require(context.get("auth_mode") == "user_api_key", "auth_mode_mismatch")
-    require(context.get("upstream_version") == SDK_VERSION, "sdk_version_mismatch")
+    require(context.get("upstream_version") is None or sdk_version_supported(context.get("upstream_version")), "sdk_version_mismatch")
     require(options.get("runtime") == "local", "local_runtime_required")
     require(context.get("capability") == "agent.execute", "capability_unsupported")
     for key in ("run_id", "task_id", "plan_id", "binding_id", "provider_account_ref"):
@@ -84,7 +96,7 @@ def preflight(context):
             and os.access(path, os.X_OK) and info.st_size <= 512 * 1024 * 1024, "bridge_path_invalid")
     with path.open("rb") as stream:
         require(hashlib.file_digest(stream, "sha256").hexdigest() == sha, "bridge_digest_mismatch")
-    require(version("cursor-sdk") == SDK_VERSION, "installed_sdk_version_mismatch")
+    require(sdk_version_supported(version("cursor-sdk")), "installed_sdk_version_mismatch")
     if context.get("provider_session_id"):
         reference(context["provider_session_id"], "agent-")
     if context.get("previous_provider_turn_id"):

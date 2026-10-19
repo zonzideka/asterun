@@ -3,8 +3,11 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import re
 import shutil
+import subprocess
 import sys
+import tempfile
 from threading import Event, Lock
 from typing import Any
 
@@ -44,6 +47,84 @@ def discover_antigravity_bin(explicit: str | None = None) -> Path | None:
         local = os.environ.get("LOCALAPPDATA")
         return executable(str(Path(local) / "agy/bin/agy.exe")) if local else None
     return executable(str(Path.home() / ".local/bin/agy"))
+
+
+MIN_CLI_VERSION = (1, 2, 0)
+# Flags that build_command and the plugin worker depend on. A CLI release is
+# accepted when it is at least MIN_CLI_VERSION and advertises all of them.
+REQUIRED_CLI_FLAGS = (
+    "--input-format", "--output-format", "--model", "--disable-slash-commands",
+    "--print-timeout", "--add-dir",
+)
+_CLI_VERSION = re.compile(
+    r"(?:(?:Antigravity(?: CLI)?|agy)\s+)?v?([0-9]{1,4})\.([0-9]{1,4})\.([0-9]{1,4})(?:[-+][0-9A-Za-z.-]{1,64})?",
+    re.IGNORECASE,
+)
+_PROBE_LIMIT = 65536
+_PROBE_CACHE: dict[tuple[object, ...], dict[str, object]] = {}
+_PROBE_LOCK = Lock()
+
+
+def parse_cli_version(text: str) -> tuple[int, int, int] | None:
+    match = _CLI_VERSION.fullmatch(text.strip())
+    return None if match is None else (int(match[1]), int(match[2]), int(match[3]))
+
+
+def _probe_output(binary: Path, argument: str, scratch: str) -> tuple[int, str]:
+    env = {"HOME": scratch, "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+           "LANG": "C.UTF-8", "AGY_CLI_DISABLE_AUTO_UPDATE": "1"}
+    try:
+        proc = subprocess.run([str(binary), argument], stdin=subprocess.DEVNULL,
+                              capture_output=True, timeout=15, env=env, cwd=scratch)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise AsterunError(BACKEND_UNAVAILABLE, f"无法运行 agy {argument}：{type(exc).__name__}",
+                           next_action="确认 bin 指向可执行的官方 agy CLI") from exc
+    if len(proc.stdout) + len(proc.stderr) > _PROBE_LIMIT:
+        raise AsterunError(BACKEND_UNAVAILABLE, f"agy {argument} 输出超出检查上限")
+    text = proc.stdout.decode("utf-8", "replace")
+    if argument == "--help":
+        # Go's flag package prints usage on stderr.
+        text += "\n" + proc.stderr.decode("utf-8", "replace")
+    return proc.returncode, text
+
+
+def probe_cli(binary: Path) -> dict[str, object]:
+    """Detect the agy version and required features in a throwaway HOME.
+
+    The real profile is never used here, so probing cannot rewrite native
+    state. Results are cached per binary identity (path, inode, size, mtime).
+    """
+    try:
+        info = binary.stat()
+    except OSError as exc:
+        raise AsterunError(BACKEND_UNAVAILABLE, f"无法读取 agy 可执行文件：{type(exc).__name__}") from exc
+    key = (str(binary), info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+    with _PROBE_LOCK:
+        cached = _PROBE_CACHE.get(key)
+    if cached is not None:
+        return dict(cached)
+    with tempfile.TemporaryDirectory(prefix="asterun-agy-probe-") as scratch:
+        code, version_text = _probe_output(binary, "--version", scratch)
+        version = parse_cli_version(version_text) if code == 0 else None
+        if version is None:
+            raise AsterunError(BACKEND_UNAVAILABLE, "无法识别 agy --version 输出的版本号",
+                               next_action="确认 bin 指向官方 agy CLI")
+        label = ".".join(map(str, version))
+        if version < MIN_CLI_VERSION:
+            raise AsterunError(BACKEND_UNAVAILABLE,
+                f"agy {label} 低于 Asterun 支持的最低版本 {'.'.join(map(str, MIN_CLI_VERSION))}",
+                next_action="升级官方 agy CLI")
+        _code, help_text = _probe_output(binary, "--help", scratch)
+    missing = [flag for flag in REQUIRED_CLI_FLAGS
+               if not re.search(r"(?m)^\s*" + re.escape(flag) + r"(?![\w-])", help_text)]
+    if missing:
+        raise AsterunError(BACKEND_UNAVAILABLE,
+            f"agy {label} 缺少 Asterun 依赖的功能：{', '.join(missing)}",
+            next_action="换用提供这些参数的官方 agy CLI 版本")
+    result = {"version": label, "features": list(REQUIRED_CLI_FLAGS)}
+    with _PROBE_LOCK:
+        _PROBE_CACHE[key] = dict(result)
+    return result
 
 
 def build_command(binary: Path, model: str, timeout_seconds: int = 300) -> list[str]:
@@ -107,6 +188,7 @@ class AntigravityBackend:
         if not live_antigravity_enabled():
             raise AsterunError(AUTH_REQUIRED, "Antigravity 真实派发门闩未开启",
                                next_action=f"核对账户与受限配置后设置 {LIVE_ENV}=1")
+        probe_cli(binary)
         home = self._prepared_home()
         if not self.config.model:
             raise AsterunError(CONFIG_REQUIRED, "Antigravity 需要显式固定 model ID")
@@ -130,10 +212,17 @@ class AntigravityBackend:
     def inspect(self) -> dict[str, Any]:
         self.calls.append(BackendCall("inspect"))
         binary = self.discover_bin()
+        cli_version = None
+        if binary is not None:
+            try:
+                cli_version = probe_cli(binary)["version"]
+            except AsterunError:
+                cli_version = None
         return {
             "backend": self.config.name, "kind": "antigravity",
             "enabled_in_config": self.config.enabled, "execution_enabled": self.can_dispatch(),
             "binary_found": binary is not None, "binary": str(binary) if binary else None,
+            "cli_version": cli_version,
             "live_flag": live_antigravity_enabled(), "home": self.config.home,
             "model": self.config.model, "timeout_seconds": self.effective_timeout_seconds(),
             "execution_profile": "workspace-read-v1",

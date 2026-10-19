@@ -134,6 +134,7 @@ def test_snapshot_failure_never_spawns_bridge(cursor_installation,isolated_env,w
 
 @pytest.mark.parametrize('field,value,reason',[
     ('auth_mode','api_key','auth_mode_mismatch'),('upstream_version','1.0.30','sdk_version_mismatch'),
+    ('upstream_version','2.0.0','sdk_version_mismatch'),
     ('capability','cloud.execute','capability_unsupported'),('binding_id','','execution_binding_required'),
     ('provider_session_id','bc-cloud','native_reference_invalid'),
 ])
@@ -142,6 +143,13 @@ def test_context_binding_rejected_before_bridge(cursor_installation,isolated_env
     result=rpc(cursor_installation,context)
     assert result['status']=='failed' and result['output']['text']==reason,result
     assert not calls(state)
+
+
+def test_sdk_version_supported_is_a_minimum_within_major():
+    sys.path.insert(0, str(ROOT/'packages/asterun-plugin-cursor/src'))
+    from asterun_plugin_cursor.runtime import sdk_version_supported
+    assert sdk_version_supported('1.0.31') and sdk_version_supported('1.0.40') and sdk_version_supported('1.2.0')
+    assert not sdk_version_supported('1.0.30') and not sdk_version_supported('2.0.0') and not sdk_version_supported('x')
 
 
 @pytest.mark.parametrize('mode,status', [('error','failed'),('eof','pending_reconcile'),('create_timeout','pending_reconcile'),
