@@ -436,7 +436,42 @@ _READ_METHODS = {"quota.inspect", "routing.explain"}
 
 def _member_windows(app, alias: str) -> list[dict]:
     report = inspect_quota(app, {"backend": alias})
-    return [window for scope in report["scopes"] for window in scope["windows"]]
+    windows = [window for scope in report["scopes"] for window in scope["windows"]]
+    return _attach_epoch_history(app, windows)
+
+
+def _attach_epoch_history(app, windows: list[dict]) -> list[dict]:
+    """只读附上同一 scope、同一 epoch 的历史快照。不写库。"""
+    from asterun.plugin_store import read_quota_snapshots
+
+    admission = getattr(app, "admission", None)
+    namespace = admission.namespace if admission is not None else _NAMESPACE
+    conn = app.store._conn
+    cached: dict[str, list] = {}
+    attached = []
+    for window in windows:
+        observation = window.get("observation") if isinstance(window, dict) else None
+        if not isinstance(observation, dict):
+            attached.append(window)
+            continue
+        scope = observation.get("scope_ref")
+        if not isinstance(scope, str) or not scope:
+            attached.append(window)
+            continue
+        if scope not in cached:
+            cached[scope] = read_quota_snapshots(conn, scope, namespace)
+        epoch = observation.get("window_epoch")
+        bucket = observation.get("bucket_id")
+        kind = observation.get("window_kind")
+        history = [
+            prior for prior in cached[scope]
+            if isinstance(prior, dict)
+            and prior.get("bucket_id") == bucket
+            and prior.get("window_kind") == kind
+            and prior.get("window_epoch") == epoch
+        ]
+        attached.append({**window, "history": history})
+    return attached
 
 
 def _member_latched(app, alias: str) -> bool:

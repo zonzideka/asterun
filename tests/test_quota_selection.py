@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from asterun.application import Application
+from asterun.plugin_store import PluginStore
 from asterun.quota.selection import resolve_prefs, score_candidate, select
 from asterun.quota.service import handle
 
@@ -96,6 +97,31 @@ def test_exhausted_and_latched_candidates_are_excluded():
     assert latched["excluded"] is True
     assert latched["tier"] == 3
     assert "latched" in latched["reason_codes"]
+
+
+def test_flipped_latch_window_does_not_replace_primary():
+    expired = _score([window(
+        kind="latch", bucket="latch", used=None, freshness="latched", source="latch", hours_to_reset=-1,
+    )])
+    assert expired["tier"] == 2
+    assert expired["excluded"] is False
+    assert "latched" not in expired["reason_codes"]
+
+    flipped = window(
+        kind="latch", bucket="latch", used=None, freshness="unknown", source="latch", hours_to_reset=-1,
+    )
+    flipped["issues"] = ["window_flipped"]
+    primary = _score([flipped])
+    assert primary["tier"] == 2
+    assert primary["excluded"] is False
+    assert primary["reason_codes"] == ["unknown"]
+
+    other = _score([window()])
+    assert other["tier"] == 0 and other["excluded"] is False
+    decision = select(_group("primary", "other"), {"primary": primary, "other": other}, prefs=PREFS)
+    assert decision["chosen"] == "primary"
+    assert decision["mode"] == "fallback_primary"
+    assert decision["reason_code"] == "primary_unknown"
 
 
 def test_floor_demotes_to_tier_three_without_excluding():
@@ -345,6 +371,52 @@ def test_routing_explain_is_read_only_and_falls_back_when_primary_is_unknown(con
         assert explained["mode"] == "fallback_primary"
         assert {item["alias"] for item in explained["candidates"]} == {"grok-a", "grok-b"}
         assert app.store.list_task_ids() == tasks_before
+    finally:
+        app.close()
+
+
+def test_routing_explain_uses_same_epoch_history_under_query_only(config_path: Path, workspace_root: Path):
+    config_path.write_text(json.dumps(_grok_config(workspace_root)), encoding="utf-8")
+    app = Application.from_paths(config_path, config_path.parent / "routing-explain-history")
+    try:
+        now = datetime.now(timezone.utc).replace(microsecond=0)
+        resets = _iso(now + timedelta(hours=24))
+        common = {
+            "scope_ref": "acct-b-pool",
+            "bucket_id": "weekly",
+            "window_kind": "weekly",
+            "source_kind": "probe_codex",
+            "confidence": "high",
+            "paid_overage": False,
+            "resets_at": resets,
+            "window_duration_s": 7 * 24 * 3600,
+            "valid_until": _iso(now + timedelta(hours=2)),
+        }
+        store = PluginStore(app.store._conn)
+        store.append_quota_snapshot({
+            **common, "observed_at": _iso(now - timedelta(hours=2, minutes=1)), "used_bp": 0,
+        })
+        store.append_quota_snapshot({
+            **common, "observed_at": _iso(now - timedelta(minutes=1)), "used_bp": 3000,
+        })
+        # 没有历史时按已过时间折算，30% 用量、约 24 小时后重置的浪费量是数千。
+        elapsed = _score([window(used=3000, confidence="high")])
+        assert elapsed["S"] > 1000
+        assert elapsed["tier"] == 0
+        conn = app.store._conn
+        conn.execute("PRAGMA query_only=ON")
+        try:
+            explained = handle(app, "routing.explain", {"group": "implementer"})
+        finally:
+            conn.execute("PRAGMA query_only=OFF")
+        scored = next(item for item in explained["candidates"] if item["alias"] == "grok-b")
+        assert explained["dispatch_changed"] is False
+        assert scored["S"] == 0
+        assert scored["S"] != elapsed["S"]
+        assert scored["tier"] == 1
+        assert scored["S_A"] > 0
+        assert scored["excluded"] is False
+        assert "unknown" not in scored["reason_codes"]
     finally:
         app.close()
 

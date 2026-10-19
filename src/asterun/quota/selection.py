@@ -55,7 +55,7 @@ def score_candidate(windows, *, now, prefs, inflight_runs, est_bp_per_run, weigh
         if observation.get("paid_overage") is True:
             paid_ignored = True
             continue
-        if _is_latch(observation, freshness):
+        if _is_latch(observation, freshness, moment):
             latched = True
             continue
         used = observation.get("used_bp")
@@ -326,8 +326,18 @@ def _is_fresh(freshness: str | None) -> bool:
     return freshness == "fresh"
 
 
-def _is_latch(observation: dict, freshness: str | None) -> bool:
-    return freshness == "latched" or observation.get("window_kind") == "latch" or observation.get("source_kind") == "latch"
+def _is_latch(observation: dict, freshness: str | None, now) -> bool:
+    """只有 freshness 仍为 latched、且未到 resets_at 才算闩锁。
+
+    窗口翻转后 freshness 是 unknown。旧的 latch 种类或来源不能再把候选排除。
+    """
+    if freshness != "latched":
+        return False
+    reset_at = _parse_time(observation.get("resets_at"))
+    moment = now if isinstance(now, datetime) else _parse_time(now)
+    if reset_at is not None and moment is not None and moment >= reset_at:
+        return False
+    return True
 
 
 def _confidence_ok(confidence, require: str) -> bool:
