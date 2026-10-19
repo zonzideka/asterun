@@ -1,11 +1,11 @@
 {
-  "source_commit": "acce6e20fcbf72ee3ab766e592cee9659bbd9fdc",
+  "source_commit": "84b7ecb38e5e803120d6c94aefed2dd115edee94",
   "files": [
     {
       "source": "src/asterun/antigravity_profile.py",
       "target": "_vendor/profile.py",
-      "source_sha256": "83cddc1004d1561d94ae50d608278658e4c3b3369c0aac8114cc839ff064ac03",
-      "vendored_sha256": "2a583be9fe240cd28eb94aa77b25c0c2046e6839cca7cbb27ccd32172dc920f7",
+      "source_sha256": "1636a20d3c9babe163724f4bcc27c60e92ff0e0522d1383a3531f1dc7dbe0e90",
+      "vendored_sha256": "03ceec03f40eb96222810da9614766f294d951d6e1a51f3e9c67674d348c6609",
       "replacements": [
         [
           "from .errors import AsterunError, INVALID_CONFIG",
@@ -21,8 +21,8 @@
     {
       "source": "src/asterun/backends/antigravity_runtime.py",
       "target": "_vendor/runtime.py",
-      "source_sha256": "b8f496643b6b336feffcbda8d7610e9a530674067b4a05ae2c3c07908514988d",
-      "vendored_sha256": "7659dc393967438a4b4a07eaee2c43d2dd50d359dfd1c896e82831049c65155c",
+      "source_sha256": "3445acbb440b23c24b9249a87a6ee8a34744ffe5bdaa7dd08e0f3e5ae9f80698",
+      "vendored_sha256": "10447be3d497810f676c9f8ce4ce281a0d655d7b801585431c2efdb67e808bd2",
       "replacements": [
         [
           "from asterun.errors import BACKEND_UNAVAILABLE, REMOTE_STATE_UNKNOWN\nfrom asterun.ids import RunId",
@@ -46,7 +46,7 @@
     {
       "source": "src/asterun/backends/antigravity.py",
       "target": "_vendor/command.py",
-      "source_sha256": "bf3b471630475a23195f434e8b2d4e8b0ba443c510fb4e7f0746786bf4f89a0c",
+      "source_sha256": "2b5c3d227eeb3ee974c1d7b0cc3dea9f4ea9ea7ff60cb83c02e9d3011a3f6caa",
       "vendored_sha256": "725c4c58ec26a80abd3892b95b505856ccbb7d9ab50faf5108bb03a1480f5be3",
       "replacements": [],
       "extract": "build_command",
@@ -70,7 +70,7 @@
     }
   ],
   "notes": [
-    "profile、runtime、command 由当前仓库提交 acce6e20fcbf72ee3ab766e592cee9659bbd9fdc 机械复制；compat 与 __init__ 是插件本地副本，同样钉定摘要。",
+    "profile、runtime、command 由当前仓库提交 84b7ecb38e5e803120d6c94aefed2dd115edee94 机械复制；compat 与 __init__ 是插件本地副本，同样钉定摘要。",
     "清单必须覆盖 _vendor 下的全部文件。来源提交须能在本仓库历史中解析。",
     "仅机械修改导入、独立 profile 命令名与 worker 所有的进程组；原始核心文件不修改。",
     "CLI 留在 worker 进程组；本地 child 信号只用 PID，host 最终负责组内剩余子孙。远端是否终止仍未知。"
