@@ -337,14 +337,15 @@ class AntigravityRuntime:
             if status == "SUCCESS" and not state.init_seen:
                 state.failure_type = "missing_init"
                 return self._unknown(state)
+            if state.subagents and state.session_id:
+                # The parent may report a result before a delegate returns, and
+                # the process may keep running for it. Delegated work is never
+                # accepted; cleanup below ends the whole process group.
+                return self._snapshot(state, status="failed", terminated=True,
+                                      error_code="ANTIGRAVITY_RUN_INCOMPLETE",
+                                      summary="Antigravity 把工作委派给了子代理，本次运行无法确认其结果；请要求不使用子代理后重试")
             if (status == "SUCCESS" and state.session_id and state.proc.returncode == 0
                     and not state.active_tools and all(value in {"DONE", "ERROR"} for value in state.step_states.values())):
-                if state.subagents:
-                    # The parent may report SUCCESS before a delegate returns, so
-                    # delegated work is never accepted as a completed run.
-                    return self._snapshot(state, status="failed", terminated=True,
-                                          error_code="ANTIGRAVITY_RUN_INCOMPLETE",
-                                          summary="Antigravity 把工作委派给了子代理，本次运行无法确认其结果；请要求不使用子代理后重试")
                 if state.tool_errors or state.step_errors or state.soft_denied or state.result.get("has_error"):
                     return self._snapshot(state, status="failed", terminated=True,
                                           error_code="ANTIGRAVITY_RUN_INCOMPLETE", summary=state.text or "Antigravity 步骤执行失败或权限被拒绝")
@@ -445,6 +446,10 @@ class AntigravityRuntime:
                         if not line or len(line) > MAX_FRAME_BYTES:
                             raise _ProtocolError("frame_limit" if line else "empty_frame")
                         immediate = self._event(state, line)
+                        if state.result is not None and state.subagents:
+                            # Do not wait for a delegate that outlives the result.
+                            state.stage = "result"
+                            return
                         if state.result is None and (immediate or (state.text != last_text and time.monotonic() - last_publish >= PROGRESS_INTERVAL)):
                             publish(self._snapshot(state))
                             last_publish, last_text = time.monotonic(), state.text
