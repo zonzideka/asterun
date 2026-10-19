@@ -2,13 +2,19 @@
 
 # 首版发行说明
 
-当前公开源码版本为 `0.1.0a23`，正式稳定版 `0.1.0` 尚未发布。本次预发布的安装资产和校验文件见[对应版本发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a23)。首版范围已冻结，发布准备集中在现有行为、兼容和打包修复。项目采用 [Apache-2.0](../LICENSE)。`v0.1.0a23` 标签尚未打出，发行页上的文件要等该标签进入 `main` 且发行工作流成功之后才会出现。
+当前公开源码版本为 `0.1.0a24`，正式稳定版 `0.1.0` 尚未发布。本次预发布的安装资产和校验文件见[对应版本发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a24)。首版范围已冻结，发布准备集中在现有行为、兼容和打包修复。项目采用 [Apache-2.0](../LICENSE)。`v0.1.0a24` 标签尚未打出，发行页上的文件要等该标签进入 `main` 且发行工作流成功之后才会出现。
+
+## 0.1.0a24
+
+相对 2026-10-19 已发布的 [`v0.1.0a23`](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a23)，本版加入额度观测（额度方案 PR1+PR2，不改调度）。新增本地额度缓存与 `quota-inspect` / `quota-set` / `quota-clear` / `quota-refresh`（MCP 同名下划线）：inspect 只读，不写库、不查上游；手动录入可信度为 low、最长 24 小时、不能创建闩锁，clear 只删手动录入；这些命令需要 SQLite 状态目录。Codex 的 `quota-refresh` 只调用 app-server `account/rateLimits/read`（initialize + 读取 + 关闭，不调用 `account/read`、`thread/*`、`turn/*`，不耗额度），同一 scope 最小间隔 60 秒、租约单飞；运行中收到 `account/rateLimits/updated` 时脱敏，并在运行结束写入缓存。只记已用比例、重置时间、是否有付费 credits（不存余额）、重置券到期时间（只展示、不计入、不兑换）；不保存邮箱和套餐。v2 配置新增可选 `quota` 段（`probes.codex_app_server`、`passive.codex_rate_limits_updated`）；不写该段的既有配置序列化与摘要不变。SQLite 新增两张额度表（旧库自动创建，旧备份仍可恢复），schema 版本仍为 6。额度数据暂不参与选路或准入，数据缺失时行为与 a23 相同。协议、配置 schema 版本、标准 skill 最低接口 `0.1.0a14` 不变；插件版本不变（Antigravity `1.0.6`，Cursor `1.0.1`，Jules `1.0.0`）。
+
+尚未打 `v0.1.0a24`。资产要等该标签进入 `main` 且发行工作流成功之后，才会出现在[发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a24)。本次资产为核心 wheel、源码包、`asterun-skill-0.1.0a24.zip`、三个外部插件的 wheel 与源码包（Antigravity `1.0.6`，Cursor `1.0.1`，Jules `1.0.0`），以及 `SHA256SUMS`。
 
 ## 0.1.0a23
 
 相对 2026-10-19 已发布的 [`v0.1.0a22`](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a22)，本版修复 agy 1.4 派出子代理后不返回 result、任务跑满超时进入待对账并占住并发槽位的问题。内置 Antigravity 后端在看到第一个子代理信号（`invoke_subagent` 工具步骤，或被改报为 `subagent` 的步骤）时立即结束整个进程组，不再等待 result；确认进程和进程组都已退出后记为 failed、`terminated=true`、`ANTIGRAVITY_RUN_INCOMPLETE`（`failure_type=subagent_delegated`），并立即释放并发槽位；无法确认退出时保持待对账（`subagent_process_alive`），不误报终态。a22 中“收到 result 后进程仍不退出”的情况并入同一逻辑。确认退出后不再对原进程组号发信号，以免误伤被复用的组号。agy 1.4.2 没有关闭子代理的参数，本版只改代码。外部 Antigravity 插件升到 `1.0.6`：插件里 agy 不在独立进程组，无法确认整组退出，看到子代理后结束进程但保持待对账。已用真实 agy 1.4.2 复测：诱发子代理的列目录任务在看到子代理帧后立即以未完成结束，无残留进程。协议、SQLite schema 6、配置 schema 与标准 skill 最低接口 `0.1.0a14` 不变；Cursor 插件仍为 `1.0.1`，Jules 插件仍为 `1.0.0`。
 
-尚未打 `v0.1.0a23`。资产要等该标签进入 `main` 且发行工作流成功之后，才会出现在[发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a23)。本次资产为核心 wheel、源码包、`asterun-skill-0.1.0a23.zip`、三个外部插件的 wheel 与源码包（Antigravity `1.0.6`，Cursor `1.0.1`，Jules `1.0.0`），以及 `SHA256SUMS`。
+`v0.1.0a23` 已于 2026-10-19 发布，资产见[发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a23)：核心 wheel、源码包、`asterun-skill-0.1.0a23.zip`、三个外部插件的 wheel 与源码包（Antigravity `1.0.6`，Cursor `1.0.1`，Jules `1.0.0`），以及 `SHA256SUMS`。
 
 ## 0.1.0a22
 
