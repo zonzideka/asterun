@@ -252,18 +252,54 @@ def test_merge_keeps_latest_and_flags_cross_source_conflict():
 
 
 def test_merge_prefers_newer_reset_window_without_cross_window_conflict():
-    # 99% 与 1% 只隔两分钟，但 resets_at 不属于同一窗口。结果取较新窗口的 1%。
+    # 旧窗口 99% 与新窗口 1% 只隔两分钟。取 observed_at 最新的 1%，不标 source_conflict。
     base = datetime(2026, 10, 1, tzinfo=timezone.utc)
     assert _merged([
         window(
             source_kind="probe_codex", confidence="high", used_bp=9900,
-            observed_at=at(base + timedelta(minutes=2)), resets_at=at(base + timedelta(days=7)),
+            observed_at=at(base), resets_at=at(base + timedelta(days=7)),
         ),
         window(
             source_kind="manual", used_bp=100,
-            observed_at=at(base), resets_at=at(base + timedelta(days=14)),
+            observed_at=at(base + timedelta(minutes=2)), resets_at=at(base + timedelta(days=14)),
         ),
     ]) == [("manual", 100, [])]
+
+
+def test_merge_manual_entry_overrides_older_probe_despite_reset_window():
+    # 旧探针 90%（resets_at=T+7d）。两小时后的手动 20% 按 observed_at 生效，不标 source_conflict。
+    base = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    probe = window(
+        source_kind="probe_codex", confidence="high", used_bp=9000,
+        observed_at=at(base), resets_at=at(base + timedelta(days=7)),
+    )
+    later = at(base + timedelta(hours=2))
+    assert _merged([
+        probe,
+        window(source_kind="manual", used_bp=2000, observed_at=later, resets_at=None),
+    ]) == [("manual", 2000, [])]
+    assert _merged([
+        probe,
+        window(
+            source_kind="manual", used_bp=2000, observed_at=later,
+            resets_at=at(base + timedelta(days=6)),
+        ),
+    ]) == [("manual", 2000, [])]
+
+
+def test_merge_same_window_conflict_within_two_minutes():
+    base = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    resets = at(base + timedelta(days=7))
+    assert _merged([
+        window(
+            source_kind="manual", used_bp=5000,
+            observed_at=at(base), resets_at=resets,
+        ),
+        window(
+            source_kind="probe_codex", confidence="high", used_bp=3000,
+            observed_at=at(base + timedelta(minutes=2)), resets_at=resets,
+        ),
+    ]) == [("manual", 5000, ["source_conflict"])]
 
 
 def test_normalize_probe_state_roundtrip_and_rejection():

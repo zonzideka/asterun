@@ -275,10 +275,10 @@ def freshness(obs: dict[str, Any] | None, now: datetime | str) -> dict[str, Any]
 
 
 def merge_observations(observations: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """同一 (scope_ref, bucket_id, window_kind) 内，先取 resets_at 最新的重置窗口。
+    """同一 (scope_ref, bucket_id, window_kind) 取 observed_at 最新。
 
-    该窗口内取 observed_at 最新。最新一条前后 5 分钟内，不同来源的 used_bp 相差超过 1000 时，
-    改取较大的 used_bp，并标 source_conflict。两条观测的窗口标记都存在且不同时，不跨窗口比较。
+    只在同一窗口 epoch 内判来源冲突。距这条最新观测不超过 5 分钟、且窗口标记未表明属于另一
+    epoch 的观测中，不同来源的 used_bp 相差超过 1000 时，改取较大的 used_bp，并标 source_conflict。
     """
     if not isinstance(observations, list):
         _fail("额度合并输入必须是数组")
@@ -317,26 +317,15 @@ def _different_windows(left: dict, right: dict) -> bool:
     return left_marker is not None and right_marker is not None and left_marker != right_marker
 
 
-def _in_latest_reset_window(group: list[dict]) -> list[dict]:
-    """只保留 resets_at 最新的窗口。没有重置时间的观测不与有窗口的观测混在一起。"""
-    ranked = [(obs, _window_marker(obs), _reset_moment(obs)) for obs in group]
-    dated = [item for item in ranked if item[2] is not None]
-    if not dated:
-        return group
-    latest = max(item[2] for item in dated)
-    markers = {item[1] for item in dated if item[2] == latest and item[1] is not None}
-    if not markers:
-        return group
-    return [obs for obs, marker, _moment in ranked if marker in markers]
-
-
 def _merge_group(group: list[dict]) -> dict[str, Any]:
-    group = _in_latest_reset_window(group)
     ordered = sorted(group, key=lambda obs: (
         _observed(obs), str(obs.get("source_kind")), obs["used_bp"] if type(obs.get("used_bp")) is int else -1))
     latest = ordered[-1]
     latest_at = _observed(latest)
-    recent = [obs for obs in ordered if latest_at - _observed(obs) <= CONFLICT_WINDOW]
+    recent = [
+        obs for obs in ordered
+        if latest_at - _observed(obs) <= CONFLICT_WINDOW and not _different_windows(obs, latest)
+    ]
     conflict = False
     for index, left in enumerate(recent):
         for right in recent[index + 1:]:
