@@ -279,3 +279,19 @@ def test_unconfirmed_group_exit_stays_pending(tmp_path, monkeypatch):
     result, _ = execute(tmp_path, "subagent_no_result", runtime=AntigravityRuntime(timeout=20))
     assert result["status"] == "pending_reconcile"
     assert result["native"][DISPATCH_RECEIPT_KEY]["failure_type"] == "subagent_process_alive"
+
+
+def test_confirmed_subagent_stop_signals_the_group_only_once(tmp_path, monkeypatch):
+    calls = []
+    real = AntigravityRuntime._cleanup.__func__
+    monkeypatch.setattr(AntigravityRuntime, "_cleanup", classmethod(lambda cls, proc: calls.append(proc.pid) or real(cls, proc)))
+    result, _ = execute(tmp_path, "subagent_no_result", runtime=AntigravityRuntime(timeout=20))
+    assert result["native"][DISPATCH_RECEIPT_KEY]["failure_type"] == "subagent_delegated"
+    assert len(calls) == 1
+
+
+def test_runtime_without_group_ownership_never_confirms_exit(tmp_path, monkeypatch):
+    monkeypatch.setattr(module, "_OWNS_PROCESS_GROUP", False)
+    result, _ = execute(tmp_path, "subagent_no_result", runtime=AntigravityRuntime(timeout=20))
+    assert result["status"] == "pending_reconcile"
+    assert result["native"][DISPATCH_RECEIPT_KEY]["failure_type"] == "subagent_process_alive"
