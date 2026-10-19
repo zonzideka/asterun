@@ -64,11 +64,11 @@ Candidate groups exist only in configuration v2, under `routing.candidate_groups
 
 Role and kind: `implementation` is grok only, `review` is codex only, and `planning` is antigravity or claude. Every member of one group must share a kind. Execution-option comparison ignores the backend fields `name`, `home`, `bin`, `model`, `connection_ref`, `quota_epoch`, and `extra_env`, and the connection option keys `bin`, `home`, and `model`. Each member's billing pool must be `subscription` or `local`, and must not set `paid_overage_allowed`. A review group cannot include an implementer's backend, provider account, or a model from the same vendor: kind grok is xai; kind codex, or a model starting with gpt or with o followed by a digit, is openai; a model starting with claude, or kind claude, is anthropic; a model starting with gemini is google.
 
-`routing.quota_preference` defaults to off. In this version, `enabled: true` affects only the explanation. It does not change dispatch, and `automatic_account_switch` stays off. Defaults are a 72-hour horizon, a 1000 bp waste threshold, a 500 bp switch margin, confidence of at least medium, short windows excluded from value, a 500 bp short-window floor, and a 1000 bp long-window floor. `count_reset_grants` can only be false. Paid overage and reset grants do not count as available quota or as waste.
+`routing.quota_preference.mode` defaults to `off`, which behaves exactly as before. `enabled` set to false is the same as `off`. `dry_run` still dispatches primary and only records `would_choose`; `on` dispatches the chosen candidate. See "Quota preference (dry-run, then enable)" below. Defaults are a 72-hour horizon, a 1000 bp waste threshold, a 500 bp switch margin, confidence of at least medium, short windows excluded from value, a 500 bp short-window floor, and a 1000 bp long-window floor. `count_reset_grants` can only be false. Paid overage and reset grants do not count as available quota or as waste.
 
 Scoring reads the local quota cache. Exhausted, latched, or fully used (10000 bp) candidates are excluded. Remaining quota below the floor plus one run's estimate drops to tier 3. Only windows that reset within the horizon and last at least 24 hours count toward waste; a 5-hour window only gates unless short windows are enabled. In-flight runs deduct 100 bp on a weekly window and 500 bp on a 5-hour window. No fresh window means unknown. The choice falls back to primary when every member is unknown, the primary is unknown, or every member is latched. A suggestion leaves primary only with fresh evidence that beats the switch margin.
 
-`routing-explain --group NAME` or `routing-explain --backend @NAME` (MCP `routing_explain`) runs that read-only calculation and returns the suggestion with `dispatch_changed: false` and `preference_enabled`. Permission matches `quota-inspect`. v1 configuration, or v2 with no candidate groups, returns `INVALID_CONFIG`. This version does not switch accounts and does not change task dispatch.
+`routing-explain --group NAME` or `routing-explain --backend @NAME` (MCP `routing_explain`) runs that read-only calculation and returns the suggestion with `dispatch_changed: false` and `preference_enabled`. Permission matches `quota-inspect`. v1 configuration, or v2 with no candidate groups, returns `INVALID_CONFIG`. This command only explains; it does not dispatch. Whether a task dispatches the chosen candidate depends on `mode`.
 
 ```json
 {
@@ -84,6 +84,22 @@ Scoring reads the local quota cache. Exhausted, latched, or fully used (10000 bp
 ```
 
 `agy-opus` and `agy-gemini` are both antigravity, with the same execution options. Their models are Claude and Gemini.
+
+### Quota preference (dry-run, then enable)
+
+`routing.quota_preference.mode` is `off`, `dry_run`, or `on`. `off` is the default and behaves exactly as before. `enabled` set to false is the same as `off`. `dry_run` is a rehearsal: dispatch stays on primary, and the result is only recorded as `would_choose`. `on` dispatches the chosen candidate.
+
+`on` is accepted only when `automatic_account_switch` is true, the candidate groups are non-empty and all pass validation, and `rules` is empty. `automatic_paid_fallback` is always false. Setting `automatic_account_switch` to true while `mode` is not `on` is rejected.
+
+The entry is `backend` set to `@group`, or `backend` omitted and `default_backend` set to `@group`. An explicit ordinary backend name does not enter preference. A missing group returns `INVALID_REQUEST`. On v1, `@…` returns `INVALID_CONFIG`.
+
+Paid protection for an explicit backend: if a fresh window at confidence of at least medium shows the subscription quota is exhausted, and that same scope has a paid-overage entry, the call is blocked with `BUDGET_EXHAUSTED` by default. Set `routing.quota_preference.allow_paid_on_explicit` to true to turn this off; the default is false. Unknown or stale data does not block.
+
+Resume and repair rounds keep the backend selected the first time. If the chosen candidate fails admission, the call errors and does not try the next one. When quota data is invalid, dispatch falls back to primary with `reason_code` `quota_state_invalid`.
+
+Decisions go to `plugin_routing_decisions`: at most 1000 rows, kept for 30 days, score summaries only. Credentials and balances are not stored. When the entry above was used, `task-get` shows task-level `routing` with `mode`, `group`, `chosen`, `primary`, `reason_code`, and `would_choose`. Otherwise that key is omitted.
+
+Watch `routing.would_choose` under `dry_run` before setting `mode` to `on`. Paid overage is never used automatically, and reset grants are never redeemed automatically.
 
 ## Credentials and recovery
 

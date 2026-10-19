@@ -59,6 +59,8 @@ Codex 在绑定校验通过后，可通过 `task-submit --conversation-id ID` �
 
 已保存的 Grok HTTP 402 额度耗尽会闩住同一计费池。Antigravity 只在严格匹配的 429 额度耗尽时闩锁（文本含独立的 `429` 或 `RESOURCE_EXHAUSTED`，且含 quota）；单纯限流不闩锁。Antigravity 按额度桶隔离：Gemini 一组，Claude 与 GPT 一组。解除时，v1 修改该后端的 `quota_epoch`，v2 更新计费窗口。有闩锁时 `quota-inspect` 显示 freshness 为 `latched` 的窗口，该窗口只展示、不入库。
 
+额度优选默认 `off`，与以前完全相同。要按额度选择候选组，先读[候选组与选路解释](plugins.md#候选组与选路解释)中的「额度优选（先演练后生效）」：把 `routing.quota_preference.mode` 设为 `dry_run`，用 `task-get` 看 `routing.would_choose`，再改为 `on`。`backend` 写成 `@组名`，或省略 `backend` 且 `default_backend` 为 `@组名`，才会优选。付费超额永不自动使用，重置券永不自动兑换。
+
 ## 后续配置
 
 [安装说明](install.md)包含配置修订、会话绑定、工作流、备份和恢复。[PR 审查](pr-review.md)说明快照、复审与发布；[结果交付](review-consumer.md)说明宿主通知接入；[插件说明](plugins.md)说明独立插件的配置与凭据引用。

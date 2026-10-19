@@ -59,6 +59,8 @@ Pass either `--scope` or `--backend`. `quota-inspect` may omit both and then lis
 
 A saved Grok HTTP 402 quota exhaustion latches the same billing pool. Antigravity latches only a strict 429 quota exhaustion (an independent `429` token or `RESOURCE_EXHAUSTED`, and the word quota). A plain rate limit does not latch. Antigravity isolates quota buckets: one Gemini group, and one Claude/GPT group. Clear a latch by changing that backend's `quota_epoch` on v1, or by updating the billing window on v2. When a latch is active, `quota-inspect` shows a window with freshness `latched`. That window is display-only and is not stored.
 
+Quota preference defaults to `off` and behaves exactly as before. To choose inside a candidate group by quota, read "Quota preference (dry-run, then enable)" in [Candidate groups and routing explanation](plugins.md#candidate-groups-and-routing-explanation). Set `routing.quota_preference.mode` to `dry_run`, check `routing.would_choose` with `task-get`, then set `on`. Preference applies when `backend` is `@group`, or when `backend` is omitted and `default_backend` is `@group`. Paid overage is never used automatically, and reset grants are never redeemed automatically.
+
 ## Configure the rest of the workflow
 
 The [installation guide](install.md) covers configuration revisions, session bindings, workflows, backups, and recovery. The [PR review guide](pr-review.md) covers snapshots, follow-up reviews, and publication. See [result delivery](review-consumer.md) for host notifications and [plugins](plugins.md) for separate plugin configuration and credential references.

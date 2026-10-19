@@ -613,7 +613,12 @@ class Application:
                 next_action="重新读取 config.validate 后再提交",
                 details={"expected": expected_revision, "actual": self.config.revision},
             )
-        backend_conf = self.config.get_backend(payload.get("backend"))
+        from asterun.quota.routing_entry import paid_guard, record, resolve_backend
+
+        name, routing = resolve_backend(self, payload.get("backend"))
+        if routing is None:
+            paid_guard(self, name)
+        backend_conf = self.config.get_backend(name)
         self._require_grok_code_permissions(backend_conf, workspace_alias)
         input_path = payload.get("path")
         resolved_path = None
@@ -733,6 +738,8 @@ class Application:
                     self.scheduler.admit(backend_conf.name, str(workspace.root.resolve())))
         session = replace(session, task_id=task.id, updated_at=now)
         operation, task, run, reused = self.store.commit_intent(operation, task, run, session=session)
+        if routing is not None and not reused:
+            record(self, task.id.value, run.id.value, run.role, routing)
         if reused:
             self._assert_task_binding(task)
             return ok(
@@ -2874,6 +2881,11 @@ class Application:
         if run:
             pending = self.store.find_pending_approval(run.id)
             view["approval"] = pending.to_dict() if pending else None
+        from asterun.quota.routing_entry import view as routing_decision
+
+        decision = routing_decision(self, task.id.value)
+        if decision is not None:
+            view["routing"] = decision
         return view
 
 
