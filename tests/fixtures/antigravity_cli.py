@@ -165,6 +165,37 @@ elif MODE in {"soft_deny", "split_soft_deny", "benign_stderr"}:
     else:
         os.write(2, b"private diagnostic\n" if MODE == "benign_stderr" else b"tool run_command requires approval: private diagnostic\n")
     result()
+elif MODE == "subagent":
+    step(0, "tool", "ACTIVE", tool_name="invoke_subagent", tool_info={"name": "invoke_subagent"})
+    step(0, "subagent", "DONE", tool_name="invoke_subagent")
+    step(1, text_delta="waiting for the delegate")
+    result()
+elif MODE == "subagent_lingers":
+    step(0, "tool", "ACTIVE", tool_name="invoke_subagent", tool_info={"name": "invoke_subagent"})
+    step(0, "subagent", "DONE", tool_name="invoke_subagent")
+    result(response="waiting for the delegate")
+    time.sleep(30)
+elif MODE == "retyped_tool":
+    step(0, "tool", "ACTIVE", tool_name="read_file", tool_info={"name": "read_file"})
+    step(0, "subagent", "DONE", tool_name="read_file")
+    result()
+elif MODE == "renamed_subagent":
+    step(0, "tool", "ACTIVE", tool_name="read_file", tool_info={"name": "read_file"})
+    step(0, "subagent", "DONE", tool_name="invoke_subagent")
+    result()
+elif MODE == "tool_renamed":
+    step(0, "tool", "ACTIVE", tool_name="read_file", tool_info={"name": "read_file"})
+    step(0, "tool", "DONE", tool_name="run_command", tool_info={"name": "run_command"})
+    result()
+elif MODE == "self_update":
+    # Simulate the CLI replacing its own executable while this run is active.
+    me = Path(sys.argv[0])
+    staged = me.with_name(me.name + ".new")
+    staged.write_bytes(me.read_bytes())
+    staged.chmod(0o700)
+    os.replace(staged, me)
+    step(0, text_delta="fixture response")
+    result()
 elif MODE == "large_response":
     result(response="\u4e2d" * 40000)
 elif MODE == "result_no_exit":

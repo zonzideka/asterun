@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import sys
 import time
+import traceback
 from types import SimpleNamespace
 
 import pytest
@@ -65,6 +66,8 @@ def test_background_native_id_idempotency_and_restart(agy_config, isolated_env):
         assert final["run"]["summary"] == "fixture response"
         assert final["run"]["native"]["backend_session_id"] == "fixture-conversation-123"
         assert final["run"]["native"][DISPATCH_RECEIPT_KEY]["task_id"] == first.ids["task_id"]
+        assert final["run"]["native"]["cli_version"] == "1.3.2"
+        assert "cli_updated_during_run" not in final["run"]["native"]
         repeat = app.handle("task.submit", payload)
         assert repeat.ok and repeat.ids["run_id"] == first.ids["run_id"]
         assert app.backends["agy"].dispatch_count == 1
@@ -173,5 +176,72 @@ def test_unbound_or_attempted_receipt_cannot_release_budget(agy_config, isolated
         assert app.control._confirmed_prompt_not_sent(run)
         receipt.update(change)
         assert not app.control._confirmed_prompt_not_sent(run)
+    finally:
+        app.close()
+
+
+def test_cli_self_update_mid_run_keeps_result_and_next_launch_reprobes(agy_config, isolated_env):
+    binary = Path(json.loads(agy_config.read_text())["backends"]["agy"]["bin"])
+    binary.write_text(binary.read_text().replace('MODE = os.environ.get("AGY_FIXTURE_MODE", "happy")', "MODE = 'self_update'"))
+    app = Application.from_paths(agy_config, isolated_env / "state", background=True)
+    try:
+        payload = {"workspace": "demo", "backend": "agy", "text": "input", "idempotency_key": "one"}
+        first = app.handle("task.submit", payload)
+        assert first.ok, first.error
+        final = wait(app, first.ids["task_id"], "succeeded")
+        assert final["run"]["native"]["cli_version"] == "1.3.2"
+        assert final["run"]["native"]["cli_updated_during_run"] is True
+        second = app.handle("task.submit", {**payload, "idempotency_key": "two"})
+        assert second.ok, second.error
+        assert wait(app, second.ids["task_id"], "succeeded")["run"]["native"]["cli_version"] == "1.3.2"
+        assert app.backends["agy"].dispatch_count == 2
+    finally:
+        app.close()
+
+
+def _replace_binary(binary):
+    staged = binary.with_name(binary.name + ".new")
+    staged.write_bytes(binary.read_bytes())
+    staged.chmod(0o700)
+    os.replace(staged, binary)
+
+
+def test_binary_replaced_between_probe_and_launch_is_flagged(agy_config, isolated_env):
+    binary = Path(json.loads(agy_config.read_text())["backends"]["agy"]["bin"])
+    app = Application.from_paths(agy_config, isolated_env / "state", background=True)
+    try:
+        backend = app.backends["agy"]
+        real_run = backend.runtime.run
+        def run_after_replacement(*args, **kwargs):
+            _replace_binary(binary)
+            return real_run(*args, **kwargs)
+        backend.runtime.run = run_after_replacement
+        first = app.handle("task.submit", {"workspace": "demo", "backend": "agy", "text": "input", "idempotency_key": "one"})
+        assert first.ok, first.error
+        final = wait(app, first.ids["task_id"], "succeeded")
+        assert final["run"]["native"]["cli_updated_during_run"] is True
+    finally:
+        app.close()
+
+
+def test_binary_replaced_during_probe_is_probed_again(agy_config, isolated_env, monkeypatch):
+    from asterun.backends import antigravity as module
+    binary = Path(json.loads(agy_config.read_text())["backends"]["agy"]["bin"])
+    real_probe, calls = module.probe_cli, []
+    def probe_then_replace_once(path):
+        result = real_probe(path)
+        caller = traceback.extract_stack()[-2].name
+        calls.append(caller)
+        if caller == "dispatch_stream" and calls.count("dispatch_stream") == 1:
+            _replace_binary(binary)  # replaced while the launch probe ran
+        return result
+    monkeypatch.setattr(module, "probe_cli", probe_then_replace_once)
+    app = Application.from_paths(agy_config, isolated_env / "state", background=True)
+    try:
+        first = app.handle("task.submit", {"workspace": "demo", "backend": "agy", "text": "input", "idempotency_key": "one"})
+        assert first.ok, first.error
+        final = wait(app, first.ids["task_id"], "succeeded")
+        assert calls.count("dispatch_stream") == 2
+        assert "cli_updated_during_run" not in final["run"]["native"]
     finally:
         app.close()

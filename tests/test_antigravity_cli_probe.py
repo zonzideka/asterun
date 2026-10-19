@@ -13,7 +13,7 @@ def _fake(tmp_path, version="1.3.2", flags=antigravity.REQUIRED_CLI_FLAGS, name=
     lines = "".join(f"    print('  {flag}  x', file=sys.stderr)\n" for flag in flags)
     path.write_text(
         f"#!{sys.executable}\nimport os, sys\n"
-        "assert os.environ.get('AGY_CLI_DISABLE_AUTO_UPDATE') == '1'\n"
+        "assert 'AGY_CLI_DISABLE_AUTO_UPDATE' not in os.environ\n"
         "assert os.environ['HOME'] != os.path.expanduser('~root')\n"
         f"if sys.argv[1:] == ['--version']:\n    print({version!r})\n    raise SystemExit(0)\n"
         f"if sys.argv[1:] == ['--help']:\n{lines}    raise SystemExit(0)\n"

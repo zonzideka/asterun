@@ -58,8 +58,6 @@ _MAX_STATE_ENTRIES = 10000
 # file {"builtin": {"relative/path": "<sha256>"}, "webm_encoder":
 # {"size": int, "sha256": "<sha256>"}}; when present it is enforced exactly.
 PINS_ENV = "ASTERUN_ANTIGRAVITY_PINS"
-# Exported to every agy child so a dispatch never rewrites the CLI binary.
-AUTO_UPDATE_ENV = "AGY_CLI_DISABLE_AUTO_UPDATE"
 _MAX_ENCODER_BYTES = 64 * 1024 * 1024
 _MAX_BUILTIN_ENTRIES = 512
 _MAX_BUILTIN_FILE_BYTES = 131072
@@ -548,7 +546,6 @@ def build_environment(path: str | Path, base_env: Mapping[str, str] | None = Non
     source = os.environ if base_env is None else base_env
     env = {key: value for key, value in source.items() if key in _KEEP_ENV}
     env["HOME"] = str(target)
-    env[AUTO_UPDATE_ENV] = "1"
     env.setdefault("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
     return env
 

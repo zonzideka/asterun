@@ -154,7 +154,7 @@ Place this object under `backends.<name>`:
 }
 ```
 
-`model` defaults to `grok-4.6`. An explicitly selected model is passed to the CLI unchanged. `text-only-v1` runs at most one turn, with a default timeout of 180 seconds, an empty tool set, and the native read-only sandbox. Dispatch uses the dedicated HOME, removes inherited authentication and configuration overrides, and disables configuration sync, automatic updates, and extension tools.
+`model` defaults to `grok-4.6`. An explicitly selected model is passed to the CLI unchanged. `text-only-v1` runs at most one turn, with a default timeout of 180 seconds, an empty tool set, and the native read-only sandbox. Dispatch uses the dedicated HOME, removes inherited authentication and configuration overrides, and disables configuration sync and extension tools. Automatic updates are not disabled, so the CLI follows the latest release by default (`[cli] auto_update` in `config.toml` is the operator's choice; new homes get `true`).
 
 The dedicated configuration, extensions, and additional `.grok` sources in workspace ancestor directories must match the profile. Native sandbox isolation varies by platform. Use a separate OS user or execution host for untrusted material. Automatic native continuation, cancellation, and approval bridging are pending integration.
 

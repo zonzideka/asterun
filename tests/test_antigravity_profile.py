@@ -119,7 +119,7 @@ def test_environment_does_not_inherit_keys_loaders_or_parent_agent_controls(tmp_
     source.update(PATH="/usr/bin:/bin", HTTPS_PROXY="http://proxy.invalid:8080")
     result = build_environment(home, source)
     assert "untrusted" not in result.values()
-    assert result == {"HOME": str(home), "PATH": "/usr/bin:/bin", "HTTPS_PROXY": "http://proxy.invalid:8080", "AGY_CLI_DISABLE_AUTO_UPDATE": "1"}
+    assert result == {"HOME": str(home), "PATH": "/usr/bin:/bin", "HTTPS_PROXY": "http://proxy.invalid:8080"}
 
 
 @pytest.mark.parametrize("name", [".agents", ".agent", ".gemini", "AGENTS.md", "GEMINI.md"])
@@ -531,10 +531,11 @@ def test_newer_cli_state_and_empty_mcp_config_are_accepted(tmp_path):
         validate_home(home)
 
 
-def test_environment_disables_cli_self_update(tmp_path):
+def test_environment_does_not_disable_cli_self_update(tmp_path):
     home = tmp_path / "native"
     prepare_home(home)
-    assert build_environment(home, {"PATH": "/usr/bin"})["AGY_CLI_DISABLE_AUTO_UPDATE"] == "1"
+    env = build_environment(home, {"PATH": "/usr/bin", "AGY_CLI_DISABLE_AUTO_UPDATE": "1"})
+    assert "AGY_CLI_DISABLE_AUTO_UPDATE" not in env
 
 
 def test_native_workspace_trust_must_bind_to_the_dispatched_workspace(tmp_path):
