@@ -246,6 +246,47 @@ def test_newer_binary_version_is_not_a_mismatch(antigravity_installation, isolat
     assert result.get("reason") != "upstream_version_mismatch"
 
 
+def test_feature_gate_rejects_cli_missing_required_flag(antigravity_installation, isolated_env, workspace_root):
+    native = setup_native(isolated_env, workspace_root, antigravity_installation)
+    native["binary"].write_text(native["binary"].read_text().replace(
+        '"--output-format", "--print-timeout")', '"--output-format")'))
+    native["options"]["binary_sha256"] = hashlib.sha256(native["binary"].read_bytes()).hexdigest()
+    result = call_native(antigravity_installation, native)
+    assert result["status"] == "failed" and result["reason"] == "upstream_feature_missing"
+    assert native["marker"].read_text() == "version\n"
+
+
+def test_plugin_pins_option_enforces_builtin_digests(antigravity_installation, isolated_env, workspace_root):
+    native = setup_native(isolated_env, workspace_root, antigravity_installation)
+    builtin = native["home"] / ".gemini" / "antigravity-cli" / "builtin"
+    skill = builtin / "skills" / "demo" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_bytes(b"doc")
+    (builtin / ".checksum").write_bytes(b"x")
+    for directory in (builtin, builtin / "skills", skill.parent):
+        directory.chmod(0o755)
+    skill.chmod(0o644)
+    (builtin / ".checksum").chmod(0o644)
+    pins_path = isolated_env / "pins.json"
+
+    def write_pins(skill_digest):
+        pins_path.write_text(json.dumps({"builtin": {
+            ".checksum": hashlib.sha256(b"x").hexdigest(),
+            "skills/demo/SKILL.md": skill_digest,
+        }}))
+        pins_path.chmod(0o644)
+
+    write_pins("0" * 64)
+    native["options"]["pins"] = str(pins_path)
+    result = call_native(antigravity_installation, native)
+    assert result["status"] == "failed" and result["reason"] == "permission_profile_rejected"
+    marker = native["marker"].read_text() if native["marker"].exists() else ""
+    assert "dispatch" not in marker
+    write_pins(hashlib.sha256(b"doc").hexdigest())
+    again = call_native(antigravity_installation, native)
+    assert again.get("reason") != "permission_profile_rejected"
+
+
 @pytest.mark.parametrize("method", ["execution.observe", "execution.cancel", "execution.reconcile"])
 def test_recovery_preserves_exact_native_id_but_never_replays(antigravity_installation, isolated_env, workspace_root, method):
     native = setup_native(isolated_env, workspace_root, antigravity_installation)

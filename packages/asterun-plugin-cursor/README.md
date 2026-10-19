@@ -10,7 +10,7 @@
 
 options 需填写 `execution_enabled=true`、`runtime=local`、账户可用的 `model`、`tools`、`disallowed_tools`、`mcp_servers={}`、`setting_sources=[]`、`state_root`、`bridge_bin` 和 `bridge_sha256`。`state_root` 使用工作区之外、归本用户所有的 0700 目录。bridge 使用安装包中已核对的实际文件和摘要，路径须为普通文件且禁止其他用户写入。超时默认 15 秒，上限 20 秒，同时受宿主 RPC 总期限约束。
 
-最小文本调用设置 `tools=[]`、`disallowed_tools=["Shell"]`。每次创建或续接会话都会重新应用工具策略；配置变化后，旧会话的续接会被阻止。当前 MCP 配置须为空。SDK bridge 使用 local 运行方式，插件以当前 OS 用户权限执行。
+最小文本调用设置 `tools=[]`、`disallowed_tools=["Shell"]`。每次创建或续接会话都会重新应用工具策略；配置变化后，旧会话的续接会被阻止。当前 MCP 配置须为空。SDK bridge 使用 local 运行方式，插件以当前 OS 用户权限执行。启动 bridge 之前，插件检查 SDK 是否仍提供所使用参数的 `CursorClient.launch_bridge`、`AgentOptions`、`LocalAgentOptions` 和 `SendOptions`，否则以 `sdk_feature_missing` 失败。
 
 ## 续接、观察和恢复
 

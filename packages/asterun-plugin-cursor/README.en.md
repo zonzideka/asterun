@@ -10,7 +10,7 @@ Register `cursor.agent` in core configuration v2. Set the runner to the absolute
 
 Required options are `execution_enabled=true`, `runtime=local`, an account-accessible `model`, `tools`, `disallowed_tools`, `mcp_servers={}`, `setting_sources=[]`, `state_root`, `bridge_bin`, and `bridge_sha256`. `state_root` must be a mode-0700 directory owned by the current user and located outside the workspace. Use the verified bridge file from the installed package and its digest. The path must identify a regular file that other users cannot write. The timeout defaults to 15 seconds, with a maximum of 20; the host RPC deadline also applies.
 
-For a minimal text call, set `tools=[]` and `disallowed_tools=["Shell"]`. The plugin reapplies the tool policy whenever it creates or resumes a session. A configuration change prevents resuming the old session. The MCP configuration must currently be empty. The SDK bridge uses local execution, and the plugin runs with the current OS user's permissions.
+For a minimal text call, set `tools=[]` and `disallowed_tools=["Shell"]`. The plugin reapplies the tool policy whenever it creates or resumes a session. A configuration change prevents resuming the old session. The MCP configuration must currently be empty. The SDK bridge uses local execution, and the plugin runs with the current OS user's permissions. Before launching the bridge, the plugin checks that the SDK still offers `CursorClient.launch_bridge`, `AgentOptions`, `LocalAgentOptions`, and `SendOptions` with the parameters it uses, and otherwise fails with `sdk_feature_missing`.
 
 ## Resume, observe, and recover
 

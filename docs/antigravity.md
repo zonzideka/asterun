@@ -2,7 +2,7 @@
 
 # 使用 Antigravity CLI
 
-Asterun 通过官方 `agy` CLI 的 `stream-json` 调用用户的原生账户，支持 CLI 1.2.0 及以上版本：启动前在临时 HOME 中运行 `agy --version` 与 `agy --help`，版本低于 1.2.0 或缺少 `--input-format`、`--output-format`、`--model`、`--disable-slash-commands`、`--print-timeout`、`--add-dir` 任一参数时给出明确错误。`workspace-read-v1` profile 支持文本任务和指定工作区读取，每个 Run 创建新的进程和原生会话。macOS 已验证文本执行、文件读取和权限拒绝。Linux x86_64 上，官方 CLI 1.2.0 的 `webm_encoder` 与 `~/.cache/ms-playwright-go` 已纳入按平台固定的 profile 检查；该平台的真实文本执行、文件读取和权限拒绝仍待现场验收。其他系统与其他 CLI 版本需单独核验后才能加入清单。
+Asterun 通过官方 `agy` CLI 的 `stream-json` 调用用户的原生账户，支持 CLI 1.2.0 及以上版本：启动前在临时 HOME 中运行 `agy --version` 与 `agy --help`，版本低于 1.2.0 或缺少 `--input-format`、`--output-format`、`--model`、`--disable-slash-commands`、`--print-timeout`、`--add-dir` 任一参数时给出明确错误。该探测只在后端已启用且真实派发开关 `ASTERUN_RUN_ANTIGRAVITY=1` 打开时运行，最多读取 64 KiB，15 秒超时并杀死其进程组。`workspace-read-v1` profile 支持文本任务和指定工作区读取，每个 Run 创建新的进程和原生会话。macOS 已验证文本执行、文件读取和权限拒绝。Linux x86_64 上，官方 CLI 1.2.0 的 `webm_encoder` 与 `~/.cache/ms-playwright-go` 已纳入按平台固定的 profile 检查；该平台的真实文本执行、文件读取和权限拒绝仍待现场验收。其他系统与其他 CLI 版本需单独核验后才能加入清单。
 
 ## 准备原生 HOME
 

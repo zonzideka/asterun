@@ -152,6 +152,19 @@ def test_sdk_version_supported_is_a_minimum_within_major():
     assert not sdk_version_supported('1.0.30') and not sdk_version_supported('2.0.0') and not sdk_version_supported('x')
 
 
+def test_missing_sdk_features_reports_each_absent_interface():
+    sys.path.insert(0, str(ROOT / 'packages/asterun-plugin-cursor/src'))
+    from types import SimpleNamespace
+    from asterun_plugin_cursor.runtime import missing_sdk_features
+    def launch_bridge(*, command, workspace, state_root, host, timeout, client_timeout, max_retries): pass
+    def options(**kwargs): pass
+    def send(*, model): pass
+    sdk = SimpleNamespace(CursorClient=SimpleNamespace(launch_bridge=launch_bridge), AgentOptions=options,
+                          LocalAgentOptions=options, SendOptions=send)
+    assert missing_sdk_features(sdk) == ["CursorClient.launch_bridge(allow_api_key_env_fallback)", "SendOptions(mcp_servers)"]
+    assert missing_sdk_features(SimpleNamespace()) == ["CursorClient.launch_bridge", "AgentOptions", "LocalAgentOptions", "SendOptions"]
+
+
 @pytest.mark.parametrize('mode,status', [('error','failed'),('eof','pending_reconcile'),('create_timeout','pending_reconcile'),
     ('model_mismatch','pending_reconcile'),('unexpected_tool','pending_reconcile'),('model_missing','failed')])
 def test_errors_do_not_retry_or_fabricate_success(cursor_installation,isolated_env,workspace_root,mode,status):

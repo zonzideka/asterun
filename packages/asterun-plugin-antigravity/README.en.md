@@ -17,7 +17,7 @@ python -m pip wheel --no-build-isolation --no-deps packages/asterun-plugin-antig
 
 `vendor-source.json` pins source digests and mechanical transformations, checked against the current source. Set the runner to the absolute path of Python in the plugin environment, followed by `-m asterun_plugin_antigravity.worker`.
 
-Configure the connection with `auth_mode=native_account`. `upstream_version` may be omitted, or set to 1.2.0 or any later version; the worker runs `--version` and requires at least 1.2.0. Supply the native HOME through a provider_account `native-home:` reference. The options are `bin`, `binary_sha256`, `home`, `model`, and `execution_enabled=true`. `home` must match the HOME injected by the core. `timeout_seconds` defaults to 20 seconds and must be greater than 0 and at most 20. The host's overall deadline also applies.
+Configure the connection with `auth_mode=native_account`. `upstream_version` may be omitted, or set to 1.2.0 or any later version; the worker runs `--version` and requires at least 1.2.0. The worker also runs `--help` and fails with `upstream_feature_missing` if a required flag is missing. Supply the native HOME through a provider_account `native-home:` reference. The options are `bin`, `binary_sha256`, `home`, `model`, and `execution_enabled=true`. Optional `pins` is an absolute path to the same JSON as `ASTERUN_ANTIGRAVITY_PINS` (the host does not pass its environment to the worker). `home` must match the HOME injected by the core. `timeout_seconds` defaults to 20 seconds and must be greater than 0 and at most 20. The host's overall deadline also applies.
 
 Use the standalone entry point to prepare the HOME and bind its read scope:
 

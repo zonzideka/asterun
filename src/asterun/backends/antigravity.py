@@ -4,11 +4,14 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import re
+import selectors
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
 from threading import Event, Lock
+import time
 from typing import Any
 
 from asterun.backends.base import BackendCall, capability_rows, require_dispatch_cwd
@@ -61,6 +64,7 @@ _CLI_VERSION = re.compile(
     re.IGNORECASE,
 )
 _PROBE_LIMIT = 65536
+_PROBE_TIMEOUT = 15
 _PROBE_CACHE: dict[tuple[object, ...], dict[str, object]] = {}
 _PROBE_LOCK = Lock()
 
@@ -71,21 +75,65 @@ def parse_cli_version(text: str) -> tuple[int, int, int] | None:
 
 
 def _probe_output(binary: Path, argument: str, scratch: str) -> tuple[int, str]:
+    """Run one probe argument with streamed, capped reads and group cleanup."""
     env = {"HOME": scratch, "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
            "LANG": "C.UTF-8", "AGY_CLI_DISABLE_AUTO_UPDATE": "1"}
     try:
-        proc = subprocess.run([str(binary), argument], stdin=subprocess.DEVNULL,
-                              capture_output=True, timeout=15, env=env, cwd=scratch)
-    except (OSError, subprocess.TimeoutExpired) as exc:
+        proc = subprocess.Popen([str(binary), argument], stdin=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                env=env, cwd=scratch, start_new_session=True)
+    except OSError as exc:
         raise AsterunError(BACKEND_UNAVAILABLE, f"无法运行 agy {argument}：{type(exc).__name__}",
                            next_action="确认 bin 指向可执行的官方 agy CLI") from exc
-    if len(proc.stdout) + len(proc.stderr) > _PROBE_LIMIT:
-        raise AsterunError(BACKEND_UNAVAILABLE, f"agy {argument} 输出超出检查上限")
-    text = proc.stdout.decode("utf-8", "replace")
+    buffers = {proc.stdout: bytearray(), proc.stderr: bytearray()}
+    deadline = time.monotonic() + _PROBE_TIMEOUT
+    total = 0
+    failure = None
+    code = None
+    try:
+        with selectors.DefaultSelector() as selector:
+            for stream in buffers:
+                selector.register(stream, selectors.EVENT_READ)
+            while selector.get_map() and failure is None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    failure = "超时"
+                    break
+                for key, _ in selector.select(min(remaining, 0.1)):
+                    data = os.read(key.fileobj.fileno(), 4096)
+                    if not data:
+                        selector.unregister(key.fileobj)
+                        continue
+                    total += len(data)
+                    if total > _PROBE_LIMIT:
+                        failure = "输出超出检查上限"
+                        break
+                    buffers[key.fileobj].extend(data)
+        if failure is None:
+            try:
+                code = proc.wait(timeout=max(0.01, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                failure = "超时"
+    finally:
+        # The probe owns its session: remove the CLI and anything it spawned.
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        try:
+            proc.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            pass
+        for stream in buffers:
+            stream.close()
+    if failure is not None:
+        raise AsterunError(BACKEND_UNAVAILABLE, f"agy {argument} {failure}",
+                           next_action="确认 bin 指向官方 agy CLI")
+    text = bytes(buffers[proc.stdout]).decode("utf-8", "replace")
     if argument == "--help":
         # Go's flag package prints usage on stderr.
-        text += "\n" + proc.stderr.decode("utf-8", "replace")
-    return proc.returncode, text
+        text += "\n" + bytes(buffers[proc.stderr]).decode("utf-8", "replace")
+    return code, text
 
 
 def probe_cli(binary: Path) -> dict[str, object]:
@@ -213,7 +261,8 @@ class AntigravityBackend:
         self.calls.append(BackendCall("inspect"))
         binary = self.discover_bin()
         cli_version = None
-        if binary is not None:
+        # Probing executes the binary, so it stays behind the same gates as dispatch.
+        if binary is not None and self.config.enabled and live_antigravity_enabled():
             try:
                 cli_version = probe_cli(binary)["version"]
             except AsterunError:

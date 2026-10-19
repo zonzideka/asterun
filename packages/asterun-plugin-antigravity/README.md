@@ -17,7 +17,7 @@ python -m pip wheel --no-build-isolation --no-deps packages/asterun-plugin-antig
 
 `vendor-source.json` 固定来源和机械转换。runner 使用插件环境中 Python 的绝对路径，并附加 `-m asterun_plugin_antigravity.worker`。
 
-连接配置使用 `auth_mode=native_account`。`upstream_version` 可省略，或写 1.2.0 及以上任一版本；worker 运行 `--version` 并要求不低于 1.2.0。通过 provider_account 的 `native-home:` 引用指定原生 HOME。options 包含 `bin`、`binary_sha256`、`home`、`model` 和 `execution_enabled=true`。`home` 须与核心注入的 HOME 一致。`timeout_seconds` 默认为 20 秒，可设为大于 0 且不超过 20 的值，同时受宿主总期限约束。
+连接配置使用 `auth_mode=native_account`。`upstream_version` 可省略，或写 1.2.0 及以上任一版本；worker 运行 `--version` 并要求不低于 1.2.0，也会运行 `--help`，缺少必需参数时以 `upstream_feature_missing` 失败。通过 provider_account 的 `native-home:` 引用指定原生 HOME。options 包含 `bin`、`binary_sha256`、`home`、`model` 和 `execution_enabled=true`，可选 `pins`（与 `ASTERUN_ANTIGRAVITY_PINS` 相同 JSON 的绝对路径；宿主不会把自身环境传给 worker）。`home` 须与核心注入的 HOME 一致。`timeout_seconds` 默认为 20 秒，可设为大于 0 且不超过 20 的值，同时受宿主总期限约束。
 
 使用独立入口准备 HOME 并绑定读取范围：
 
