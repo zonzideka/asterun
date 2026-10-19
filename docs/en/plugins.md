@@ -91,7 +91,7 @@ Scoring reads the local quota cache. Exhausted, latched, or fully used (10000 bp
 
 `on` is accepted only when `automatic_account_switch` is true, the candidate groups are non-empty and all pass validation, and `rules` is empty. `automatic_paid_fallback` is always false. Setting `automatic_account_switch` to true while `mode` is not `on` is rejected.
 
-The entry is `backend` set to `@group`, or `backend` omitted and `default_backend` set to `@group`. An explicit ordinary backend name does not enter preference. A missing group returns `INVALID_REQUEST`. On v1, `@…` returns `INVALID_CONFIG`.
+The entry is `backend` set to `@group`, or `backend` omitted and `default_backend` set to `@group`. An explicit ordinary backend name does not enter preference. A missing group returns `INVALID_REQUEST`. On v1, `@…` returns `INVALID_CONFIG`. `workflow.review_backend` does not accept a candidate-group alias in this version; quality review still uses a fixed backend. `default_backend` may be `@group` (v2 only).
 
 Paid protection for an explicit backend: if a fresh window at confidence of at least medium shows the subscription quota is exhausted, and that same scope has a paid-overage entry, the call is blocked with `BUDGET_EXHAUSTED` by default. Set `routing.quota_preference.allow_paid_on_explicit` to true to turn this off; the default is false. Unknown or stale data does not block.
 

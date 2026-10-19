@@ -1111,7 +1111,10 @@ class Application:
         if conversation_id:
             session = self.store.get_session(ConversationId(conversation_id))
         else:
-            backend_name = payload.get("backend") or self.config.default_backend
+            default_backend = self.config.default_backend
+            if isinstance(default_backend, str) and default_backend.startswith("@"):
+                default_backend = None
+            backend_name = payload.get("backend") or default_backend
             if not backend_name:
                 raise AsterunError(INVALID_REQUEST, "用 session_id 续接时需要 backend")
             found = self.store.find_session_by_native(str(backend_name), session_id)
@@ -2772,6 +2775,11 @@ class Application:
             return None
 
     def _backend(self, name: str | None) -> Backend:
+        if not name:
+            default_backend = self.config.default_backend
+            if isinstance(default_backend, str) and default_backend.startswith("@"):
+                from asterun.quota.routing_entry import resolve_backend
+                name = resolve_backend(self, None)[0]
         conf = self.config.get_backend(name)
         try:
             return self.backends[conf.name]

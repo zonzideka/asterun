@@ -91,7 +91,7 @@ Grok 额度读取走未公开 ACP 扩展 `_x.ai/billing`，默认关闭。需要
 
 `on` 须同时满足：`automatic_account_switch` 为 true，候选组非空且全部通过校验，`rules` 为空。`automatic_paid_fallback` 永远为 false。`automatic_account_switch` 为 true 而 `mode` 不是 `on` 时，配置会被拒绝。
 
-入口是 `backend` 写成 `@组名`，或省略 `backend` 且 `default_backend` 为 `@组名`。显式写普通后端名不参与优选。组不存在返回 `INVALID_REQUEST`。v1 配置写 `@…` 返回 `INVALID_CONFIG`。
+入口是 `backend` 写成 `@组名`，或省略 `backend` 且 `default_backend` 为 `@组名`。显式写普通后端名不参与优选。组不存在返回 `INVALID_REQUEST`。v1 配置写 `@…` 返回 `INVALID_CONFIG`。`workflow.review_backend` 本版不支持候选组别名，质量审查仍用固定后端；`default_backend` 可写 `@组名`（仅 v2）。
 
 显式后端付费保护：该后端有新鲜、可信度不低于 medium 的窗口显示订阅额度已耗尽，且同一 scope 存在付费超额条目时，默认以 `BUDGET_EXHAUSTED` 阻断。`routing.quota_preference.allow_paid_on_explicit` 设为 true 可关闭，默认 false。数据未知或过期不阻断。
 

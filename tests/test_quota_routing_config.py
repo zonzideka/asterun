@@ -238,6 +238,31 @@ def test_omitted_new_keys_do_not_change_to_dict(config_path, workspace_root):
     assert quota_preference_mode(bare_config) == "off"
 
 
+def test_default_backend_group_alias_and_review_backend_alias(config_path, workspace_root):
+    accepted = base_config(workspace_root)
+    accepted["routing"]["candidate_groups"]["g"] = accepted["routing"]["candidate_groups"].pop("implementer")
+    accepted["default_backend"] = "@g"
+    loaded = load_config(_write(config_path, accepted))
+    assert loaded.default_backend == "@g"
+
+    missing = base_config(workspace_root)
+    missing["default_backend"] = "@g"
+    assert _invalid(config_path, missing) == "default_backend 指向未知候选组：@g"
+
+    v1 = {
+        "schema_version": 1,
+        "revision": 1,
+        "workspaces": {"demo": {"root": str(workspace_root), "allow_non_git": True}},
+        "backends": {"fake": {"kind": "fake"}},
+        "default_backend": "@g",
+    }
+    assert _invalid(config_path, v1) == "default_backend 的候选组别名只在配置 v2 中可用"
+
+    review = base_config(workspace_root)
+    review["workflow"] = {"review_backend": "@g"}
+    assert _invalid(config_path, review) == "workflow.review_backend 暂不支持候选组别名；质量审查仍用固定后端"
+
+
 def test_quota_preference_mode_is_off_for_v1_and_unconfigured(config_path):
     assert quota_preference_mode(load_config(config_path)) == "off"
     assert quota_preference_mode(SimpleNamespace(schema_version=1, routing={"quota_preference": {"mode": "on"}})) == "off"
