@@ -114,13 +114,45 @@ def _window_view(item: dict, now: datetime) -> dict:
     }
 
 
-def _tightest(windows: list[dict]) -> dict | None:
-    """最紧约束。新鲜的耗尽或闩锁优先，其次其他新鲜窗口；过期窗口不能压过新鲜窗口。
+def _reached(raw: Any, now: datetime) -> bool:
+    """resets_at / valid_until 已到或无法解析。空值表示没有这一时刻。"""
+    if raw is None:
+        return False
+    if not isinstance(raw, str) or not raw:
+        return True
+    try:
+        return now >= timestamp(raw, "quota_time")
+    except AsterunError:
+        return True
 
-    同级再取 used_bp 更高、重置更早的窗口。只有过期窗口时仍返回其中最紧的一条。
+
+def _window_usable(item: dict, now: datetime) -> bool:
+    """stale、unknown、expired，以及已翻转或已过 valid_until 的普通窗口，都不参与最紧选择。
+
+    闩锁在 resets_at 之前仍然有效，不因短 valid_until 被丢掉。
     """
-    if not windows:
+    state = item.get("freshness")
+    if state in {"stale", "unknown", "expired", "absent"}:
+        return False
+    obs = item.get("observation")
+    if not isinstance(obs, dict) or state not in {"fresh", "exhausted", "latched"}:
+        return False
+    if _reached(obs.get("resets_at"), now):
+        return False
+    if state != "latched" and _reached(obs.get("valid_until"), now):
+        return False
+    return True
+
+
+def _tightest(windows: list[dict], now: datetime) -> dict | None:
+    """最紧的仍有效窗口。没有有效窗口时返回 None。
+
+    先去掉过期、未知和已翻转的窗口。耗尽和闩锁优先于 fresh；同级再取 used_bp 更高、重置更早者。
+    """
+    usable = [item for item in windows if _window_usable(item, now)]
+    if not usable:
         return None
+    windows = usable
 
     def rank(item: dict) -> int:
         state = item["freshness"]
@@ -169,7 +201,7 @@ def inspect_quota(app, payload: dict) -> dict:
     for scope in scopes:
         merged = merge_observations(read_quota_snapshots(conn, scope, namespace))
         windows = [_window_view(item, now) for item in merged]
-        reports.append({"scope_ref": scope, "tightest": _tightest(windows), "windows": windows})
+        reports.append({"scope_ref": scope, "tightest": _tightest(windows, now), "windows": windows})
     return {"scopes": reports, "upstream_queried": False}
 
 
@@ -378,6 +410,12 @@ def refresh_quota(app, payload: dict) -> dict:
             if not acknowledged:
                 reports.append(_scope_result(
                     scope, probe_id=GROK_PROBE_ID, ok=False, error_code="PROBE_DISABLED", written=0, skipped=None,
+                ))
+                continue
+            # 未放行真实 Grok 时由服务层记跳过。这不是探针错误码。
+            if not grok_probe.live_grok_enabled():
+                reports.append(_scope_result(
+                    scope, probe_id=GROK_PROBE_ID, ok=False, error_code=None, written=0, skipped="disabled",
                 ))
                 continue
             reports.append(_refresh_probe_scope(

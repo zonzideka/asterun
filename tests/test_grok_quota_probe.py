@@ -123,6 +123,15 @@ def test_refresh_grok_stays_disabled_until_both_flags(config_path, isolated_env,
     both["quota"] = {"probes": {"grok_acp_billing": {"enabled": True, "acknowledge_undocumented": True}}}
     opened = _open(_write(isolated_env / "v2-both.json", both), isolated_env / "v2-both-state")
     try:
+        monkeypatch.delenv("ASTERUN_RUN_GROK", raising=False)
+        blocked = handle(opened, "quota.refresh", {"backend": "grok"})
+        assert calls == []
+        assert blocked["scopes"][0]["probe_id"] == GROK_PROBE_ID
+        assert blocked["scopes"][0]["ok"] is False
+        assert blocked["scopes"][0]["error_code"] is None
+        assert blocked["scopes"][0]["written"] == 0
+        assert blocked["scopes"][0]["skipped"] == "disabled"
+        monkeypatch.setenv("ASTERUN_RUN_GROK", "1")
         refreshed = handle(opened, "quota.refresh", {"backend": "grok"})
         assert len(calls) == 1
         assert calls[0][0][0].kind == "grok"
@@ -175,18 +184,95 @@ def test_parse_billing_accepts_milliseconds_wrapper_and_usage_percent():
     direct = parse_billing(payload, scope_ref=SCOPE, observed_at=NOW, ttl_s=900)
     usage = parse_billing({"usage": payload}, scope_ref=SCOPE, observed_at=NOW, ttl_s=900)
     assert wrapped == direct == usage
+    assert [item["bucket_id"] for item in wrapped] == ["grok"]
     assert wrapped[0]["resets_at"] == PERIOD_END
     assert wrapped[0]["used_bp"] == 3750
     assert wrapped[0]["window_duration_s"] == PERIOD_SECONDS
-    assert wrapped[1]["bucket_id"] == "grok-on-demand"
-    assert wrapped[1]["paid_overage"] is True
-    assert "used_bp" not in wrapped[1]
     _assert_hidden(wrapped)
     quiet = parse_billing(
         {"creditUsagePercent": 1, "onDemandEnabled": False, "onDemandUsagePercent": 0},
         scope_ref=SCOPE, observed_at=NOW, ttl_s=900,
     )
     assert [item["bucket_id"] for item in quiet] == ["grok"]
+
+
+def test_on_demand_reads_only_enabled_boolean():
+    base = {"creditUsagePercent": 10, "billingPeriodEnd": PERIOD_END}
+    enabled = parse_billing(
+        {**base, "onDemandEnabled": True, "onDemandCap": 0, "onDemandUsed": 0},
+        scope_ref=SCOPE, observed_at=NOW, ttl_s=900,
+    )
+    assert [item["bucket_id"] for item in enabled] == ["grok", "grok-on-demand"]
+    assert enabled[1]["paid_overage"] is True
+    assert "used_bp" not in enabled[1]
+    _assert_hidden(enabled)
+    rejected = [
+        {"onDemandEnabled": False, "onDemandCap": 50, "onDemandUsed": 10, "onDemandUsagePercent": 80},
+        {"onDemandUsagePercent": 2},
+        {"onDemandCap": 100},
+        {"onDemandUsed": 1},
+        {"onDemandLimit": 5},
+        {"onDemandSomething": True},
+        {"onDemandEnabled": 1},
+        {"onDemandEnabled": "true"},
+        {"onDemandEnabled": "false"},
+    ]
+    for extra in rejected:
+        parsed = parse_billing({**base, **extra}, scope_ref=SCOPE, observed_at=NOW, ttl_s=900)
+        assert [item["bucket_id"] for item in parsed] == ["grok"], extra
+        dumped = json.dumps(parsed)
+        assert "50" not in dumped
+        assert "80" not in dumped
+        _assert_hidden(parsed)
+
+
+def test_expired_or_illegal_billing_period_end_produces_no_observation(monkeypatch, tmp_path):
+    monkeypatch.setenv("ASTERUN_RUN_GROK", "1")
+    monkeypatch.delenv("GROK_BIN", raising=False)
+    config = _backend(tmp_path)
+    expired = "2026-10-01T00:00:00Z"
+    equal = "2026-10-19T12:00:00Z"
+    illegal = (
+        "yesterday",
+        "2026-11-01",
+        "2026-11-01T00:00:00",
+        "2026-11-01T00:00:00+08:00",
+        "",
+        None,
+        True,
+        False,
+        -1,
+        0,
+        "not-a-date",
+    )
+
+    def via_probe(payload):
+        class Transport(_Transport):
+            def read_billing(self, timeout):
+                self.methods.append("read_billing")
+                return payload
+
+        return probe_grok(
+            config, scope_ref=SCOPE, now=NOW, timeout_s=10, ttl_s=900, transport_factory=Transport,
+        )
+
+    for end in (expired, equal, *illegal):
+        payload = {**_sample(), "billingPeriodEnd": end}
+        assert parse_billing(payload, scope_ref=SCOPE, observed_at=NOW, ttl_s=900) == []
+        assert parse_billing({"billing": payload}, scope_ref=SCOPE, observed_at=NOW, ttl_s=900) == []
+        result = via_probe(payload)
+        assert result == {"ok": False, "error_code": "SCHEMA_MISMATCH"}
+        assert "observations" not in result
+        _assert_hidden(result)
+
+    absent = _sample()
+    absent.pop("billingPeriodEnd")
+    parsed = parse_billing(absent, scope_ref=SCOPE, observed_at=NOW, ttl_s=900)
+    assert [item["bucket_id"] for item in parsed] == ["grok", "grok-on-demand"]
+    assert "resets_at" not in parsed[0]
+    probed = via_probe(absent)
+    assert probed["ok"] is True
+    assert "resets_at" not in probed["observations"][0]
 
 
 def test_parse_billing_rejects_missing_percent_and_ignores_unknown_fields():
@@ -362,8 +448,78 @@ def test_probe_grok_live_disabled(monkeypatch):
         now=NOW,
         transport_factory=factory,
     )
-    assert result == {"ok": False, "error_code": "LIVE_DISABLED"}
+    assert result == {"ok": False, "skipped": "disabled"}
     assert called == []
+
+
+def test_probe_grok_connection_and_missing_binary_are_schema_mismatch(monkeypatch, tmp_path):
+    monkeypatch.setenv("ASTERUN_RUN_GROK", "1")
+    monkeypatch.delenv("GROK_BIN", raising=False)
+    config = _backend(tmp_path)
+
+    def run(mutate):
+        holder = {}
+
+        class Transport(_Transport):
+            def __init__(self, *, grok_bin, env=None, **kwargs):
+                super().__init__(grok_bin=grok_bin, env=env, **kwargs)
+                holder["transport"] = self
+
+            def spawn(self, cwd):
+                self.methods.append("spawn")
+                self.cwd = cwd
+                mutate(self, "spawn")
+
+            def read_billing(self, timeout):
+                self.methods.append("read_billing")
+                mutate(self, "read_billing")
+                return _sample()
+
+        result = probe_grok(
+            config, scope_ref=SCOPE, now=NOW, timeout_s=10, ttl_s=900, transport_factory=Transport,
+        )
+        return result, holder["transport"]
+
+    def close_read(self, method):
+        if method == "read_billing":
+            raise ConnectionError("connection closed token=super-secret-value")
+
+    closed, transport = run(close_read)
+    assert closed == {"ok": False, "error_code": "SCHEMA_MISMATCH"}
+    assert transport.methods[-1] == "close"
+    assert "super-secret-value" not in json.dumps(closed)
+    assert "connection" not in json.dumps(closed)
+
+    def reset_spawn(self, method):
+        if method == "spawn":
+            raise ConnectionResetError("connection reset")
+
+    reset, transport = run(reset_spawn)
+    assert reset == {"ok": False, "error_code": "SCHEMA_MISMATCH"}
+    assert transport.methods == ["spawn", "close"]
+    assert "reset" not in json.dumps(reset)
+
+    def missing_process(self, method):
+        if method == "spawn":
+            raise FileNotFoundError("/tmp/grok-missing")
+
+    missing_proc, transport = run(missing_process)
+    assert missing_proc == {"ok": False, "error_code": "SCHEMA_MISMATCH"}
+    assert "grok-missing" not in json.dumps(missing_proc)
+    assert transport.methods[-1] == "close"
+
+    constructed = []
+
+    def factory(**kwargs):
+        constructed.append(kwargs)
+        raise AssertionError("missing binary must not construct a transport")
+
+    monkeypatch.setattr("asterun.quota.grok_probe.GrokBackend.discover_bin", lambda self: None)
+    absent = probe_grok(
+        config, scope_ref=SCOPE, now=NOW, timeout_s=10, ttl_s=900, transport_factory=factory,
+    )
+    assert absent == {"ok": False, "error_code": "SCHEMA_MISMATCH"}
+    assert constructed == []
 
 
 def test_grok_acp_billing_defaults_reject_unknown_and_short_interval(config_path, isolated_env):

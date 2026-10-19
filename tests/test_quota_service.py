@@ -234,10 +234,62 @@ def test_tightest_prefers_fresh_window_over_stale_higher_usage(app):
 
     app.store._conn.execute("DELETE FROM plugin_quota_snapshots WHERE bucket_id=?", ("fresh-weekly",))
     only_stale = handle(app, "quota.inspect", {"backend": alias})
-    stale_tight = only_stale["scopes"][0]["tightest"]
-    assert stale_tight["bucket_id"] == "stale-weekly"
-    assert stale_tight["used_bp"] == 9900
-    assert stale_tight["freshness"] == "stale"
+    assert only_stale["scopes"][0]["tightest"] is None
+    assert only_stale["scopes"][0]["windows"][0]["freshness"] == "stale"
+    assert only_stale["scopes"][0]["windows"][0]["observation"]["bucket_id"] == "stale-weekly"
+
+    flipped = probe_window(scope) | {
+        "bucket_id": "flipped-weekly",
+        "used_bp": 9950,
+        "observed_at": utc_z(now - timedelta(hours=2)),
+        "valid_until": utc_z(now - timedelta(minutes=1)),
+        "resets_at": utc_z(now - timedelta(seconds=1)),
+    }
+    store.append_quota_snapshot(flipped)
+    hidden = handle(app, "quota.inspect", {"backend": alias})
+    assert hidden["scopes"][0]["tightest"] is None
+    flipped_view = next(item for item in hidden["scopes"][0]["windows"] if item["observation"]["bucket_id"] == "flipped-weekly")
+    assert flipped_view["freshness"] == "unknown"
+    assert "window_flipped" in flipped_view["issues"]
+
+    handle(app, "quota.set", manual_payload(alias, now, bucket_id="manual-weekly", used_percent="12.5"))
+    chosen = handle(app, "quota.inspect", {"backend": alias})
+    manual_tight = chosen["scopes"][0]["tightest"]
+    assert manual_tight["bucket_id"] == "manual-weekly"
+    assert manual_tight["used_bp"] == 1250
+    assert manual_tight["source_kind"] == "manual"
+    assert manual_tight["freshness"] == "fresh"
+
+
+def test_tightest_keeps_newer_manual_over_older_probe_window(app):
+    alias = alias_of(app)
+    scope = f"backend:{alias}"
+    now = datetime.now(timezone.utc)
+    PluginStore(app.store._conn).append_quota_snapshot(probe_window(scope) | {
+        "bucket_id": "weekly",
+        "window_kind": "weekly",
+        "used_bp": 9000,
+        "observed_at": utc_z(now - timedelta(hours=2)),
+        "valid_until": utc_z(now + timedelta(hours=4)),
+        "resets_at": utc_z(now + timedelta(days=7)),
+    })
+    handle(app, "quota.set", manual_payload(
+        alias,
+        now,
+        bucket_id="weekly",
+        window_kind="weekly",
+        used_percent="20",
+        resets_at=utc_z(now + timedelta(days=6)),
+    ))
+    report = handle(app, "quota.inspect", {"backend": alias})
+    windows = report["scopes"][0]["windows"]
+    assert len(windows) == 1
+    assert windows[0]["observation"]["source_kind"] == "manual"
+    assert windows[0]["observation"]["used_bp"] == 2000
+    tight = report["scopes"][0]["tightest"]
+    assert tight["source_kind"] == "manual"
+    assert tight["used_bp"] == 2000
+    assert tight["freshness"] == "fresh"
 
 
 @pytest.mark.parametrize("method,payload_of", [

@@ -51,9 +51,13 @@ def probe_grok(
     ttl_s: float = 900,
     transport_factory=GrokAcpTransport,
 ) -> dict:
-    """只读账单。不调用 session/new 或 session/prompt。错误文本不返回给调用方。"""
+    """只读账单。不调用 session/new 或 session/prompt。错误文本不返回给调用方。
+
+    错误码只有 AUTH_REQUIRED、PROBE_TIMEOUT、SCHEMA_MISMATCH。
+    未放行真实进程时返回 skipped=disabled，不返回错误码；服务层同样用跳过表示禁用。
+    """
     if not live_grok_enabled():
-        return {"ok": False, "error_code": "LIVE_DISABLED"}
+        return {"ok": False, "skipped": "disabled"}
     assert GROK_QUOTA_METHODS == ("initialize", GROK_BILLING_METHOD)
     assert GROK_BILLING_METHOD not in GROK_ACP_METHODS
     transport = None
@@ -63,7 +67,8 @@ def probe_grok(
         backend = GrokBackend(backend_config)
         binary = backend.discover_bin()
         if binary is None:
-            return {"ok": False, "error_code": "PROBE_FAILED"}
+            # 二进制缺失不是超时，与连接关闭、进程失败一样记为 SCHEMA_MISMATCH。
+            return {"ok": False, "error_code": "SCHEMA_MISMATCH"}
         home = backend._prepared_home()
         env = build_environment(home)
         transport = transport_factory(grok_bin=str(binary), env=env)
@@ -105,7 +110,10 @@ def _record_quota_method(invoked: list[str], method: str) -> None:
 
 
 def _failure_code(exc: BaseException) -> str:
-    """只返回错误码。超时优先于正文里的 auth/login 字样。"""
+    """只返回 AUTH_REQUIRED、PROBE_TIMEOUT 或 SCHEMA_MISMATCH。超时优先于正文里的 auth/login。
+
+    连接关闭、进程退出和其他拿不到合法账单的失败都是 SCHEMA_MISMATCH，不是 PROBE_TIMEOUT。
+    """
     if isinstance(exc, (TimeoutError, subprocess.TimeoutExpired)):
         return "PROBE_TIMEOUT"
     if isinstance(exc, JsonRpcError) and exc.code == -32000:
@@ -113,7 +121,7 @@ def _failure_code(exc: BaseException) -> str:
     message = str(exc).lower()
     if "auth" in message or "login" in message:
         return "AUTH_REQUIRED"
-    return "PROBE_FAILED"
+    return "SCHEMA_MISMATCH"
 
 
 def _parse_billing(result, *, scope_ref, observed_at, ttl_s) -> list[dict]:
@@ -127,10 +135,16 @@ def _parse_billing(result, *, scope_ref, observed_at, ttl_s) -> list[dict]:
     percent = _percent(body.get("creditUsagePercent"))
     if percent is None:
         return []
-    end = _moment(body.get("billingPeriodEnd")) if "billingPeriodEnd" in body else None
+    # 给出的账期结束时间必须可解析且仍未结束。过期或非法时不产生观测，探针侧即为 SCHEMA_MISMATCH。
+    if "billingPeriodEnd" in body:
+        end = _moment(body.get("billingPeriodEnd"))
+        if end is None or end <= observed:
+            return []
+    else:
+        end = None
     start = _moment(body.get("billingPeriodStart")) if "billingPeriodStart" in body else None
     duration = _duration(start, end)
-    resets = end if end is not None and end > observed else None
+    resets = end
     valid = observed + timedelta(seconds=ttl)
     if resets is not None:
         valid = min(valid, resets)
@@ -207,15 +221,8 @@ def _observation(
 
 
 def _on_demand(body: dict) -> bool:
-    for key, value in body.items():
-        if not isinstance(key, str) or not key.startswith("onDemand"):
-            continue
-        if value is True:
-            return True
-        number = _finite(value)
-        if number is not None and number > 0:
-            return True
-    return False
+    """只认 onDemandEnabled 的布尔真值。金额、上限、已用量和未知字段都不表示开启。"""
+    return body.get("onDemandEnabled") is True
 
 
 def _duration(start: datetime | None, end: datetime | None) -> int | None:
