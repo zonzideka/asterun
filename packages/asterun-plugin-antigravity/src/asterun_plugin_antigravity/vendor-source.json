@@ -1,5 +1,5 @@
 {
-  "source_commit": "4e56919e9632cf65c4b2b1ce8d5df045add86477",
+  "source_commit": "0856557fb199170f970a527cd30d73ad9cbfd405",
   "files": [
     {
       "source": "src/asterun/antigravity_profile.py",
@@ -21,8 +21,8 @@
     {
       "source": "src/asterun/backends/antigravity_runtime.py",
       "target": "_vendor/runtime.py",
-      "source_sha256": "afca959e275c58487a006606372130550a85fb6822c7b3210d76844eea9b063e",
-      "vendored_sha256": "6e9e3fd02d12e79c70c689258367f42575fe93c224f2a0e50ec14fadcac2b9da",
+      "source_sha256": "efd98ce5ec06bbf24d3ffdb515830b36d1f2557bd9511303707896200cd862f1",
+      "vendored_sha256": "ff6917992f0763aa6f69239c4e0741aa948fbb0e8a0ebb136fc3d8c18baea755",
       "replacements": [
         [
           "from asterun.errors import BACKEND_UNAVAILABLE, REMOTE_STATE_UNKNOWN\nfrom asterun.ids import RunId",
@@ -70,7 +70,7 @@
     }
   ],
   "notes": [
-    "profile、runtime、command 由当前仓库提交 4e56919e9632cf65c4b2b1ce8d5df045add86477 机械复制；compat 与 __init__ 是插件本地副本，同样钉定摘要。",
+    "profile、runtime、command 由当前仓库提交 0856557fb199170f970a527cd30d73ad9cbfd405 机械复制；compat 与 __init__ 是插件本地副本，同样钉定摘要。",
     "清单必须覆盖 _vendor 下的全部文件。来源提交须能在本仓库历史中解析。",
     "仅机械修改导入、独立 profile 命令名与 worker 所有的进程组；原始核心文件不修改。",
     "CLI 留在 worker 进程组；本地 child 信号只用 PID，host 最终负责组内剩余子孙。远端是否终止仍未知。"
