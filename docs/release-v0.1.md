@@ -2,13 +2,19 @@
 
 # 首版发行说明
 
-当前公开源码版本为 `0.1.0a24`，正式稳定版 `0.1.0` 尚未发布。本次预发布的安装资产和校验文件见[对应版本发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a24)。首版范围已冻结，发布准备集中在现有行为、兼容和打包修复。项目采用 [Apache-2.0](../LICENSE)。`v0.1.0a24` 标签尚未打出，发行页上的文件要等该标签进入 `main` 且发行工作流成功之后才会出现。
+当前公开源码版本为 `0.1.0a25`，正式稳定版 `0.1.0` 尚未发布。本次预发布的安装资产和校验文件见[对应版本发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a25)。首版范围已冻结，发布准备集中在现有行为、兼容和打包修复。项目采用 [Apache-2.0](../LICENSE)。`v0.1.0a25` 标签尚未打出，发行页上的文件要等该标签进入 `main` 且发行工作流成功之后才会出现。
+
+## 0.1.0a25
+
+相对 2026-10-20 已发布的 [`v0.1.0a24`](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a24)，本版完成额度方案 PR3–PR6。Codex 额度读取按真实结构解析 credits（只记有/无）与重置券（只展示、不计入、不兑换）；最紧约束不再选中过期或已翻转的窗口。可选的 Grok `_x.ai/billing` 额度探针默认关闭：v2 需同时打开 `enabled` 与 `acknowledge_undocumented`，v1 不能启用；只记已用比例、账期结束、是否开启按需付费。通用额度闩锁在 Grok 402 之外，对 Antigravity 严格匹配的 429 额度耗尽也会闩锁（单纯限流不闩锁），按 Gemini / Claude-GPT 额度桶隔离；`quota-inspect` 显示 `latched`；Antigravity 可写 `quota_epoch`。v2 候选组为 `routing.candidate_groups`，并提供只读的 `routing-explain`；候选组可跨模型，审查组不得包含写代码一方的后端、账号或同一家的模型。额度优选 `routing.quota_preference.mode` 取 `off`（默认，与 a24 相同）、`dry_run`（演练，只记录 `would_choose`）或 `on`（需 `automatic_account_switch=true`、候选组有效、`rules` 为空）；付费超额永不自动使用；显式指定后端且新鲜数据显示订阅窗口已耗尽、会转用付费额度时默认阻断（`allow_paid_on_explicit` 可关闭，默认 false）；决策记录在 `plugin_routing_decisions`，`task-get` 显示 `routing`。SQLite 新增决策表（旧库自动创建，旧备份仍可恢复），schema 版本仍为 6；不写新配置键的既有配置序列化与摘要不变。Antigravity 插件升到 `1.0.7`（vendored runtime 同步 429 分类）；Cursor `1.0.1`、Jules `1.0.0` 不变。协议与标准 skill 最低接口 `0.1.0a14` 不变。
+
+尚未打 `v0.1.0a25`。资产要等该标签进入 `main` 且发行工作流成功之后，才会出现在[发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a25)。本次资产为核心 wheel、源码包、`asterun-skill-0.1.0a25.zip`、三个外部插件的 wheel 与源码包（Antigravity `1.0.7`，Cursor `1.0.1`，Jules `1.0.0`），以及 `SHA256SUMS`。
 
 ## 0.1.0a24
 
 相对 2026-10-19 已发布的 [`v0.1.0a23`](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a23)，本版加入额度观测（额度方案 PR1+PR2，不改调度）。新增本地额度缓存与 `quota-inspect` / `quota-set` / `quota-clear` / `quota-refresh`（MCP 同名下划线）：inspect 只读，不写库、不查上游；手动录入可信度为 low、最长 24 小时、不能创建闩锁，clear 只删手动录入；这些命令需要 SQLite 状态目录。Codex 的 `quota-refresh` 只调用 app-server `account/rateLimits/read`（initialize + 读取 + 关闭，不调用 `account/read`、`thread/*`、`turn/*`，不耗额度），同一 scope 最小间隔 60 秒、租约单飞；运行中收到 `account/rateLimits/updated` 时脱敏，并在运行结束写入缓存。只记已用比例、重置时间、是否有付费 credits（不存余额）、重置券到期时间（只展示、不计入、不兑换）；不保存邮箱和套餐。v2 配置新增可选 `quota` 段（`probes.codex_app_server`、`passive.codex_rate_limits_updated`）；不写该段的既有配置序列化与摘要不变。SQLite 新增两张额度表（旧库自动创建，旧备份仍可恢复），schema 版本仍为 6。额度数据暂不参与选路或准入，数据缺失时行为与 a23 相同。协议、配置 schema 版本、标准 skill 最低接口 `0.1.0a14` 不变；插件版本不变（Antigravity `1.0.6`，Cursor `1.0.1`，Jules `1.0.0`）。
 
-尚未打 `v0.1.0a24`。资产要等该标签进入 `main` 且发行工作流成功之后，才会出现在[发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a24)。本次资产为核心 wheel、源码包、`asterun-skill-0.1.0a24.zip`、三个外部插件的 wheel 与源码包（Antigravity `1.0.6`，Cursor `1.0.1`，Jules `1.0.0`），以及 `SHA256SUMS`。
+`v0.1.0a24` 已于 2026-10-20 发布，资产见[发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a24)：核心 wheel、源码包、`asterun-skill-0.1.0a24.zip`、三个外部插件的 wheel 与源码包（Antigravity `1.0.6`，Cursor `1.0.1`，Jules `1.0.0`），以及 `SHA256SUMS`。
 
 ## 0.1.0a23
 
