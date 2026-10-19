@@ -44,3 +44,19 @@ def grok_quota_settings(config) -> dict:
         if key in probe_in:
             probe[key] = probe_in[key]
     return deepcopy(settings)
+
+
+def quota_preference_mode(config) -> str:
+    """只读。v1、未配置 quota_preference、未写 mode、enabled=false 都是 off。不写回配置。"""
+    if getattr(config, "schema_version", 1) != 2:
+        return "off"
+    routing = getattr(config, "routing", None)
+    if not isinstance(routing, dict):
+        return "off"
+    pref = routing.get("quota_preference")
+    if not isinstance(pref, dict) or pref.get("enabled") is False:
+        return "off"
+    mode = pref.get("mode", "off")
+    if mode not in {"off", "dry_run", "on"}:
+        return "off"
+    return mode

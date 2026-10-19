@@ -34,7 +34,9 @@ _ROLE_KINDS = {
 _PREFERENCE_KEYS = {
     "enabled", "horizon_hours", "waste_threshold_bp", "switch_margin_bp", "require_confidence",
     "consider_short_windows", "floor_short_bp", "floor_long_bp", "count_reset_grants",
+    "mode", "allow_paid_on_explicit",
 }
+_PREFERENCE_MODES = {"off", "dry_run", "on"}
 _BACKEND_COMPARE = (
     "kind", "enabled", "plugin_id", "execution_profile", "max_turns", "timeout_seconds",
     "desktop_projects", "approval_policy", "load_user_settings", "session_sync_home", "session_policy",
@@ -261,6 +263,12 @@ def _validate_quota_preference(routing: dict) -> None:
         flag(pref["count_reset_grants"], "routing.quota_preference.count_reset_grants")
         if pref["count_reset_grants"]:
             invalid("routing.quota_preference.count_reset_grants 只允许 false；重置券不计入浪费")
+    if "mode" in pref and pref["mode"] not in _PREFERENCE_MODES:
+        invalid("routing.quota_preference.mode 只能是 off、dry_run 或 on")
+    if "mode" in pref and pref.get("enabled") is False and pref["mode"] != "off":
+        invalid("routing.quota_preference.enabled=false 时 mode 只能是 off")
+    if "allow_paid_on_explicit" in pref:
+        flag(pref["allow_paid_on_explicit"], "routing.quota_preference.allow_paid_on_explicit")
 
 
 def _validate_candidate_routing(routing: dict, backends: dict, connections: dict, pools: dict) -> None:
@@ -357,6 +365,33 @@ def _validate_candidate_routing(routing: dict, backends: dict, connections: dict
         shared = vendor_tags(backend.get("kind"), backend.get("model")) & vendors
         if shared:
             invalid(f"审查组不能包含与实现组同一家的模型：{alias}")
+
+
+def _routing_preference_mode(routing: dict) -> str:
+    """与 quota_preference_mode 同一规则。未写的键不补进 routing。"""
+    pref = routing.get("quota_preference")
+    if not isinstance(pref, dict) or pref.get("enabled") is False:
+        return "off"
+    mode = pref.get("mode", "off")
+    if mode not in _PREFERENCE_MODES:
+        return "off"
+    return mode
+
+
+def _enforce_quota_mode_switch(routing: dict) -> None:
+    """候选组校验通过后再判。dry_run 不要求 automatic_account_switch。"""
+    mode = _routing_preference_mode(routing)
+    switch = routing.get("automatic_account_switch") is True
+    groups = routing.get("candidate_groups")
+    groups_ready = isinstance(groups, dict) and len(groups) > 0
+    rules_ok = routing.get("rules", []) == []
+    if switch:
+        if mode != "on":
+            invalid("automatic_account_switch=true 需要 quota_preference.mode=on")
+        if not groups_ready or not rules_ok:
+            invalid("automatic_account_switch=true 需要非空 candidate_groups，且 routing.rules 为空")
+    elif mode == "on":
+        invalid("mode=on 需要 automatic_account_switch=true")
 
 
 def parse_v2(raw: dict, source_path: Path) -> tuple[dict[str, dict], dict[str, dict]]:
@@ -499,8 +534,8 @@ def parse_v2(raw: dict, source_path: Path) -> tuple[dict[str, dict], dict[str, d
     for key in ("automatic_paid_fallback", "automatic_account_switch"):
         if key in routing:
             flag(routing[key], f"routing.{key}")
-            if routing[key]:
-                invalid(f"M1 不支持 {key}")
+    if routing.get("automatic_paid_fallback") is True:
+        invalid("M1 不支持 automatic_paid_fallback")
     if "default_order" in routing:
         references(routing["default_order"], "routing.default_order", connections)
     if routing.get("rules", []) != []:
@@ -539,4 +574,5 @@ def parse_v2(raw: dict, source_path: Path) -> tuple[dict[str, dict], dict[str, d
         if kind == "antigravity" and "quota_epoch" in options:
             backends[alias]["quota_epoch"] = options["quota_epoch"]
     _validate_candidate_routing(routing, backends, connections, pools)
+    _enforce_quota_mode_switch(routing)
     return backends, namespaces
