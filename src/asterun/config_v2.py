@@ -20,7 +20,27 @@ POOL_KEYS = {
 POOL_METERS = {"requests", "turns", "tokens", "micro_usd", "wall_ms", "tool_actions", "bytes"}
 CONNECTION_KEYS = {"plugin_id", "enabled", "provider_account_ref", "runtime_ref", "auth_mode", "billing_pool_refs", "options", "credential_ref", "upstream_version"}
 EXTERNAL_KEYS = {"enabled", "manifest_path", "runner", "installation_path", "installation_sha256", "runtime_path", "runtime_sha256", "allow_unpinned_runtime"}
-ROUTING_KEYS = {"automatic_paid_fallback", "automatic_account_switch", "default_order", "rules"}
+ROUTING_KEYS = {
+    "automatic_paid_fallback", "automatic_account_switch", "default_order", "rules",
+    "candidate_groups", "quota_preference",
+}
+_GROUP_NAME = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+_GROUP_KEYS = {"role", "members", "primary", "models_allowed"}
+_ROLE_KINDS = {
+    "implementation": {"grok"},
+    "review": {"codex"},
+    "planning": {"antigravity", "claude"},
+}
+_PREFERENCE_KEYS = {
+    "enabled", "horizon_hours", "waste_threshold_bp", "switch_margin_bp", "require_confidence",
+    "consider_short_windows", "floor_short_bp", "floor_long_bp", "count_reset_grants",
+}
+_BACKEND_COMPARE = (
+    "kind", "enabled", "plugin_id", "execution_profile", "max_turns", "timeout_seconds",
+    "desktop_projects", "approval_policy", "load_user_settings", "session_sync_home", "session_policy",
+)
+_OPTION_IGNORE = {"bin", "home", "model", "quota_epoch", "extra_env"}
+_OPENAI_MODEL = re.compile(r"o\d")
 QUOTA_KEYS = {"probes", "passive"}
 QUOTA_PROBE_IDS = {"codex_app_server", "grok_acp_billing"}
 QUOTA_PROBE_KEYS = {"enabled", "ttl_seconds", "min_interval_seconds", "timeout_seconds"}
@@ -184,6 +204,159 @@ def _path(raw: Any, source_path: Path, where: str) -> str:
     text(raw, where)
     value = Path(raw)
     return str((source_path.parent / value).resolve() if not value.is_absolute() else value)
+
+
+def vendor_tags(kind: str, model: str | None) -> set[str]:
+    """一家供应商。kind 与模型前缀都算，审查组不能和实现组相交。"""
+    tags = set()
+    name = (model or "").strip().lower()
+    if kind == "grok":
+        tags.add("xai")
+    if kind == "codex" or name.startswith("gpt") or _OPENAI_MODEL.match(name):
+        tags.add("openai")
+    if name.startswith("claude"):
+        tags.add("anthropic")
+    if name.startswith("gemini"):
+        tags.add("google")
+    if kind == "claude":
+        tags.add("anthropic")
+    return tags
+
+
+def _execution_signature(backend: dict, connection: dict) -> dict:
+    signature = {}
+    for key in _BACKEND_COMPARE:
+        value = backend.get(key)
+        if key == "enabled" and value is None:
+            value = True
+        if key == "load_user_settings" and value is None:
+            value = False
+        signature[key] = value
+    options = connection.get("options") or {}
+    signature["options"] = {key: options[key] for key in sorted(options) if key not in _OPTION_IGNORE}
+    return signature
+
+
+def _validate_quota_preference(routing: dict) -> None:
+    if "quota_preference" not in routing:
+        return
+    pref = mapping(routing["quota_preference"], "routing.quota_preference", _PREFERENCE_KEYS)
+    if "enabled" in pref:
+        flag(pref["enabled"], "routing.quota_preference.enabled")
+    if "horizon_hours" in pref:
+        integer_between(pref["horizon_hours"], "routing.quota_preference.horizon_hours", 1, 168)
+    if "waste_threshold_bp" in pref:
+        integer_between(pref["waste_threshold_bp"], "routing.quota_preference.waste_threshold_bp", 0, 10000)
+    if "switch_margin_bp" in pref:
+        integer_between(pref["switch_margin_bp"], "routing.quota_preference.switch_margin_bp", 0, 10000)
+    if "require_confidence" in pref and pref["require_confidence"] not in {"high", "medium"}:
+        invalid("routing.quota_preference.require_confidence 只能是 high 或 medium")
+    if "consider_short_windows" in pref:
+        flag(pref["consider_short_windows"], "routing.quota_preference.consider_short_windows")
+    if "floor_short_bp" in pref:
+        integer_between(pref["floor_short_bp"], "routing.quota_preference.floor_short_bp", 500, 5000)
+    if "floor_long_bp" in pref:
+        integer_between(pref["floor_long_bp"], "routing.quota_preference.floor_long_bp", 1000, 5000)
+    if "count_reset_grants" in pref:
+        flag(pref["count_reset_grants"], "routing.quota_preference.count_reset_grants")
+        if pref["count_reset_grants"]:
+            invalid("routing.quota_preference.count_reset_grants 只允许 false；重置券不计入浪费")
+
+
+def _validate_candidate_routing(routing: dict, backends: dict, connections: dict, pools: dict) -> None:
+    _validate_quota_preference(routing)
+    if "candidate_groups" not in routing:
+        return
+    groups = mapping(routing["candidate_groups"], "routing.candidate_groups")
+    parsed = []
+    seen_roles = set()
+    for name, body in groups.items():
+        if not isinstance(name, str) or _GROUP_NAME.fullmatch(name) is None:
+            invalid(f"候选组名 {name!r} 必须匹配 ^[a-z][a-z0-9_-]{{0,31}}$")
+        group = mapping(body, f"routing.candidate_groups.{name}", _GROUP_KEYS, {"role", "members", "primary"})
+        role = group["role"]
+        if role not in _ROLE_KINDS:
+            invalid(f"候选组 {name} 的 role 只能是 implementation、review 或 planning")
+        if role in seen_roles:
+            invalid(f"同一角色只能有一个候选组：{role}")
+        seen_roles.add(role)
+        members = group["members"]
+        references(members, f"routing.candidate_groups.{name}.members", backends)
+        if not 1 <= len(members) <= 8:
+            invalid(f"候选组 {name} 的成员数量必须是 1 到 8")
+        text(group["primary"], f"routing.candidate_groups.{name}.primary")
+        if group["primary"] not in members:
+            invalid(f"候选组 {name} 的 primary 必须是成员")
+        allowed = None
+        if "models_allowed" in group:
+            allowed = group["models_allowed"]
+            if not isinstance(allowed, list) or not 1 <= len(allowed) <= 32:
+                invalid(f"候选组 {name} 的 models_allowed 必须是 1 到 32 个模型")
+            for model in allowed:
+                text(model, f"routing.candidate_groups.{name}.models_allowed")
+            if len(set(allowed)) != len(allowed):
+                invalid(f"候选组 {name} 的 models_allowed 不能重复")
+        parsed.append((name, role, members, group["primary"], allowed))
+
+    by_role = {role: members for _, role, members, _, _ in parsed}
+    review_members = set(by_role.get("review", []))
+    implementation_members = set(by_role.get("implementation", []))
+    if review_members & implementation_members:
+        invalid("审查组不能包含实现组的后端")
+    occupied: dict[str, str] = {}
+    for _, role, members, _, _ in parsed:
+        for alias in members:
+            previous = occupied.get(alias)
+            if previous is not None and previous != role:
+                invalid(f"不同角色的组成员不能相交：{alias}")
+            occupied[alias] = role
+
+    for name, role, members, _, allowed in parsed:
+        allowed_kinds = _ROLE_KINDS[role]
+        kinds = []
+        for alias in members:
+            kind = backends[alias].get("kind")
+            if kind not in allowed_kinds:
+                invalid(f"候选组 {name} 的后端 {alias} 种类 {kind} 不能担任 {role}")
+            kinds.append(kind)
+        if len(set(kinds)) != 1:
+            invalid(f"候选组 {name} 的成员种类必须相同")
+        signature = None
+        for alias in members:
+            backend = backends[alias]
+            if allowed is not None and backend.get("model") not in allowed:
+                invalid(f"候选组 {name} 的成员 {alias} 的模型不在 models_allowed 中")
+            current = _execution_signature(backend, connections[backend["connection_ref"]])
+            if signature is None:
+                signature = current
+            elif current != signature:
+                invalid(f"候选组 {name} 的执行选项必须相同")
+            connection = connections[backend["connection_ref"]]
+            for pool_ref in connection["billing_pool_refs"]:
+                pool = pools[pool_ref]
+                if pool["billing_mode"] not in {"subscription", "local"}:
+                    invalid(f"候选组 {name} 的计费池 {pool_ref} 必须是 subscription 或 local")
+                if pool.get("paid_overage_allowed") is True:
+                    invalid(f"候选组 {name} 的计费池 {pool_ref} 不能允许付费超额")
+
+    if not implementation_members or not review_members:
+        return
+    accounts = set()
+    vendors = set()
+    for alias in implementation_members:
+        backend = backends[alias]
+        account = connections[backend["connection_ref"]].get("provider_account_ref")
+        if account:
+            accounts.add(account)
+        vendors |= vendor_tags(backend.get("kind"), backend.get("model"))
+    for alias in review_members:
+        backend = backends[alias]
+        account = connections[backend["connection_ref"]].get("provider_account_ref")
+        if account in accounts:
+            invalid(f"审查组不能包含实现组的供应商账户 {account}")
+        shared = vendor_tags(backend.get("kind"), backend.get("model")) & vendors
+        if shared:
+            invalid(f"审查组不能包含与实现组同一家的模型：{alias}")
 
 
 def parse_v2(raw: dict, source_path: Path) -> tuple[dict[str, dict], dict[str, dict]]:
@@ -361,4 +534,5 @@ def parse_v2(raw: dict, source_path: Path) -> tuple[dict[str, dict], dict[str, d
             backends[alias]["load_user_settings"] = True
         if kind == "antigravity" and "timeout_seconds" in options:
             backends[alias]["timeout_seconds"] = options["timeout_seconds"]
+    _validate_candidate_routing(routing, backends, connections, pools)
     return backends, namespaces
