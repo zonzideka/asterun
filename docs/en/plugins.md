@@ -6,7 +6,7 @@ Install a plugin in a separate environment, then register it with Asterun. Built
 
 ## Configuration and migration
 
-In v2, `plugins` stores installation registrations, `provider_accounts` holds provider identity references, `connections` pins authentication, environment, and model, `billing_pools` describes shared resource pools, and `backends` aliases point to connections. Start with the [offline fake example](../../examples/plugins/fake-v2.json).
+In v2, `plugins` stores installation registrations, `provider_accounts` holds provider identity references, `connections` pins authentication, environment, and model, `billing_pools` describes shared resource pools, and `backends` aliases point to connections. The optional `quota` section configures the Codex quota probe, passive collection, and the Grok quota probe, which is off by default; fields and defaults are below. Start with the [offline fake example](../../examples/plugins/fake-v2.json).
 
 Inspect a migration candidate for a v1 configuration:
 
@@ -52,7 +52,54 @@ Agents use `task-submit`. Structured tool capabilities use `capability-invoke --
 
 Inputs and outputs are validated against the manifest Schema and stored in `Task.capability_input` and `Run.output`. For a reviewable fixed plan or a code-quality workflow, use the [capability profile](capability-profile.md).
 
-CLI and MCP share request definitions; MCP tool names use underscores. `usage-inspect` shows the local budget ledger and provider observations already received. After disabling a plugin, the original principal can still read, cancel, or reconcile existing tasks under their original bindings, subject to the plugin's capabilities.
+CLI and MCP share request definitions; MCP tool names use underscores. `usage-inspect` shows the local budget ledger and provider observations already received. `quota-inspect` (MCP `quota_inspect`) reads the local quota cache and does not query upstream. `quota-set` records a manual entry at low confidence for at most 24 hours. `quota-clear` removes only manual entries. `quota-refresh` (MCP `quota_refresh`) only reads the Codex app-server method `account/rateLimits/read`, keeps a default minimum interval of 60 seconds, does not start a thread or consume quota, and does not store balances or email addresses. When a Codex run receives `account/rateLimits/updated`, the run writes that snapshot into the quota cache at completion with source `passive_codex`, and does not store balance, email, or plan. The v2 `quota` section controls the probe and this passive collection: `probes.codex_app_server.enabled` defaults to true, `ttl_seconds` defaults to 600 (60–3600), `min_interval_seconds` defaults to 60 (60–3600), and `timeout_seconds` defaults to 10 (1–30); `passive.codex_rate_limits_updated` defaults to true. Unknown fields are rejected. `routing-explain` (MCP `routing_explain`) only explains candidate-group selection and does not change dispatch; see below. After disabling a plugin, the original principal can still read, cancel, or reconcile existing tasks under their original bindings, subject to the plugin's capabilities.
+
+Grok quota reads use the undocumented ACP extension `_x.ai/billing` and are off by default. Enable them in v2 by setting both `enabled` and `acknowledge_undocumented` on `quota.probes.grok_acp_billing` (both default to false). The probe only calls `initialize` and `_x.ai/billing`. It does not create a session or send a prompt. Confidence is at most medium. It records the used ratio, the billing-period end, and whether on-demand billing is enabled, and it does not store amounts. On-demand state is read only from the boolean field `onDemandEnabled`. Amounts, caps, used values, and unknown fields are ignored. `onDemandEnabled` set to false stays off even when a cap is greater than zero. `billingPeriodEnd` may be absent; if it is present but expired or invalid, parsing fails and produces no observation. `ttl_seconds` defaults to 900 (60–3600), `min_interval_seconds` defaults to 300 (60–3600), and `timeout_seconds` defaults to 10 (1–30). v1 configuration cannot enable this probe. The probe returns only three error codes: `AUTH_REQUIRED` (authentication or login failure), `PROBE_TIMEOUT` (call timeout), and `SCHEMA_MISMATCH` (missing binary, closed connection, process failure, or a response that does not match the billing shape, including an expired or invalid billing-period end). It does not return `LIVE_DISABLED` or `PROBE_FAILED`. When `ASTERUN_RUN_GROK=1` is unset, the service records `skipped=disabled` and does not call the probe. When the two switches are not both on, the service records `PROBE_DISABLED`. Neither disabled state is a probe error code.
+
+A persistent quota latch comes from a saved native failure classification and does not keep the raw error text. A Grok HTTP 402 quota exhaustion stops later dispatches in the same billing pool. Antigravity latches only on a strict 429 quota exhaustion: the text contains an independent `429` token (`\b429\b`) or `RESOURCE_EXHAUSTED`, and it contains quota (case-insensitive). A plain rate limit does not latch. Antigravity isolates quota buckets, with Gemini in one group and Claude and GPT in the other. Clear a latch by changing that backend's `quota_epoch` on v1, or by updating the billing window on v2. `quota-inspect` shows a window with freshness `latched` at the front of the matching scope. That window is display-only and is not written into the quota cache.
+
+## Candidate groups and routing explanation
+
+Candidate groups exist only in configuration v2, under `routing.candidate_groups`. A group is 1 to 8 aliases with the same role, the same backend kind, and the same execution options. Models may differ. `models_allowed` is optional and is checked only when written. `primary` must be one of the members. A group name matches `^[a-z][a-z0-9_-]{0,31}$`. Each role has at most one group, and members of different roles cannot overlap. When `candidate_groups` or `quota_preference` is omitted, read-back does not fill defaults.
+
+Role and kind: `implementation` is grok only, `review` is codex only, and `planning` is antigravity or claude. Every member of one group must share a kind. Execution-option comparison ignores the backend fields `name`, `home`, `bin`, `model`, `connection_ref`, `quota_epoch`, and `extra_env`, and the connection option keys `bin`, `home`, and `model`. Each member's billing pool must be `subscription` or `local`, and must not set `paid_overage_allowed`. A review group cannot include an implementer's backend, provider account, or a model from the same vendor: kind grok is xai; kind codex, or a model starting with gpt or with o followed by a digit, is openai; a model starting with claude, or kind claude, is anthropic; a model starting with gemini is google.
+
+`routing.quota_preference.mode` defaults to `off`, which behaves exactly as before. `enabled` set to false is the same as `off`. `dry_run` still dispatches primary and only records `would_choose`; `on` dispatches the chosen candidate. See "Quota preference (dry-run, then enable)" below. Defaults are a 72-hour horizon, a 1000 bp waste threshold, a 500 bp switch margin, confidence of at least medium, short windows excluded from value, a 500 bp short-window floor, and a 1000 bp long-window floor. `count_reset_grants` can only be false. Paid overage and reset grants do not count as available quota or as waste.
+
+Scoring reads the local quota cache. Exhausted, latched, or fully used (10000 bp) candidates are excluded. Remaining quota below the floor plus one run's estimate drops to tier 3. Only windows that reset within the horizon and last at least 24 hours count toward waste; a 5-hour window only gates unless short windows are enabled. In-flight runs deduct 100 bp on a weekly window and 500 bp on a 5-hour window. No fresh window means unknown. The choice falls back to primary when every member is unknown, the primary is unknown, or every member is latched. A suggestion leaves primary only with fresh evidence that beats the switch margin.
+
+`routing-explain --group NAME` or `routing-explain --backend @NAME` (MCP `routing_explain`) runs that read-only calculation and returns the suggestion with `dispatch_changed: false` and `preference_enabled`. Permission matches `quota-inspect`. v1 configuration, or v2 with no candidate groups, returns `INVALID_CONFIG`. This command only explains; it does not dispatch. Whether a task dispatches the chosen candidate depends on `mode`.
+
+```json
+{
+  "routing": {
+    "candidate_groups": {
+      "implementer": {"role": "implementation", "members": ["grok-a", "grok-b"], "primary": "grok-a"},
+      "reviewer": {"role": "review", "members": ["codex-a"], "primary": "codex-a"},
+      "planning": {"role": "planning", "members": ["agy-opus", "agy-gemini"], "primary": "agy-opus"}
+    },
+    "quota_preference": {"enabled": false}
+  }
+}
+```
+
+`agy-opus` and `agy-gemini` are both antigravity, with the same execution options. Their models are Claude and Gemini.
+
+### Quota preference (dry-run, then enable)
+
+`routing.quota_preference.mode` is `off`, `dry_run`, or `on`. `off` is the default and behaves exactly as before. `enabled` set to false is the same as `off`. `dry_run` is a rehearsal: dispatch stays on primary, and the result is only recorded as `would_choose`. `on` dispatches the chosen candidate.
+
+`on` is accepted only when `automatic_account_switch` is true, the candidate groups are non-empty and all pass validation, and `rules` is empty. `automatic_paid_fallback` is always false. Setting `automatic_account_switch` to true while `mode` is not `on` is rejected.
+
+The entry is `backend` set to `@group`, or `backend` omitted and `default_backend` set to `@group`. An explicit ordinary backend name does not enter preference. A missing group returns `INVALID_REQUEST`. On v1, `@…` returns `INVALID_CONFIG`. `workflow.review_backend` does not accept a candidate-group alias in this version; quality review still uses a fixed backend. `default_backend` may be `@group` (v2 only).
+
+Paid protection for an explicit backend: if a fresh window at confidence of at least medium shows the subscription quota is exhausted, and that same scope has a paid-overage entry, the call is blocked with `BUDGET_EXHAUSTED` by default. Set `routing.quota_preference.allow_paid_on_explicit` to true to turn this off; the default is false. Unknown or stale data does not block.
+
+Resume and repair rounds keep the backend selected the first time. If the chosen candidate fails admission, the call errors and does not try the next one. When quota data is invalid, dispatch falls back to primary with `reason_code` `quota_state_invalid`.
+
+Decisions go to `plugin_routing_decisions`: at most 1000 rows, kept for 30 days, score summaries only. Credentials and balances are not stored. When the entry above was used, `task-get` shows task-level `routing` with `mode`, `group`, `chosen`, `primary`, `reason_code`, and `would_choose`. Otherwise that key is omitted.
+
+Watch `routing.would_choose` under `dry_run` before setting `mode` to `on`. Paid overage is never used automatically, and reset grants are never redeemed automatically.
 
 ## Credentials and recovery
 

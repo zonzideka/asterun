@@ -26,6 +26,10 @@ MAX_EVENTS = 8192
 MAX_SUMMARY_BYTES = 32 * 1024
 CANCEL_GRACE = 0.5
 TERMINATE_GRACE = 0.3
+# True when agy runs in its own session/process group that this runtime may
+# signal and inspect. The plugin copy sets this to False (the host owns the
+# worker group), so it never claims a delegated run's processes are gone.
+_OWNS_PROCESS_GROUP = True
 PROGRESS_INTERVAL = 1.0
 USAGE_KEYS = {"input_tokens", "output_tokens", "thinking_tokens", "cache_read_tokens", "total_tokens"}
 # These are diagnostics, never permission grants. Keep a rolling suffix so a notice
@@ -36,6 +40,37 @@ _DENIED = re.compile(
     r"(?:cannot|can't|unable to)[^\n]{0,80}(?:ask|obtain)[^\n]{0,80}(?:approval|permission)",
     re.IGNORECASE,
 )
+# agy 真实额度错误格式出现后在此补充
+AGY_QUOTA_PATTERNS: tuple[re.Pattern[str], ...] = ()
+_AGY_RATE_LIMIT = re.compile(r"\b429\b|RESOURCE_EXHAUSTED")
+_AGY_QUOTA_WORD = re.compile(r"quota", re.IGNORECASE)
+_PROVIDER_FAILURE_KEYS = ("kind", "status_code", "source", "provider")
+
+
+def classify_agy_error(status, text) -> dict | None:
+    """只在 ERROR 终态做白名单分类。返回值只有四个字段，不含供应商原文。"""
+    if status != "ERROR" or not isinstance(text, str):
+        return None
+    limited = _AGY_RATE_LIMIT.search(text) is not None
+    quota_hit = _AGY_QUOTA_WORD.search(text) is not None or any(
+        pattern.search(text) for pattern in AGY_QUOTA_PATTERNS
+    )
+    if quota_hit and (limited or any(pattern.search(text) for pattern in AGY_QUOTA_PATTERNS)):
+        kind = "quota_exhausted"
+    elif limited:
+        kind = "rate_limited"
+    else:
+        return None
+    return {
+        "kind": kind,
+        "status_code": 429,
+        "source": "native_result",
+        "provider": "antigravity",
+    }
+
+
+def _provider_failure(classified: dict) -> dict[str, Any]:
+    return {key: classified[key] for key in _PROVIDER_FAILURE_KEYS}
 
 
 class _ProtocolError(Exception):
@@ -77,6 +112,9 @@ class _Run:
     tool_errors: set[int] = field(default_factory=set)
     step_errors: set[int] = field(default_factory=set)
     active_tools: set[int] = field(default_factory=set)
+    subagents: set[int] = field(default_factory=set)
+    step_tools: dict[int, str] = field(default_factory=dict)
+    cleaned: bool = False
     step_states: dict[int, str] = field(default_factory=dict)
     step_types: dict[int, str] = field(default_factory=dict)
     soft_denied: bool = False
@@ -85,6 +123,7 @@ class _Run:
     stdout_bytes: int = 0
     stderr_bytes: int = 0
     events_seen: int = 0
+    provider_failure: dict[str, Any] | None = None
 
     def native(self) -> dict[str, Any]:
         native: dict[str, Any] = {
@@ -99,7 +138,7 @@ class _Run:
                 "events_seen": self.events_seen,
             },
             "tool_error_count": len(self.tool_errors), "step_error_count": len(self.step_errors),
-            "soft_denied": self.soft_denied,
+            "soft_denied": self.soft_denied, "subagent_count": len(self.subagents),
             "summary_truncated": self.text_truncated,
         }
         if self.session_id:
@@ -113,6 +152,13 @@ class _Run:
                     native[name] = self.result[name]
             if "usage" in self.result:
                 native["usage_scope"] = "session"
+        # 缺字段或非 dict 时不输出，避免 native() 抛错把已确认终态打成未决。
+        failure = self.provider_failure
+        try:
+            if isinstance(failure, dict) and all(key in failure for key in _PROVIDER_FAILURE_KEYS):
+                native["provider_failure"] = _provider_failure(failure)
+        except Exception:
+            pass
         return native
 
 
@@ -225,11 +271,24 @@ class AntigravityRuntime:
             if state.step_states.get(index) == "ERROR":
                 raise _ProtocolError("step_after_error")
             if index in state.step_types and state.step_types[index] != kind:
-                raise _ProtocolError("step_type_changed")
+                # CLI 1.4+ re-labels an invoke_subagent tool step as "subagent"
+                # once the delegate starts. Only that one transition is accepted.
+                if not (state.step_types[index] == "tool" and kind == "subagent"
+                        and state.step_tools.get(index) == "invoke_subagent"
+                        and step.get("tool_name") == "invoke_subagent"):
+                    raise _ProtocolError("step_type_changed")
             state.step_states[index] = status
             state.step_types[index] = kind
+            if kind == "tool" and isinstance(step.get("tool_name"), str):
+                if state.step_tools.setdefault(index, step["tool_name"]) != step["tool_name"]:
+                    raise _ProtocolError("step_tool_changed")
             if status == "ERROR":
                 state.step_errors.add(index)
+            if kind == "subagent":
+                state.active_tools.discard(index)
+                state.subagents.add(index)
+                if status == "ERROR":
+                    state.tool_errors.add(index)
             if kind == "tool":
                 if status == "ACTIVE":
                     state.active_tools.add(index)
@@ -244,6 +303,11 @@ class AntigravityRuntime:
                     if not isinstance(info["error"], dict):
                         raise _ProtocolError("invalid_tool_error")
                     state.tool_errors.add(index)
+            if kind == "tool" and (state.step_tools.get(index) == "invoke_subagent"
+                                   or (isinstance(step.get("tool_info"), dict)
+                                       and step["tool_info"].get("name") == "invoke_subagent")):
+                # Delegation is detected at its first frame; the run stops here.
+                state.subagents.add(index)
             if kind == "agent_response":
                 delta = step.get("text_delta", "")
                 if not isinstance(delta, str):
@@ -272,10 +336,22 @@ class AntigravityRuntime:
                 state.result[name] = result[name]
         if usage is not None:
             state.result["usage"] = {k: v for k, v in usage.items() if k in USAGE_KEYS}
-        if result.get("error"):
-            if not isinstance(result["error"], str):
+        error = result.get("error")
+        if error:
+            if not isinstance(error, str):
                 raise _ProtocolError("invalid_result_error")
             state.result["has_error"] = True
+        # 分类失败只跳过 provider_failure，不改已确认的结果终态。
+        try:
+            raw_error = result.get("error")
+            raw_response = result.get("response")
+            error_text = raw_error if isinstance(raw_error, str) else ""
+            response_text = raw_response if isinstance(raw_response, str) else ""
+            classified = classify_agy_error(status, error_text + "\n" + response_text)
+            if classified is not None:
+                state.provider_failure = _provider_failure(classified)
+        except Exception:
+            state.provider_failure = None
         state.text = _bounded_text(result["response"])
         state.text_truncated |= state.text != result["response"]
         return True
@@ -316,6 +392,8 @@ class AntigravityRuntime:
                 return self._snapshot(state, status="failed", terminated=True,
                                       error_code=BACKEND_UNAVAILABLE, summary="Antigravity 进程启动失败，未提交输入")
             self._exchange(state, text, publish, stopping)
+            if state.subagents:
+                return self._stop_delegated(state)
             if state.result is None:
                 state.failure_type = "missing_result"
                 return self._unknown(state)
@@ -343,11 +421,44 @@ class AntigravityRuntime:
             state.failure_type = type(error).__name__
             return self._unknown(state)
         finally:
-            if state.proc is not None:
+            if state.proc is not None and not state.cleaned:
                 self._cleanup(state.proc)
             with self._lock:
                 self._runs.pop(run_id.value, None)
                 self._cancelled.discard(run_id.value)
+
+    @staticmethod
+    def _group_gone(proc: subprocess.Popen) -> bool:
+        if not _OWNS_PROCESS_GROUP:
+            return False
+        # Killed group members are reaped asynchronously; allow a short window.
+        deadline = time.monotonic() + 1.0
+        while True:
+            try:
+                os.killpg(proc.pid, 0)
+            except ProcessLookupError:
+                return True
+            except PermissionError:
+                return False
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.02)
+
+    def _stop_delegated(self, state: _Run) -> dict[str, Any]:
+        # Delegated work is never accepted. End the whole process group now and
+        # report a terminal failure only once the group is confirmed gone, so
+        # the scheduler slot is released immediately instead of after a timeout.
+        assert state.proc is not None
+        self._cleanup(state.proc)
+        # Never signal this PGID again: once gone, the number may be reused.
+        state.cleaned = True
+        if state.proc.poll() is None or not self._group_gone(state.proc):
+            state.failure_type = "subagent_process_alive"
+            return self._unknown(state)
+        state.failure_type = "subagent_delegated"
+        return self._snapshot(state, status="failed", terminated=True,
+                              error_code="ANTIGRAVITY_RUN_INCOMPLETE",
+                              summary="Antigravity 派出了子代理；Asterun 不接受委派结果，已结束进程。请要求不使用子代理后重试")
 
     @classmethod
     def _unknown(cls, state: _Run) -> dict[str, Any]:
@@ -430,6 +541,11 @@ class AntigravityRuntime:
                         if not line or len(line) > MAX_FRAME_BYTES:
                             raise _ProtocolError("frame_limit" if line else "empty_frame")
                         immediate = self._event(state, line)
+                        if state.subagents:
+                            # agy 1.4 may never send a result while a delegate
+                            # runs, or keep running after it; stop at once.
+                            state.stage = "result" if state.result is not None else "subagent"
+                            return
                         if state.result is None and (immediate or (state.text != last_text and time.monotonic() - last_publish >= PROGRESS_INTERVAL)):
                             publish(self._snapshot(state))
                             last_publish, last_text = time.monotonic(), state.text

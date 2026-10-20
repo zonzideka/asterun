@@ -2,7 +2,7 @@
 
 # 使用 Antigravity CLI
 
-Asterun 通过官方 `agy` CLI 的 `stream-json` 调用用户的原生账户，当前适配基线为 CLI 1.2.0。`workspace-read-v1` profile 支持文本任务和指定工作区读取，每个 Run 创建新的进程和原生会话。macOS 已验证文本执行、文件读取和权限拒绝。Linux x86_64 上，官方 CLI 1.2.0 的 `webm_encoder` 与 `~/.cache/ms-playwright-go` 已纳入按平台固定的 profile 检查；该平台的真实文本执行、文件读取和权限拒绝仍待现场验收。其他系统与其他 CLI 版本需单独核验后才能加入清单。
+Asterun 通过官方 `agy` CLI 的 `stream-json` 调用用户的原生账户，支持 CLI 1.2.0 及以上版本：启动前在临时 HOME 中运行 `agy --version` 与 `agy --help`，版本低于 1.2.0 或缺少 `--input-format`、`--output-format`、`--model`、`--disable-slash-commands`、`--print-timeout`、`--add-dir` 任一参数时给出明确错误。该探测只在后端已启用且真实派发开关 `ASTERUN_RUN_ANTIGRAVITY=1` 打开时运行，最多读取 64 KiB，15 秒超时并杀死其进程组。`workspace-read-v1` profile 支持文本任务和指定工作区读取，每个 Run 创建新的进程和原生会话。macOS 已验证文本执行、文件读取和权限拒绝。Linux x86_64 上，官方 CLI 1.2.0 的 `webm_encoder` 与 `~/.cache/ms-playwright-go` 已纳入按平台固定的 profile 检查；该平台的真实文本执行、文件读取和权限拒绝仍待现场验收。其他系统与其他 CLI 版本需单独核验后才能加入清单。
 
 ## 准备原生 HOME
 
@@ -92,7 +92,7 @@ asterun --state-dir /private/tmp/asterun-agy-demo/state --connect \
 
 profile 使用 `request-review`，只授予精确工作区的文件读取权限，拒绝写文件、执行命令、网页读取与执行、unsandboxed 和 MCP 工具。原生 CLI 仍会保存自身日志、会话和缓存。上述权限由原生策略执行，OS 强制隔离待验收。
 
-适配器使用专用 HOME，清理继承的认证和配置覆盖，并核对已知状态形状。CLI 1.2.0 的内置技能文件在已核验的 macOS 与 Linux x86_64 构建上使用同一份固定清单。`webm_encoder` 按平台固定大小和 SHA-256，不接受未登记摘要：macOS 沿用已核验的 12781442 字节、`9cf13e875e7ffb9ef3fe1fc1a177c744bd8ee5a6651a2ec47cda307a009e8d11`；Linux x86_64 使用官方 1.2.0 构建的 17056035 字节、`45c1b1edd50159fbd4eac95ffd82df97a79b8c345fc43408ddae09230a304ed6`。Playwright 缓存只接受本平台的空目录，macOS 为 `Library/Caches/ms-playwright-go/1.57.0`，Linux 为 `.cache/ms-playwright-go/1.57.0`。要支持新的 CLI 版本，需要为该版本单独登记内置文件、各平台编码器摘要、缓存形状，以及插件的 `upstream_version` 门禁，不能放宽现有 1.2.0 清单。认证保留在原生账户中，`useG1Credits=false`。
+适配器使用专用 HOME，清理继承的认证和配置覆盖，并核对已知状态形状。内置技能按结构接受：`skills/<name>/` 下归本用户所有、不可执行的 `.md`，以及 CLI 的 `.checksum` 和 `keep.txt`；每个文件不超过 128 KiB，不能是符号链接，且必须有 `.checksum`。`bin/webm_encoder` 必须是归本用户所有的普通文件，其他用户不可写，大小不超过 64 MiB。Playwright 缓存可以包含任意 `x.y.z` 版本目录，这些目录必须为空。可选字节钉定把环境变量 `ASTERUN_ANTIGRAVITY_PINS` 设为 JSON 文件的绝对路径，内容为 `{"builtin": {"path": "sha256"}, "webm_encoder": {"size": n, "sha256": "..."}}`，仅在设置该变量时按清单精确核验。Asterun 不关闭 agy 的自动更新，默认跟随最新版：agy 可以装在可写目录并自行升级。每次启动都按可执行文件身份（inode、大小、修改时间）重新探测版本与所需参数，并把本次所用版本记入运行证据 `cli_version`；运行中途发生自更新时，正在运行的进程继续使用原来的映像，结果照常判定，另记 `cli_updated_during_run=true`，下一次启动按新版本重新探测。CLI 1.4 起模型可能通过 `invoke_subagent` 派出子代理（该步骤随后被改报为 `subagent`）；这时 agy 可能一直不给结果，或给出结果后不退出。Asterun 一看到 `invoke_subagent` 工具步骤或 `subagent` 步骤就立即结束整个进程组，确认进程组已退出后记为 `ANTIGRAVITY_RUN_INCOMPLETE`（`failure_type=subagent_delegated`，并记 `subagent_count`），并发位随之释放；无法确认进程组已退出时保留为待对账（`subagent_process_alive`）。agy 1.4.2 没有关闭子代理的参数，可在提示词里要求不使用子代理。`.gemini/config/mcp_config.json` 只能为空，或只包含空的 `mcpServers` 映射。认证保留在原生账户中，`useG1Credits=false`。
 
 公开结果包含 `agent_response`、工作区、模型、权限和选定统计。成功结果须同时具备有效 init、完整步骤、匹配的原生终态和正常退出回执；工具错误和软拒绝计入失败。原生 conversation ID 保存在 `native.backend_session_id`，`native.usage_scope=session` 表示会话累计用量。
 

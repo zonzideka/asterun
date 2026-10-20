@@ -89,6 +89,8 @@ class BackendConfig:
             result.update(home=self.home, model=self.model)
         if self.kind == "antigravity" and self.timeout_seconds is not None:
             result["timeout_seconds"] = self.timeout_seconds
+        if self.kind == "antigravity" and self.quota_epoch is not None:
+            result["quota_epoch"] = self.quota_epoch
         if self.kind == "grok":
             result.update({key: getattr(self, key) for key in GROK_EXECUTION_OPTIONS
                            if getattr(self, key) is not None})
@@ -182,6 +184,8 @@ class AsterunConfig:
     billing_pools: dict[str, Any] = field(default_factory=dict)
     connections: dict[str, Any] = field(default_factory=dict)
     routing: dict[str, Any] = field(default_factory=dict)
+    quota: dict[str, Any] | None = field(default_factory=dict)
+    quota_explicit: bool = False
 
     def get_workspace(self, alias: str) -> WorkspaceBinding:
         try:
@@ -229,6 +233,8 @@ class AsterunConfig:
         if self.schema_version == 2:
             result.update(plugins=self.plugins, provider_accounts=self.provider_accounts,
                           billing_pools=self.billing_pools, connections=self.connections, routing=self.routing)
+            if self.quota_explicit:
+                result["quota"] = self.quota
         return result
 
 
@@ -350,6 +356,8 @@ def load_config(path: Path) -> AsterunConfig:
         if kind == "antigravity" and "timeout_seconds" in body:
             from asterun.backends.antigravity import validate_antigravity_timeout
             validate_antigravity_timeout(body["timeout_seconds"], f"backends.{name}.timeout_seconds")
+        if kind == "antigravity" and "quota_epoch" in body:
+            validate_grok_execution_options({"quota_epoch": body["quota_epoch"]}, f"backends.{name}")
         home_value = body.get("home")
         if "home" in body and (
             not isinstance(home_value, str)
@@ -387,7 +395,13 @@ def load_config(path: Path) -> AsterunConfig:
     if default_backend is not None:
         if not isinstance(default_backend, str) or not default_backend:
             raise AsterunError(INVALID_CONFIG, "default_backend 必须是非空字符串")
-        if default_backend not in backends:
+        if default_backend.startswith("@"):
+            if schema_version != 2:
+                raise AsterunError(INVALID_CONFIG, "default_backend 的候选组别名只在配置 v2 中可用")
+            groups = (raw.get("routing") or {}).get("candidate_groups") or {}
+            if default_backend[1:] not in groups:
+                raise AsterunError(INVALID_CONFIG, f"default_backend 指向未知候选组：{default_backend}")
+        elif default_backend not in backends:
             raise AsterunError(INVALID_CONFIG, f"default_backend 指向未知后端：{default_backend}")
 
     workflow = _load_workflow(raw.get("workflow"))
@@ -395,6 +409,8 @@ def load_config(path: Path) -> AsterunConfig:
         raise AsterunError(INVALID_CONFIG, "checkpoint_paths 指向未登记的工作区")
     scheduler = _load_scheduler(raw.get("scheduler"))
     entries = _load_entries(raw.get("entries"))
+    if isinstance(workflow.review_backend, str) and workflow.review_backend.startswith("@"):
+        raise AsterunError(INVALID_CONFIG, "workflow.review_backend 暂不支持候选组别名；质量审查仍用固定后端")
     if workflow.review_backend and workflow.review_backend not in backends:
         raise AsterunError(INVALID_CONFIG, f"workflow.review_backend 指向未知后端：{workflow.review_backend}")
 
@@ -412,6 +428,7 @@ def load_config(path: Path) -> AsterunConfig:
         scheduler=scheduler,
         entries=entries,
         approval_policy=approval_policy,
+        quota_explicit=schema_version == 2 and "quota" in raw,
         **v2_namespaces,
     )
 

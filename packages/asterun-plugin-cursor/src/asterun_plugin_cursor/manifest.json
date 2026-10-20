@@ -1,7 +1,7 @@
 {
   "schema_version": "asterun-plugin/v1",
   "plugin_id": "cursor.agent",
-  "plugin_version": "1.0.0",
+  "plugin_version": "1.0.1",
   "plugin_api_major": 1,
   "distribution": "asterun-plugin-cursor",
   "entry_point": "asterun_plugin_cursor.worker:main",
@@ -126,7 +126,7 @@
       "env_var": "CURSOR_API_KEY"
     },
     "asterun.cursor": {
-      "sdk_version": "1.0.31",
+      "sdk_version": ">=1.0.31,<2",
       "runtime": "local",
       "cloud": "unsupported",
       "artifact_download": "unsupported",

@@ -13,7 +13,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 ```
 
-新安装的 `asterun version` 应返回 `0.1.0a15` 或更新，以包含 Grok 终态和旧占位恢复修复；最低技能接口版本仍为 a14。[标准 skill](standard-skill.md) 依赖该版本中的紧凑观察与 `workflow-snapshot`；公开 `0.1.0a13` wheel 不够。从 [a20 发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a20)取得核心 wheel 和校验文件。GrokBot 模板仍按独立发行锁安装公开 a13，该实例不能使用标准 skill；模板锁升级另行验证和发布。历史主线构建仍报告 a13 时，仅在 CLI 与应答核心的能力探测全部通过后兼容，规则见[标准 skill](standard-skill.md)。
+新安装的 `asterun version` 应返回 `0.1.0a15` 或更新，以包含 Grok 终态和旧占位恢复修复；最低技能接口版本仍为 a14。[标准 skill](standard-skill.md) 依赖该版本中的紧凑观察与 `workflow-snapshot`；公开 `0.1.0a13` wheel 不够。从 [a25 发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a25)取得核心 wheel 和校验文件。GrokBot 模板仍按独立发行锁安装公开 a13，该实例不能使用标准 skill；模板锁升级另行验证和发布。历史主线构建仍报告 a13 时，仅在 CLI 与应答核心的能力探测全部通过后兼容，规则见[标准 skill](standard-skill.md)。
 
 激活虚拟环境后，直接使用 `asterun`。开发时从完整 Git 检出安装 `.[test]`，再运行 `scripts/verify-offline.sh`；默认测试使用临时状态和 fake 后端。
 
@@ -148,7 +148,7 @@ asterun-grok inspect --home /absolute/private/grok-profile
 }
 ```
 
-`model` 默认请求 `grok-4.6`，显式指定的模型原样交给 CLI。`text-only-v1` 最多运行一轮，默认超时 180 秒，使用空工具集和原生 read-only 沙箱。派发时使用专用 HOME，清理继承的认证和配置覆盖，并关闭配置同步、自动更新和扩展工具。
+`model` 默认请求 `grok-4.6`，显式指定的模型原样交给 CLI。`text-only-v1` 最多运行一轮，默认超时 180 秒，使用空工具集和原生 read-only 沙箱。派发时使用专用 HOME，清理继承的认证和配置覆盖，并关闭配置同步和扩展工具；不关闭自动更新，默认跟随最新版（`config.toml` 中 `[cli] auto_update` 由操作者决定，新目录写入 `true`）。
 
 专用配置、扩展和工作区祖先目录中的额外 `.grok` 配置来源须符合 profile。原生沙箱的隔离效果依平台而异；处理不可信材料时，使用独立 OS 用户或执行主机。文本模式原生续接、取消和审批桥接尚未接入；编码模式的可选续接见下文。
 

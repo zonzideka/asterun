@@ -6,7 +6,7 @@
 
 ## 配置与迁移
 
-v2 中，`plugins` 保存安装注册，`provider_accounts` 保存供应商身份引用，`connections` 固定认证、环境和模型，`billing_pools` 描述共享资源池，`backends` 别名指向连接。可先运行[离线 fake 示例](../examples/plugins/fake-v2.json)。
+v2 中，`plugins` 保存安装注册，`provider_accounts` 保存供应商身份引用，`connections` 固定认证、环境和模型，`billing_pools` 描述共享资源池，`backends` 别名指向连接。可选 `quota` 段配置 Codex 额度探针、被动采集，以及默认关闭的 Grok 额度探针，字段和默认值见下文。可先运行[离线 fake 示例](../examples/plugins/fake-v2.json)。
 
 查看 v1 迁移候选：
 
@@ -52,7 +52,54 @@ Agent 使用 `task-submit`。结构化工具能力使用 `capability-invoke --re
 
 输入和输出按 manifest Schema 校验，分别保存在 `Task.capability_input` 和 `Run.output`。需要可审阅的固定调用计划或代码质量流程时，使用 [capability profile](capability-profile.md)。
 
-CLI 与 MCP 共用请求定义，MCP 工具名使用下划线。`usage-inspect` 显示本地预算账本和已收到的供应商观察。停用后，原主体仍可按原绑定读取、取消或对账已有任务，具体动作取决于插件能力。
+CLI 与 MCP 共用请求定义，MCP 工具名使用下划线。`usage-inspect` 显示本地预算账本和已收到的供应商观察。`quota-inspect`（MCP `quota_inspect`）只读本地额度缓存，不查询上游。`quota-set` 手动录入额度，可信度为 low，最多 24 小时。`quota-clear` 只清除手动录入。`quota-refresh`（MCP `quota_refresh`）只读 Codex app-server `account/rateLimits/read`，最小间隔默认 60 秒，不建线程、不耗额度，不保存余额与邮箱。Codex 运行中收到 `account/rateLimits/updated` 时，运行结束写入额度缓存，来源 `passive_codex`，不保存余额、邮箱或套餐。v2 的 `quota` 段控制探针和这项被动采集：`probes.codex_app_server.enabled` 默认 true，`ttl_seconds` 默认 600（60–3600），`min_interval_seconds` 默认 60（60–3600），`timeout_seconds` 默认 10（1–30）；`passive.codex_rate_limits_updated` 默认 true。未知字段会被拒绝。`routing-explain`（MCP `routing_explain`）只解释候选组选路，不改变派发，详见下文。停用后，原主体仍可按原绑定读取、取消或对账已有任务，具体动作取决于插件能力。
+
+Grok 额度读取走未公开 ACP 扩展 `_x.ai/billing`，默认关闭。需要在 v2 的 `quota.probes.grok_acp_billing` 同时设置 `enabled` 与 `acknowledge_undocumented`（二者默认都是 false）。探针只调用 `initialize` 和 `_x.ai/billing`，不建会话、不发提示。可信度最高为 medium。只记录已用比例、账期结束时间，以及是否开启按需付费，不保存金额。按需付费只读取布尔字段 `onDemandEnabled`，不读取金额、上限、已用量或未知字段；该字段为 false 时，即使上限大于 0 也不记为开启。`billingPeriodEnd` 可以缺省；一旦给出，过期或非法则整次解析失败，不产生观测。`ttl_seconds` 默认 900（60–3600），`min_interval_seconds` 默认 300（60–3600），`timeout_seconds` 默认 10（1–30）。v1 配置不能启用该探针。探针错误码只有三种：`AUTH_REQUIRED`（认证或登录失败）、`PROBE_TIMEOUT`（调用超时）、`SCHEMA_MISMATCH`（二进制缺失、连接关闭、进程失败，或响应无法按账单结构解析，含账期结束时间过期或非法）。不返回 `LIVE_DISABLED` 或 `PROBE_FAILED`。未设置 `ASTERUN_RUN_GROK=1` 时，服务层记 `skipped=disabled` 且不调用探针；两个开关未同时打开时，服务层记 `PROBE_DISABLED`。这两种禁用都不是探针错误码。
+
+持久的额度闩锁来自已保存的原生失败分类，不保留错误原文。Grok 的 HTTP 402 额度耗尽会停止同一计费池的后续派发。Antigravity 只在严格匹配的 429 额度耗尽时闩锁：文本含独立 token `429`（`\b429\b`）或 `RESOURCE_EXHAUSTED`，并且含 quota（不分大小写）；单纯限流不闩锁。Antigravity 按额度桶隔离，Gemini 为一组，Claude 与 GPT 为一组。解除闩锁时，v1 修改该后端的 `quota_epoch`，v2 更新计费窗口。`quota-inspect` 在对应 scope 的窗口最前显示 freshness 为 `latched` 的窗口；该窗口只展示，不写入额度缓存。
+
+## 候选组与选路解释
+
+候选组只写在配置 v2 的 `routing.candidate_groups`。一组是同一角色、同一后端种类、同一执行选项的 1 到 8 个别名，模型可以不同。`models_allowed` 不写则不限制模型；写了才校验。`primary` 必须是成员之一。组名匹配 `^[a-z][a-z0-9_-]{0,31}$`。同一角色最多一组，不同角色的成员不能相交。未写 `candidate_groups` 或 `quota_preference` 时，配置回读不注入默认值。
+
+角色与种类：`implementation` 只能是 grok，`review` 只能是 codex，`planning` 只能是 antigravity 或 claude，且同组种类必须相同。比较执行选项时忽略后端的 `name`、`home`、`bin`、`model`、`connection_ref`、`quota_epoch`、`extra_env`，以及连接 options 里的 `bin`、`home`、`model`。成员连接的计费池必须是 `subscription` 或 `local`，且不能 `paid_overage_allowed`。审查组不能包含实现组的后端或供应商账户，也不能包含与实现组同一家的模型：kind grok 为 xai，kind codex 或模型以 gpt、o 加数字开头为 openai，模型以 claude 开头或 kind claude 为 anthropic，模型以 gemini 开头为 google。
+
+`routing.quota_preference.mode` 默认 `off`，与以前完全相同。`enabled` 为 false 等价于 `off`。`dry_run` 照常派发 primary，只记录 `would_choose`；`on` 派发选中者。详见下文「额度优选（先演练后生效）」。默认视界 72 小时，浪费阈值 1000 bp，切换余量 500 bp，可信度至少 medium，短窗口不计入价值，短窗口地板 500 bp，长窗口地板 1000 bp。`count_reset_grants` 只能是 false。付费超额和重置券不计入可用量或浪费。
+
+评分只读本地额度缓存。耗尽、闩锁或已用达到 10000 bp 的候选被排除。剩余低于地板加单次估计时降为 tier 3。只有距重置不超过视界、且时长至少 24 小时的窗口计入浪费；5 小时窗口默认只做门控。在途运行按周窗口 100 bp、5 小时窗口 500 bp 扣减。没有新鲜窗口时记为未知。全部未知、primary 未知或全部被闩锁时退回 primary。只有新鲜证据并且超出切换余量，才会建议离开 primary。
+
+`routing-explain --group NAME` 或 `routing-explain --backend @NAME`（MCP `routing_explain`）对组成员做上述只读计算，返回建议，并带 `dispatch_changed: false` 与 `preference_enabled`。权限与 `quota-inspect` 相同。v1 配置或没有候选组时返回 `INVALID_CONFIG`。该命令只解释、不派发。任务是否派发选中者由 `mode` 决定。
+
+```json
+{
+  "routing": {
+    "candidate_groups": {
+      "implementer": {"role": "implementation", "members": ["grok-a", "grok-b"], "primary": "grok-a"},
+      "reviewer": {"role": "review", "members": ["codex-a"], "primary": "codex-a"},
+      "planning": {"role": "planning", "members": ["agy-opus", "agy-gemini"], "primary": "agy-opus"}
+    },
+    "quota_preference": {"enabled": false}
+  }
+}
+```
+
+`agy-opus` 与 `agy-gemini` 都是 antigravity，执行选项相同，模型分别是 Claude 与 Gemini。
+
+### 额度优选（先演练后生效）
+
+`routing.quota_preference.mode` 取 `off`、`dry_run` 或 `on`。`off` 是默认，与以前完全相同。`enabled` 为 false 等价于 `off`。`dry_run` 是演练：照常派发 primary，只记录 `would_choose`。`on` 派发选中者。
+
+`on` 须同时满足：`automatic_account_switch` 为 true，候选组非空且全部通过校验，`rules` 为空。`automatic_paid_fallback` 永远为 false。`automatic_account_switch` 为 true 而 `mode` 不是 `on` 时，配置会被拒绝。
+
+入口是 `backend` 写成 `@组名`，或省略 `backend` 且 `default_backend` 为 `@组名`。显式写普通后端名不参与优选。组不存在返回 `INVALID_REQUEST`。v1 配置写 `@…` 返回 `INVALID_CONFIG`。`workflow.review_backend` 本版不支持候选组别名，质量审查仍用固定后端；`default_backend` 可写 `@组名`（仅 v2）。
+
+显式后端付费保护：该后端有新鲜、可信度不低于 medium 的窗口显示订阅额度已耗尽，且同一 scope 存在付费超额条目时，默认以 `BUDGET_EXHAUSTED` 阻断。`routing.quota_preference.allow_paid_on_explicit` 设为 true 可关闭，默认 false。数据未知或过期不阻断。
+
+续接与修复轮次沿用首次选定的后端。被选者准入失败直接报错，不自动换下一个。数据异常时退回 primary，`reason_code` 为 `quota_state_invalid`。
+
+决策写入 `plugin_routing_decisions`，最多 1000 行、保留 30 天，只存分数摘要，不存凭据或余额。走了上述入口时，`task-get` 在任务级显示 `routing`：`mode`、`group`、`chosen`、`primary`、`reason_code`、`would_choose`。未走优选时不增加该键。
+
+先用 `dry_run` 观察 `routing.would_choose`，再把 `mode` 改为 `on`。付费超额永不自动使用，重置券永不自动兑换。
 
 ## 凭据与恢复
 

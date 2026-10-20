@@ -5,13 +5,57 @@ from contextlib import ExitStack
 from datetime import datetime, timezone
 import hashlib
 from importlib.metadata import version
+import inspect
 import json
 import os
 from pathlib import Path
 import re
 import stat
 
-SDK_VERSION = "1.0.31"
+MIN_SDK_VERSION = (1, 0, 31)
+MIN_SDK_VERSION_TEXT = "1.0.31"
+
+
+def sdk_version_supported(value):
+    """Any cursor-sdk 1.x release at or above the tested minimum."""
+    match = re.fullmatch(r"([0-9]{1,4})\.([0-9]{1,4})\.([0-9]{1,4})(?:[.+-][0-9A-Za-z.+-]{0,64})?", value) if isinstance(value, str) else None
+    if match is None:
+        return False
+    parsed = (int(match[1]), int(match[2]), int(match[3]))
+    return parsed[0] == MIN_SDK_VERSION[0] and parsed >= MIN_SDK_VERSION
+
+
+# Interfaces this adapter calls. A newer 1.x SDK is accepted only if it still
+# offers them; otherwise execution fails early with sdk_feature_missing.
+SDK_REQUIRED = {
+    "CursorClient.launch_bridge": {"command", "workspace", "state_root", "host", "timeout",
+                                   "client_timeout", "max_retries", "allow_api_key_env_fallback"},
+    "AgentOptions": {"model", "api_key", "local", "tools", "disallowed_tools", "mcp_servers", "agents"},
+    "LocalAgentOptions": {"cwd", "setting_sources"},
+    "SendOptions": {"model", "mcp_servers"},
+}
+
+
+def missing_sdk_features(sdk):
+    missing = []
+    for name, parameters in SDK_REQUIRED.items():
+        target = sdk
+        for part in name.split("."):
+            target = getattr(target, part, None)
+        if not callable(target):
+            missing.append(name)
+            continue
+        try:
+            signature = inspect.signature(target)
+        except (TypeError, ValueError):
+            missing.append(name)
+            continue
+        if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in signature.parameters.values()):
+            continue
+        missing.extend(f"{name}({item})" for item in sorted(parameters - set(signature.parameters)))
+    return missing
+
+
 OPTIONS = {"model", "runtime", "state_root", "bridge_bin", "bridge_sha256", "execution_enabled",
            "tools", "disallowed_tools", "mcp_servers", "setting_sources", "timeout_seconds"}
 TERMINAL = {"finished": "succeeded", "error": "failed", "cancelled": "cancelled"}
@@ -51,7 +95,7 @@ def preflight(context):
     require(isinstance(options, dict) and not set(options) - OPTIONS, "invalid_options")
     require(options.get("execution_enabled") is True, "execution_not_enabled")
     require(context.get("auth_mode") == "user_api_key", "auth_mode_mismatch")
-    require(context.get("upstream_version") == SDK_VERSION, "sdk_version_mismatch")
+    require(context.get("upstream_version") is None or sdk_version_supported(context.get("upstream_version")), "sdk_version_mismatch")
     require(options.get("runtime") == "local", "local_runtime_required")
     require(context.get("capability") == "agent.execute", "capability_unsupported")
     for key in ("run_id", "task_id", "plan_id", "binding_id", "provider_account_ref"):
@@ -84,7 +128,7 @@ def preflight(context):
             and os.access(path, os.X_OK) and info.st_size <= 512 * 1024 * 1024, "bridge_path_invalid")
     with path.open("rb") as stream:
         require(hashlib.file_digest(stream, "sha256").hexdigest() == sha, "bridge_digest_mismatch")
-    require(version("cursor-sdk") == SDK_VERSION, "installed_sdk_version_mismatch")
+    require(sdk_version_supported(version("cursor-sdk")), "installed_sdk_version_mismatch")
     if context.get("provider_session_id"):
         reference(context["provider_session_id"], "agent-")
     if context.get("previous_provider_turn_id"):
@@ -141,8 +185,11 @@ def execute(method, input, context):
         key = os.environ.pop("CURSOR_API_KEY", None)
         require(isinstance(key, str) and bool(key.strip()), "credential_required")
         # bridge 的模型工具可继承其环境；账户 key 只放显式 SDK 请求，不放 bridge env。
-        from cursor_sdk import CursorClient, AgentOptions, LocalAgentOptions, SendOptions
-        # SDK 1.0.31 将 False 同时作为远程 bridge 的 Run RPC 门禁。这里是本机
+        import cursor_sdk
+        require(not missing_sdk_features(cursor_sdk), "sdk_feature_missing")
+        CursorClient, AgentOptions = cursor_sdk.CursorClient, cursor_sdk.AgentOptions
+        LocalAgentOptions, SendOptions = cursor_sdk.LocalAgentOptions, cursor_sdk.SendOptions
+        # SDK 1.0.31（已测试的最低版本）将 False 同时作为远程 bridge 的 Run RPC 门禁。这里是本机
         # 自建 bridge，且已移除环境 key；保持 SDK local 路由，账户仍只由显式参数提供。
         with ExitStack() as stack:
             client = stack.enter_context(CursorClient.launch_bridge(

@@ -1,4 +1,4 @@
-"""与现有执行意图共用 SQLite 的插件计划、共享池账本与用量观察。
+"""与现有执行意图共用 SQLite 的插件计划、共享池账本、用量观察与额度快照。
 
 这里没有网络、凭据解析、后台重试或派发入口。授权和当前计划校验由核心
 AdmissionService 负责；所有写入加入调用方事务，绝不提交调用方事务。
@@ -7,7 +7,7 @@ AdmissionService 负责；所有写入加入调用方事务，绝不提交调用
 from __future__ import annotations
 
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import sqlite3
 from uuid import uuid4
@@ -16,6 +16,7 @@ from asterun.connections.models import PreparedPlan
 from asterun.control_protocol import digest
 from asterun.errors import AsterunError
 from asterun.plugin_api.protocol import json_copy
+from asterun.quota.models import normalize_observation, normalize_probe_state
 from asterun.usage.models import BillingPool, UsageObservation, integer, mapping, reservation_amounts, text, timestamp
 
 _SCHEMA = (
@@ -46,6 +47,23 @@ _SCHEMA = (
         namespace_id TEXT NOT NULL, conversation_id TEXT NOT NULL, principal_id TEXT NOT NULL,
         lock_sha256 TEXT NOT NULL, payload TEXT NOT NULL,
         PRIMARY KEY(namespace_id,conversation_id))""",
+    """CREATE TABLE IF NOT EXISTS plugin_quota_snapshots (
+        namespace_id TEXT NOT NULL, id TEXT NOT NULL, scope_ref TEXT NOT NULL, bucket_id TEXT NOT NULL,
+        window_kind TEXT NOT NULL, source_kind TEXT NOT NULL, window_epoch TEXT,
+        observed_at TEXT NOT NULL, payload TEXT NOT NULL,
+        PRIMARY KEY(namespace_id,id))""",
+    """CREATE INDEX IF NOT EXISTS idx_plugin_quota_snapshots_key
+        ON plugin_quota_snapshots(namespace_id, scope_ref, bucket_id, window_kind, observed_at)""",
+    """CREATE TABLE IF NOT EXISTS plugin_quota_probe_state (
+        namespace_id TEXT NOT NULL, scope_ref TEXT NOT NULL, probe_id TEXT NOT NULL,
+        last_attempt_at TEXT, last_ok_at TEXT, last_error_code TEXT, lease_until TEXT,
+        PRIMARY KEY(namespace_id, scope_ref, probe_id))""",
+    """CREATE TABLE IF NOT EXISTS plugin_routing_decisions (
+        namespace_id TEXT, id TEXT PRIMARY KEY, task_id TEXT, run_id TEXT, role TEXT,
+        group_name TEXT, chosen TEXT, primary_alias TEXT, mode TEXT, reason_code TEXT,
+        payload TEXT, evaluated_at TEXT)""",
+    """CREATE INDEX IF NOT EXISTS idx_plugin_routing_decisions_key
+        ON plugin_routing_decisions(namespace_id, group_name, evaluated_at)""",
 )
 SCHEMA = ";\n".join(_SCHEMA) + ";\n"
 TABLE_COLUMNS = {
@@ -56,6 +74,28 @@ TABLE_COLUMNS = {
     "plugin_usage_observations": {"namespace_id", "id", "pool_ref", "meter", "scope", "scope_ref", "window_id", "source_kind", "cursor", "payload"},
     "plugin_session_locks": {"namespace_id", "conversation_id", "principal_id", "lock_sha256", "payload"},
 }
+# 后加的表。旧 schema 6 备份可以没有；出现时必须成对且列完全一致。
+QUOTA_TABLE_COLUMNS = {
+    "plugin_quota_snapshots": {
+        "namespace_id", "id", "scope_ref", "bucket_id", "window_kind", "source_kind",
+        "window_epoch", "observed_at", "payload",
+    },
+    "plugin_quota_probe_state": {
+        "namespace_id", "scope_ref", "probe_id", "last_attempt_at", "last_ok_at",
+        "last_error_code", "lease_until",
+    },
+}
+# 路由决策随 PR6 补上，不升 schema。旧备份可以没有；出现时列必须完全一致。
+ROUTING_TABLE_COLUMNS = {
+    "plugin_routing_decisions": {
+        "namespace_id", "id", "task_id", "run_id", "role", "group_name", "chosen",
+        "primary_alias", "mode", "reason_code", "payload", "evaluated_at",
+    },
+}
+QUOTA_SNAPSHOT_LIMIT = 500
+QUOTA_SNAPSHOT_RETENTION = timedelta(days=30)
+_QUOTA_INDEX = "idx_plugin_quota_snapshots_key"
+_QUOTA_INDEX_COLUMNS = ["namespace_id", "scope_ref", "bucket_id", "window_kind", "observed_at"]
 _STATUSES = {"held", "committed", "released", "uncertain"}
 
 
@@ -91,6 +131,35 @@ def _load(raw):
 
 def _conflict(message="插件执行绑定已关联不同内容"):
     raise AsterunError("BINDING_MISMATCH", message)
+
+
+def _load_quota_snapshots(conn, scope_ref, namespace) -> list[dict]:
+    """只做 SELECT。按 observed_at、rowid 排序，与 PluginStore.quota_snapshots 相同。"""
+    text(namespace, "namespace_id")
+    if scope_ref is None:
+        rows = conn.execute(
+            "SELECT payload,rowid FROM plugin_quota_snapshots WHERE namespace_id=?",
+            (namespace,),
+        ).fetchall()
+    else:
+        text(scope_ref, "scope_ref")
+        rows = conn.execute(
+            "SELECT payload,rowid FROM plugin_quota_snapshots WHERE namespace_id=? AND scope_ref=?",
+            (namespace, scope_ref),
+        ).fetchall()
+    loaded = [(_load(raw), rowid) for raw, rowid in rows]
+    loaded.sort(key=lambda item: (timestamp(item[0]["observed_at"], "observed_at"), item[1]))
+    return [item[0] for item in loaded]
+
+
+def read_quota_snapshots(conn, scope_ref, namespace="ns_local") -> list[dict]:
+    """只读已有额度快照。表不存在时返回空列表，不建表、不开写事务。"""
+    found = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='plugin_quota_snapshots'"
+    ).fetchone()
+    if found is None:
+        return []
+    return _load_quota_snapshots(conn, scope_ref, namespace)
 
 
 def _evidence(values):
@@ -479,6 +548,79 @@ class PluginStore:
         return [_load(row[0]) for row in self._conn.execute(
             "SELECT payload FROM plugin_usage_observations WHERE namespace_id=? AND pool_ref=? ORDER BY rowid", (namespace, pool_ref))]
 
+    def append_quota_snapshot(self, observation, namespace="ns_local"):
+        """规范化后只追加。同一键只留下最近 500 条，并且丢掉 30 天前的观察。"""
+        observation = normalize_observation(observation)
+        text(namespace, "namespace_id")
+        row_id = _id("qsn")
+        with self.transaction():
+            self._conn.execute("INSERT INTO plugin_quota_snapshots VALUES(?,?,?,?,?,?,?,?,?)", (
+                namespace, row_id, observation["scope_ref"], observation["bucket_id"], observation["window_kind"],
+                observation["source_kind"], observation["window_epoch"], observation["observed_at"], _dump(observation)))
+            self._prune_quota_snapshots(namespace, observation["scope_ref"], observation["bucket_id"], observation["window_kind"])
+        return {"id": row_id, "namespace_id": namespace, "observation": observation}
+
+    def quota_snapshots(self, scope_ref=None, namespace="ns_local"):
+        return _load_quota_snapshots(self._conn, scope_ref, namespace)
+
+    def clear_manual(self, scope_ref, namespace="ns_local"):
+        """只删除该 scope 的 manual 行，保留探针、被动采集和闩锁。"""
+        text(scope_ref, "scope_ref")
+        text(namespace, "namespace_id")
+        with self.transaction():
+            cursor = self._conn.execute(
+                "DELETE FROM plugin_quota_snapshots WHERE namespace_id=? AND scope_ref=? AND source_kind='manual'",
+                (namespace, scope_ref))
+            return cursor.rowcount
+
+    def get_probe_state(self, scope_ref, probe_id, namespace="ns_local"):
+        text(namespace, "namespace_id")
+        text(scope_ref, "scope_ref")
+        text(probe_id, "probe_id")
+        row = self._conn.execute(
+            """SELECT scope_ref,probe_id,last_attempt_at,last_ok_at,last_error_code,lease_until
+               FROM plugin_quota_probe_state WHERE namespace_id=? AND scope_ref=? AND probe_id=?""",
+            (namespace, scope_ref, probe_id)).fetchone()
+        if row is None:
+            return None
+        return normalize_probe_state({
+            "scope_ref": row[0], "probe_id": row[1], "last_attempt_at": row[2],
+            "last_ok_at": row[3], "last_error_code": row[4], "lease_until": row[5],
+        })
+
+    def put_probe_state(self, state, namespace="ns_local"):
+        state = normalize_probe_state(state)
+        text(namespace, "namespace_id")
+        with self.transaction():
+            self._conn.execute(
+                """INSERT INTO plugin_quota_probe_state(
+                       namespace_id,scope_ref,probe_id,last_attempt_at,last_ok_at,last_error_code,lease_until)
+                   VALUES(?,?,?,?,?,?,?)
+                   ON CONFLICT(namespace_id,scope_ref,probe_id) DO UPDATE SET
+                       last_attempt_at=excluded.last_attempt_at, last_ok_at=excluded.last_ok_at,
+                       last_error_code=excluded.last_error_code, lease_until=excluded.lease_until""",
+                (namespace, state["scope_ref"], state["probe_id"], state["last_attempt_at"],
+                 state["last_ok_at"], state["last_error_code"], state["lease_until"]))
+        return state
+
+    def _prune_quota_snapshots(self, namespace, scope_ref, bucket_id, window_kind):
+        # 键是索引前缀。两条上限同时生效：超过 500 条或 observed_at 早于 30 天都删。
+        rows = self._conn.execute(
+            """SELECT id,observed_at,rowid FROM plugin_quota_snapshots
+               WHERE namespace_id=? AND scope_ref=? AND bucket_id=? AND window_kind=?""",
+            (namespace, scope_ref, bucket_id, window_kind)).fetchall()
+        cutoff = datetime.now(timezone.utc) - QUOTA_SNAPSHOT_RETENTION
+        ranked = sorted(rows, key=lambda row: (timestamp(row[1], "observed_at"), row[2]), reverse=True)
+        keep = set()
+        for index, row in enumerate(ranked):
+            if index < QUOTA_SNAPSHOT_LIMIT and timestamp(row[1], "observed_at") >= cutoff:
+                keep.add(row[0])
+        drop = [row[0] for row in rows if row[0] not in keep]
+        if drop:
+            self._conn.executemany(
+                "DELETE FROM plugin_quota_snapshots WHERE namespace_id=? AND id=?",
+                [(namespace, item) for item in drop])
+
     @staticmethod
     def validate_snapshot(conn):
         validate_snapshot(conn)
@@ -601,3 +743,50 @@ def validate_snapshot(conn):
         raise AsterunError("INVALID_REQUEST", "备份插件计划、会话锁或共享池账本无效") from exc
     except (ValueError, TypeError, KeyError, AttributeError, sqlite3.Error, OverflowError) as exc:
         raise AsterunError("INVALID_REQUEST", "备份插件持久结构无效") from exc
+    _validate_quota_tables(conn)
+
+
+def _validate_quota_tables(conn):
+    """新表缺失则跳过。两张表必须同时存在，列、索引和载荷都要与模型一致。"""
+    def require(condition):
+        if not condition:
+            raise ValueError("quota")
+
+    try:
+        present = {row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('plugin_quota_snapshots','plugin_quota_probe_state')")}
+        if not present:
+            return
+        require(present == set(QUOTA_TABLE_COLUMNS))
+        for table, columns in QUOTA_TABLE_COLUMNS.items():
+            actual = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+            require(actual == columns)
+        indexed = [row[2] for row in conn.execute(f"PRAGMA index_info({_QUOTA_INDEX})")]
+        require(indexed == _QUOTA_INDEX_COLUMNS)
+        seen = set()
+        query = """SELECT namespace_id,id,scope_ref,bucket_id,window_kind,source_kind,window_epoch,observed_at,payload
+                   FROM plugin_quota_snapshots"""
+        for ns, row_id, scope_ref, bucket_id, window_kind, source_kind, window_epoch, observed_at, raw in conn.execute(query):
+            text(ns, "namespace_id")
+            text(row_id, "id")
+            loaded = _load(raw)
+            normalized = normalize_observation(loaded)
+            require(loaded == normalized and (ns, row_id) not in seen)
+            seen.add((ns, row_id))
+            require((normalized["scope_ref"], normalized["bucket_id"], normalized["window_kind"],
+                     normalized["source_kind"], normalized["window_epoch"], normalized["observed_at"]) == (
+                     scope_ref, bucket_id, window_kind, source_kind, window_epoch, observed_at))
+        probes = set()
+        for ns, scope_ref, probe_id, last_attempt_at, last_ok_at, last_error_code, lease_until in conn.execute(
+                "SELECT namespace_id,scope_ref,probe_id,last_attempt_at,last_ok_at,last_error_code,lease_until FROM plugin_quota_probe_state"):
+            text(ns, "namespace_id")
+            state = {
+                "scope_ref": scope_ref, "probe_id": probe_id, "last_attempt_at": last_attempt_at,
+                "last_ok_at": last_ok_at, "last_error_code": last_error_code, "lease_until": lease_until,
+            }
+            require(normalize_probe_state(state) == state and (ns, scope_ref, probe_id) not in probes)
+            probes.add((ns, scope_ref, probe_id))
+    except AsterunError as exc:
+        raise AsterunError("INVALID_REQUEST", "备份额度快照或探针状态无效") from exc
+    except (ValueError, TypeError, KeyError, AttributeError, sqlite3.Error, OverflowError) as exc:
+        raise AsterunError("INVALID_REQUEST", "备份额度快照或探针状态无效") from exc
