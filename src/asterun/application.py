@@ -189,6 +189,25 @@ def _public_run(run: Run) -> dict[str, Any]:
     return data
 
 
+def _segment_session_native(store, run) -> dict:
+    """续段 resume 时取出源 run 的会话 id。取不到则按新会话，两个字段都是 None。"""
+    blank = {"backend_session_id": None, "turn_id": None}
+    try:
+        native = run.native if isinstance(getattr(run, "native", None), dict) else {}
+        source_id = native.get("segment_source_run_id")
+        if not isinstance(source_id, str) or not source_id.strip():
+            return blank
+        source = store.get_run(RunId(source_id))
+        source_native = source.native if isinstance(getattr(source, "native", None), dict) else {}
+        for key in ("backend_session_id", "session_id"):
+            value = source_native.get(key)
+            if isinstance(value, str) and value.strip():
+                return {"backend_session_id": value, "turn_id": None}
+        return blank
+    except Exception:
+        return blank
+
+
 def ok(data: dict[str, Any], ids: dict[str, str] | None = None) -> Envelope:
     return Envelope(ok=True, data=data, ids=ids or {})
 
@@ -1281,7 +1300,8 @@ class Application:
                 except Exception:
                     pass
         self._drain_queue()
-        run = self.store.get_run(run.id) if run is not None else None
+        task = self.store.get_task(task.id)
+        run = self.store.get_run(task.current_run_id) if task.current_run_id else None
         return ok(
             {
                 "task": task.to_dict(),
@@ -1974,6 +1994,8 @@ class Application:
         if run.native.get("segment_resume") == "new_session":
             native["backend_session_id"] = None
             native["turn_id"] = None
+        elif run.native.get("segment_resume") == "resume":
+            native.update(_segment_session_native(self.store, run))
         if run.native.get("context_transition"):
             transition = run.native["context_transition"]
             native.update(transition["source_native"])

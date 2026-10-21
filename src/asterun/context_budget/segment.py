@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 
 from asterun.backends.grok import DEFAULT_CODE_MAX_TURNS
 from asterun.grok_profile import CODE_PROFILE
-from asterun.capsule.assemble import verify_capsule
+from asterun.capsule.assemble import _events, verify_capsule
 from asterun.capsule.model import render_prompt
 from asterun.capsule.store import _NAMESPACE, _TABLE, latest_with_blob, load_capsule, record_capsule
 from asterun.config_v2 import context_budget_settings
@@ -21,7 +21,7 @@ from asterun.contracts import TERMINAL_RUN_STATUSES, EventType, Operation, Opera
 from asterun.errors import AsterunError
 from asterun.ids import RunId, new_operation_id, new_run_id
 from asterun.quality import bounded_prompt, digest
-from asterun.usage.breakdown import normalize_breakdown
+from asterun.usage.breakdown import grok_residency_curve, normalize_breakdown
 
 SEGMENT_KINDS = frozenset({"grok", "fake"})  # 本 PR 只实现 grok；fake 用于离线测试
 
@@ -239,16 +239,49 @@ def _has_native_session(native: dict) -> bool:
     return False
 
 
+def _curve_event(event) -> dict:
+    """摊成 grok_residency_curve 要的字典。用量在 Event.payload，不在 to_dict 顶层。"""
+    if isinstance(event, dict):
+        payload = event.get("payload")
+        if isinstance(payload, dict) and any(key in payload for key in ("kind", "usage", "message_id")):
+            record = dict(payload)
+            if "type" not in record and event.get("type") is not None:
+                event_type = event["type"]
+                record["type"] = event_type if isinstance(event_type, str) else str(event_type)
+            return record
+        return event
+    payload = getattr(event, "payload", None)
+    if isinstance(payload, dict):
+        record = dict(payload)
+        if "type" not in record:
+            event_type = getattr(event, "type", None)
+            if event_type is not None:
+                record["type"] = event_type if isinstance(event_type, str) else str(event_type)
+        return record
+    to_dict = getattr(event, "to_dict", None)
+    if callable(to_dict):
+        data = to_dict()
+        if isinstance(data, dict):
+            return _curve_event(data)
+    return {}
+
+
 def resume_decision(app, task, run, profile) -> str:
-    """处理量与驻留量都已知且低于阈值、且 run 有原生会话时返回 resume；未知一律新会话。"""
+    """处理量与驻留量都已知且低于阈值、且 run 有原生会话时返回 resume；非 grok 或未知一律新会话。"""
     del task, profile
     try:
+        kind = app.config.get_backend(run.backend.value).kind
+        if kind != "grok":
+            return "new_session"
         segmentation = _segmentation(_settings(app))
         native = run.native if isinstance(run.native, dict) else {}
         processed = normalize_breakdown(native)["processed"]
         if not _below(processed, segmentation.get("min_long_task_processed", 600_000)):
             return "new_session"
-        if not _below(native.get("peak_residency"), segmentation.get("resume_max_residency", 100_000)):
+        curve = grok_residency_curve(_curve_event(event) for event in _events(app.store, run.id))
+        if curve["count"] == 0 or curve["partial"]:
+            return "new_session"
+        if not _below(curve["peak"], segmentation.get("resume_max_residency", 100_000)):
             return "new_session"
         if not _has_native_session(native):
             return "new_session"

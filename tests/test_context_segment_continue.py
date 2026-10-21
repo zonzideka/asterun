@@ -514,5 +514,7 @@ def test_handoff_resume_continues_unjudged_terminal_segment(managed, monkeypatch
     assert task.run_count == 2
     assert len(runs) == 2
     successor = _by_index(runs)[1]
+    assert resumed.ids["run_id"] == successor.id.value
+    assert resumed.data["task"]["current_run_id"] == successor.id.value
     assert successor.native["segment"]["index"] == 1
     assert source.native["segment_end"]["continued_by"] == successor.id.value

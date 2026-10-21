@@ -3,9 +3,11 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from asterun.application import _segment_session_native
 from asterun.backends.grok import DEFAULT_CODE_MAX_TURNS, _segment_turns
 from asterun.context_budget import segment as segment_mod
-from asterun.context_budget.segment import plan
+from asterun.context_budget.segment import plan, resume_decision
+from asterun.contracts import Event, EventType
 from asterun.grok_profile import CODE_PROFILE, PROFILE
 
 
@@ -216,3 +218,89 @@ def test_plan_operation_lookup_error_returns_none(monkeypatch):
 
     monkeypatch.setattr(app.store, "find_operation_for_run", find)
     assert plan(app, _task(), _run()) is None
+
+
+def _grok_usage_native(*, session_id="sess-1"):
+    return {
+        "session_id": session_id,
+        "usage_source": "native_headless_report",
+        "usage": {
+            "input_tokens": 10,
+            "cache_read_input_tokens": 20,
+            "cache_creation_input_tokens": 0,
+            "output_tokens": 5,
+        },
+    }
+
+
+def _stored_usage(input_tokens, cache_read, cache_write, *, message_id="m1"):
+    usage = {}
+    if input_tokens is not None:
+        usage["input_tokens"] = input_tokens
+    if cache_read is not None:
+        usage["cache_read_input_tokens"] = cache_read
+    if cache_write is not None:
+        usage["cache_creation_input_tokens"] = cache_write
+    return Event(
+        seq=1,
+        type=EventType.MESSAGE,
+        source="backend.grok",
+        timestamp="2026-01-01T00:00:00Z",
+        schema_version=1,
+        payload={"kind": "usage", "usage": usage, "message_id": message_id},
+    )
+
+
+def test_resume_decision_known_low_peak_resumes(monkeypatch):
+    _bind(monkeypatch, _settings())
+    monkeypatch.setattr(segment_mod, "_events", lambda store, run_id: [_stored_usage(100, 200, 300)])
+    decision = resume_decision(
+        _app(kind="grok"), _task(), _run(backend="grok", native=_grok_usage_native()), {},
+    )
+    assert decision == "resume"
+
+
+def test_resume_decision_high_or_partial_peak_is_new_session(monkeypatch):
+    _bind(monkeypatch, _settings())
+    app = _app(kind="grok")
+    run = _run(backend="grok", native=_grok_usage_native())
+    monkeypatch.setattr(segment_mod, "_events", lambda store, run_id: [_stored_usage(90_000, 20_000, 0)])
+    assert resume_decision(app, _task(), run, {}) == "new_session"
+    monkeypatch.setattr(segment_mod, "_events", lambda store, run_id: [_stored_usage(100, 200, None)])
+    assert resume_decision(app, _task(), run, {}) == "new_session"
+
+
+def test_resume_decision_without_events_is_new_session(monkeypatch):
+    _bind(monkeypatch, _settings())
+    monkeypatch.setattr(segment_mod, "_events", lambda store, run_id: [])
+    decision = resume_decision(
+        _app(kind="grok"), _task(), _run(backend="grok", native=_grok_usage_native()), {},
+    )
+    assert decision == "new_session"
+
+
+def test_resume_decision_non_grok_is_new_session(monkeypatch):
+    _bind(monkeypatch, _settings())
+
+    def boom(store, run_id):
+        raise AssertionError("non-grok resume_decision read events")
+
+    monkeypatch.setattr(segment_mod, "_events", boom)
+    decision = resume_decision(_app(kind="fake"), _task(), _run(native=_grok_usage_native()), {})
+    assert decision == "new_session"
+
+
+def test_segment_session_native_copies_source_session_id():
+    def decide(source_native):
+        source = SimpleNamespace(native=source_native)
+        run = SimpleNamespace(native={"segment_resume": "resume", "segment_source_run_id": "run_source"})
+        return _segment_session_native(SimpleNamespace(get_run=lambda run_id: source), run)
+
+    assert decide({"session_id": "sess-grok"}) == {"backend_session_id": "sess-grok", "turn_id": None}
+    assert decide({"backend_session_id": "backend-sess", "session_id": "sess-grok"}) == {
+        "backend_session_id": "backend-sess",
+        "turn_id": None,
+    }
+    assert decide({"backend_session_id": "  ", "session_id": "sess-grok"})["backend_session_id"] == "sess-grok"
+    assert decide({}) == {"backend_session_id": None, "turn_id": None}
+    assert decide({"session_id": ""}) == {"backend_session_id": None, "turn_id": None}
