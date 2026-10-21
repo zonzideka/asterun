@@ -10,12 +10,23 @@ import pytest
 from asterun.application import Application
 from asterun.backup import DB_NAME, _validate_snapshot, backup_state, restore_state
 from asterun.capsule.assemble import verify_capsule
-from asterun.capsule.model import CapsuleTooLarge
+from asterun.capsule.model import CapsuleTooLarge, canonical
 from asterun.capsule.store import list_capsules, load_capsule, record_capsule
 from asterun.config_migration import migrate_v1_to_v2
 from asterun.config_v2 import default_context_budget
 from asterun.context_budget.observe import list_observations
-from asterun.contracts import AcceptanceStatus, BackendId, DeliveryStatus, Run, RunId, RunStatus, Task, TaskId
+from asterun.contracts import (
+    AcceptanceStatus,
+    BackendId,
+    DeliveryStatus,
+    Event,
+    EventType,
+    Run,
+    RunId,
+    RunStatus,
+    Task,
+    TaskId,
+)
 from asterun.errors import AsterunError
 from asterun.plugin_store import CAPSULE_TABLE_COLUMNS
 from asterun.sqlite_store import SCHEMA_VERSION, SqliteStore
@@ -315,6 +326,71 @@ def test_capsule_backup_rejects_column_mismatch(tmp_path):
     assert "表结构" in caught.value.message
     with pytest.raises(AsterunError, match="表结构"):
         backup_state(root, tmp_path / "invalid.tar.gz")
+
+
+def _message(app, run_id, payload):
+    app.store.append_event(
+        run_id,
+        Event(
+            seq=0,
+            type=EventType.MESSAGE,
+            source="test",
+            timestamp="2026-01-01T00:00:00Z",
+            schema_version=1,
+            payload=payload,
+        ),
+    )
+
+
+def test_stored_capsule_and_inspect_omit_secret_command_and_note_text(managed):
+    _enable(managed, markers=True)
+    task = _task()
+    run = _run()
+    managed.store.save_task(task)
+    commands = (
+        "Authorization: Bearer example-secret-12345",
+        "cat <<EOF\ndef secret():\n    return 1\nEOF",
+        "export API_KEY=abcd",
+    )
+    for index, command in enumerate(commands):
+        _message(managed, run.id, {
+            "kind": "tool_call",
+            "toolName": "bash",
+            "toolCallId": f"call-{index}",
+            "status": "completed",
+            "input": {"command": command},
+        })
+    _message(managed, run.id, {
+        "kind": "text",
+        "text": "ASTERUN-NOTE: password=example-secret-12345\nASTERUN-NOTE: 正常保留这一步",
+    })
+    managed.store.save_run(run)
+
+    rows = list_capsules(managed.store._conn, task_id="task-cap")
+    assert len(rows) == 1
+    blob = managed.store.get_checkpoint_blob(rows[0]["blob_sha256"])
+    loaded = load_capsule(managed, rows[0]["blob_sha256"])
+    assert blob == canonical(loaded)
+    rendered = managed.handle("capsule.inspect", {"task_id": "task-cap", "render": True})
+    assert rendered.ok, rendered.error
+    prompt = rendered.data["rendered_prompt"]
+    stored = managed.store._conn.execute(
+        "SELECT content FROM control_blobs WHERE namespace_id=?",
+        ("asterun_checkpoint_v1",),
+    ).fetchall()
+    assert stored
+    surfaces = [blob, canonical(loaded)]
+    surfaces.extend(bytes(row["content"]) for row in stored)
+    for secret in ("example-secret-12345", "abcd", "def secret"):
+        encoded = secret.encode("utf-8")
+        for surface in surfaces:
+            assert encoded not in surface
+        assert secret not in prompt
+    assert loaded["notes"]["dropped_lines"] == 1
+    assert loaded["notes"]["text"] == "正常保留这一步"
+    assert "正常保留这一步" in prompt
+    assert [item["program"] for item in loaded["progress"]["commands"]] == [None, "cat", "export"]
+    assert rendered.data["verify_issues"] == []
 
 
 def test_cli_and_mcp_whitelist_capsule_inspect():

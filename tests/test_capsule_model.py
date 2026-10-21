@@ -312,6 +312,7 @@ def test_notes_none_empty_and_utf8_boundary():
         "text": "",
         "sha256": sha(""),
         "truncated": False,
+        "dropped_lines": 0,
     }
 
     empty = build_capsule(**_kwargs(notes_text=""))

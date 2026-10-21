@@ -11,7 +11,7 @@ from asterun.capsule.assemble import (
     verify_capsule,
     workspace_for,
 )
-from asterun.capsule.model import canonical, sha
+from asterun.capsule.model import canonical, render_prompt, sha
 from asterun.context_transition import contract
 from asterun.contracts import ApprovalRequest, ApprovalState, Event, EventType, Run, RunStatus
 from asterun.ids import ApprovalId, RunId, TaskId
@@ -227,6 +227,7 @@ def test_notes_collect_asterun_note_lines(isolated_env, workspace_root):
         capsule = assemble_capsule(app, task, run, trigger="manual")
         assert capsule["notes"]["source"] == "progress_markers"
         assert capsule["notes"]["text"] == "记下这一步\n第二行"
+        assert capsule["notes"]["dropped_lines"] == 0
         assert verify_capsule(app, task, capsule) == []
     finally:
         app.close()
@@ -250,7 +251,7 @@ def test_progress_redacts_commands_and_flags_unconfirmed_tools(isolated_env, wor
         )
         app.store.save_run(older)
         secret = "sk-" + ("a" * 24)
-        command = secret + " && echo hello " + ("x" * 240)
+        command = "echo " + secret + " hello " + ("x" * 240)
         tool_input = {"command": command, "path": "src/app.py"}
         _message(app, run.id, {
             "kind": "tool_call",
@@ -320,10 +321,12 @@ def test_progress_redacts_commands_and_flags_unconfirmed_tools(isolated_env, wor
         assert progress["checks"] == []
         assert len(progress["commands"]) == 1
         recorded = progress["commands"][0]
-        assert recorded["sha256"] == hashlib.sha256(command.encode("utf-8")).hexdigest()
-        assert len(recorded["summary"]) <= 200
-        assert secret not in recorded["summary"]
-        assert "[redacted]" in recorded["summary"]
+        assert recorded == {
+            "program": "echo",
+            "sha256": hashlib.sha256(command.encode("utf-8")).hexdigest(),
+            "length": len(command),
+        }
+        assert secret not in canonical(recorded).decode("utf-8")
         assert open_items["unconfirmed_actions"] == [{
             "tool": "bash",
             "input_digest": sha(tool_input),
@@ -338,6 +341,56 @@ def test_progress_redacts_commands_and_flags_unconfirmed_tools(isolated_env, wor
         assert texts == []
         capsule = assemble_capsule(app, task, run, trigger="observe_only")
         assert capsule["segment_index"] == 1
+        assert verify_capsule(app, task, capsule) == []
+    finally:
+        app.close()
+
+
+def test_commands_and_notes_do_not_keep_secret_text(isolated_env, workspace_root):
+    app, bundle, _directory = setup(isolated_env, workspace_root)
+    try:
+        task = app.store.get_task(TaskId(bundle["task_id"]))
+        run = app.store.get_run(RunId(bundle["expected_run_id"]))
+        commands = (
+            "Authorization: Bearer example-secret-12345",
+            "cat <<EOF\ndef secret():\n    return 1\nEOF",
+            "export API_KEY=abcd",
+        )
+        for index, command in enumerate(commands):
+            _message(app, run.id, {
+                "kind": "tool_call",
+                "toolName": "bash",
+                "toolCallId": f"call-{index}",
+                "status": "completed",
+                "input": {"command": command},
+            })
+        token = "sk-" + ("b" * 40)
+        _message(app, run.id, {
+            "kind": "text",
+            "text": (
+                "ASTERUN-NOTE: password=example-secret-12345\n"
+                f"ASTERUN-NOTE: 进度 {token}\n"
+                "ASTERUN-NOTE: 正常保留这一步"
+            ),
+        })
+
+        capsule = assemble_capsule(app, task, run, trigger="manual")
+        rendered = render_prompt(capsule, backend_kind="fake")
+        body = canonical(capsule)
+        for secret in ("example-secret-12345", "abcd", "def secret", token):
+            assert secret.encode("utf-8") not in body
+            assert secret not in rendered
+        assert [item["program"] for item in capsule["progress"]["commands"]] == [None, "cat", "export"]
+        for command, item in zip(commands, capsule["progress"]["commands"]):
+            assert set(item) == {"program", "sha256", "length"}
+            assert item["sha256"] == hashlib.sha256(command.encode("utf-8")).hexdigest()
+            assert item["length"] == len(command)
+            assert item["sha256"] not in rendered
+            assert item["sha256"][:12] in rendered
+        assert capsule["notes"]["dropped_lines"] == 1
+        assert capsule["notes"]["text"] == "进度 [redacted]\n正常保留这一步"
+        assert "正常保留这一步" in rendered
+        assert "password" not in capsule["notes"]["text"]
         assert verify_capsule(app, task, capsule) == []
     finally:
         app.close()

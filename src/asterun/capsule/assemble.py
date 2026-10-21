@@ -25,11 +25,19 @@ from asterun.redact import redact_text
 
 _PAGE_SIZE = 100
 _MAX_DIRTY = 500
-_COMMAND_SUMMARY_CHARS = 200
 _GIT_TIMEOUT_SECONDS = 10
 _TERMINAL_TOOL_STATUSES = frozenset({"completed", "failed"})
 _FILE_INPUT_KEYS = ("path", "file_path", "target_file")
 _RESULT_KINDS = frozenset({"tool_call_update", "tool_result"})
+_PROGRAM_RE = re.compile(r"^[A-Za-z0-9._+-]{1,64}$")
+_NOTE_DROP_RES = (
+    re.compile(
+        r"(?i)(password|passwd|secret|token|api[_-]?key|authorization|bearer|cookie|private[_-]?key)\s*[:=]"
+    ),
+    re.compile(r"(?i)bearer\s+\S+"),
+    re.compile(r"[A-Za-z0-9_\-]{32,}"),
+    re.compile(r"-----BEGIN"),
+)
 _EMPTY_WORKSPACE = {
     "head": None,
     "branch": None,
@@ -186,6 +194,7 @@ def assemble_capsule(app, task, run, *, trigger, segment_index=None) -> dict:
     if segment_index is None:
         segment_index = len(app.store.list_runs(task.id)) - 1
     progress, open_items, texts = progress_for(app, task, run)
+    notes_text, dropped_lines = _redacted_notes(texts)
     authority = {
         "contract_sha256": contract(task),
         **state(app.store, task, run),
@@ -204,7 +213,8 @@ def assemble_capsule(app, task, run, *, trigger, segment_index=None) -> dict:
         workspace=workspace_for(app.config.get_workspace(task.workspace).root),
         progress=progress,
         open_items=open_items,
-        notes_text=extract_notes(texts),
+        notes_text=notes_text,
+        dropped_lines=dropped_lines,
         budget_ref={"budget_id": None, "ledger_revision": 0},
     )
 
@@ -266,12 +276,43 @@ def _events(store, run_id):
         cursor = last
 
 
+def _command_program(command: str) -> str | None:
+    """第一个 token 的 basename。不像程序名时不保留 token 本身。"""
+    pieces = command.split(maxsplit=1)
+    if not pieces:
+        return None
+    base = pieces[0].rsplit("/", 1)[-1]
+    if _PROGRAM_RE.fullmatch(base):
+        return base
+    return None
+
+
 def _command_record(command: str) -> dict:
-    redacted = redact_text(command)
     return {
-        "summary": redacted[:_COMMAND_SUMMARY_CHARS],
+        "program": _command_program(command),
         "sha256": hashlib.sha256(command.encode("utf-8")).hexdigest(),
+        "length": len(command),
     }
+
+
+def _note_dropped(line: str) -> bool:
+    return any(pattern.search(line) for pattern in _NOTE_DROP_RES)
+
+
+def _redacted_notes(texts: list[str]) -> tuple[str | None, int]:
+    """先逐行脱敏，再丢掉仍像密文的行。丢弃的行只计数。"""
+    extracted = extract_notes(texts)
+    if extracted is None:
+        return None, 0
+    kept: list[str] = []
+    dropped = 0
+    for line in extracted.splitlines():
+        redacted = redact_text(line)
+        if _note_dropped(redacted):
+            dropped += 1
+            continue
+        kept.append(redacted)
+    return "\n".join(kept), dropped
 
 
 def _git_env() -> dict[str, str]:

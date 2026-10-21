@@ -86,6 +86,7 @@ def build_capsule(
     notes_text: str | None,
     budget_ref: dict,
     limits: dict | None = None,
+    dropped_lines: int = 0,
 ) -> dict:
     """Build a capsule dict. Mandatory content is deep-copied and never trimmed.
 
@@ -107,6 +108,8 @@ def build_capsule(
         raise ValueError("limits must be a dict or None")
     if notes_text is not None and not isinstance(notes_text, str):
         raise ValueError("notes_text must be str or None")
+    if type(dropped_lines) is not int or dropped_lines < 0:
+        raise ValueError("dropped_lines must be a non-negative int")
 
     mandatory = copy.deepcopy(mandatory)
     authority = copy.deepcopy(authority)
@@ -117,7 +120,7 @@ def build_capsule(
     limits = copy.deepcopy(limits)
 
     truncation: list[dict] = []
-    notes = _build_notes(notes_text, truncation)
+    notes = _build_notes(notes_text, truncation, dropped_lines)
     fold_step = _fold_segments(progress)
     if fold_step is not None:
         truncation.append(fold_step)
@@ -314,7 +317,7 @@ def render_prompt(capsule, *, backend_kind) -> str:
         "files_touched:",
         _render_items(progress.get("files_touched")),
         "commands:",
-        _render_items(progress.get("commands")),
+        _render_commands(progress.get("commands")),
         "checks:",
         _render_checks(progress.get("checks")),
         "",
@@ -404,7 +407,7 @@ def _truncate_utf8(text: str, max_bytes: int) -> tuple[str, bool]:
     return trimmed, True
 
 
-def _build_notes(notes_text: str | None, truncation: list[dict]) -> dict:
+def _build_notes(notes_text: str | None, truncation: list[dict], dropped_lines: int) -> dict:
     if notes_text is None:
         return {
             "trust": "low",
@@ -412,6 +415,7 @@ def _build_notes(notes_text: str | None, truncation: list[dict]) -> dict:
             "text": "",
             "sha256": sha(""),
             "truncated": False,
+            "dropped_lines": dropped_lines,
         }
     text, truncated = _truncate_utf8(notes_text, NOTES_MAX)
     if truncated:
@@ -427,6 +431,7 @@ def _build_notes(notes_text: str | None, truncation: list[dict]) -> dict:
         "text": text,
         "sha256": sha(text),
         "truncated": truncated,
+        "dropped_lines": dropped_lines,
     }
 
 
@@ -647,6 +652,28 @@ def _render_mapping(value) -> str:
             lines.append(f"{key}: {inner}")
         else:
             lines.append(f"{key}: {_json_text(inner)}")
+    return "\n".join(lines)
+
+
+def _render_commands(value) -> str:
+    """命令只展示程序名和 sha256 前 12 位，不展示参数、长度或正文。"""
+    if not isinstance(value, list):
+        return _render_items(value)
+    if not value:
+        return "（无）"
+    lines = []
+    for item in value:
+        if isinstance(item, dict) and ({"program", "sha256", "length", "summary"} & set(item)):
+            program = item.get("program")
+            shown = program if isinstance(program, str) else "null"
+            digest = item.get("sha256")
+            prefix = digest[:12] if isinstance(digest, str) else ""
+            lines.append(f"- {shown} {prefix}".rstrip())
+            continue
+        if isinstance(item, str):
+            lines.append(f"- {item}")
+            continue
+        lines.append("- " + _json_text(item))
     return "\n".join(lines)
 
 
