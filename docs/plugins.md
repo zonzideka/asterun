@@ -6,7 +6,7 @@
 
 ## 配置与迁移
 
-v2 中，`plugins` 保存安装注册，`provider_accounts` 保存供应商身份引用，`connections` 固定认证、环境和模型，`billing_pools` 描述共享资源池，`backends` 别名指向连接。可选 `quota` 段配置 Codex 额度探针、被动采集，以及默认关闭的 Grok 额度探针，字段和默认值见下文。可选 `context_budget` 段配置上下文胶囊与分段预算。`enforce`：Token 预算准入（详见下一 PR 的账本说明）。grok 分段见下文「grok 分段」。未写该键时配置摘要不变，字段见下文。可先运行[离线 fake 示例](../examples/plugins/fake-v2.json)。
+v2 中，`plugins` 保存安装注册，`provider_accounts` 保存供应商身份引用，`connections` 固定认证、环境和模型，`billing_pools` 描述共享资源池，`backends` 别名指向连接。可选 `quota` 段配置 Codex 额度探针、被动采集，以及默认关闭的 Grok 额度探针，字段和默认值见下文。可选 `context_budget` 段配置上下文胶囊与分段预算。`enforce`：Token 预算准入（详见下一 PR 的账本说明）。grok / codex / agy 分段见下文「grok 分段」与「codex / agy 分段（标记触发）」。未写该键时配置摘要不变，字段见下文。可先运行[离线 fake 示例](../examples/plugins/fake-v2.json)。
 
 查看 v1 迁移候选：
 
@@ -62,7 +62,7 @@ Grok 额度读取走未公开 ACP 扩展 `_x.ai/billing`，默认关闭。需要
 
 v2 可以写可选命名空间 `context_budget`，用来声明上下文胶囊和分段预算。它与付费、`routing`、`quota` 没有字段关联，也不改变这三处的校验。未写此键时，回读不注入默认值，`to_dict` 和配置摘要与未写时逐字节相同。只有写了此键，序列化里才出现 `context_budget`；写出的胶囊、分段和分配字段会补上默认值。`profiles` 里省掉的阈值不补，表示没有该阈值。v1 没有这一段，读取结果是 `mode=off` 的默认值。
 
-`mode` 接受 `off`（默认）、`observe` 和 `enforce`。`enforce`：Token 预算准入（admission_only，见下文"Token 预算账本"），以及白名单内的 grok 分段（见下文"grok 分段"）。`mode=enforce` 时至少一个 profile 须含 `task_hard`，否则拒绝。其它取值拒绝。`token_basis` 只接受 `processed`（默认）。
+`mode` 接受 `off`（默认）、`observe` 和 `enforce`。`enforce`：Token 预算准入（admission_only，见下文"Token 预算账本"），以及白名单内的 grok / codex / agy 分段（见下文"grok 分段"与"codex / agy 分段（标记触发）"）。`mode=enforce` 时至少一个 profile 须含 `task_hard`，否则拒绝。其它取值拒绝。`token_basis` 只接受 `processed`（默认）。
 
 `capsule.nonmandatory_soft_bytes` 为 1024–65536，默认 16384。`capsule.nonmandatory_hard_bytes` 为 1024–131072，默认 24576，且必须大于等于 soft。`capsule.notes_max_bytes` 为 0–16384，默认 4096。`capsule.progress_markers` 为布尔值，默认 true。
 
@@ -87,6 +87,14 @@ observe 不改变派发、返回或计数；enforce 同样记录观测，另外�
 段以原生回合上限结束（源 run 仍记 failed/`GROK_RUN_INCOMPLETE`）时：未达 `max_segments`、未达 `scheduler.max_runs_per_task`、预算有余、胶囊 ready 才提交后继段（幂等键 `seg:{task}:{source_run}:{index}`）。后继用胶囊加续段说明，默认新会话（只有处理量与驻留量都已知且低于阈值时才 resume）。`run_count` 递增，`repair_count` 不变。续段计入 `max_runs_per_task`。源 run 记 `native.segment_end`。
 
 停下的原因记在 `segment_end.reason`（`max_segments` / `max_runs` / `budget` / `capsule_not_ready` / `capsule_too_large` / `segmentation_disabled` / `control_owned` / `queue_full`）。`max_segments` 与 `budget` 另生成 `budget_soft` 胶囊。续段派发前再核对：分段仍启用、源 run 已终止且指向本段、任务当前 run、胶囊 id 与 mandatory 未变，且 `run_count` 不超过 `max_runs_per_task`。分段已停用，或任务由 runner-control 持有，则不派发，错误码 `CAPABILITY_UNSUPPORTED`；源 run、当前 run、胶囊 id 或 mandatory 已变化则不派发，错误码 `REVISION_CONFLICT`；续段超过每任务运行上限则不派发，错误码 `BUDGET_EXHAUSTED`。进程重启时，会对已终态但尚未写入 `segment_end` 的段重新做幂等续段判定；已经判定过的段不会再次创建后继。人工交接 resume 时也会对未判定的终态段重新做幂等续段判定。
+
+### codex / agy 分段（标记触发）
+
+codex 只对 implementation 角色自动续段：新线程加上胶囊，即 handoff_fresh 语义。`native_compact` 不进入自动流程。审查角色永不分段。antigravity 默认不分段，只有匹配 profile 写 `segment: true` 才启用。外部强制审查的任务不分段。需要 profile 的正整数 `segment_soft`；标记计划不看 `segment_turns`。
+
+段末条件：run 成功、摘要最后一个非空行恰为 `ASTERUN-SEGMENT: CONTINUE`、没有子代理、本段 processed 大于等于 `segment_soft`。派发文本追加分段约定（任务尚未完成且上下文已经很长时，在回复最后单独一行输出该标记；任务完成时不要输出；agy 不得使用子代理）。停下的原因与续段派发前的核对同上一节 grok 分段。
+
+resume：grok 仅当处理量已知且低于 `min_long_task_processed`，源 run usage 事件得到的驻留峰值已知（有 usage 事件且曲线非 partial）且低于 `resume_max_residency`，并且该 run 有原生会话时，沿用源会话；否则新会话。codex 与 agy 一律新会话。
 
 ## 上下文胶囊（v1，observe 仅生成不派发）
 
