@@ -92,7 +92,7 @@
     },
     {
       "path": "src/asterun/application.py",
-      "sha256": "74f7c421646ddc9b04bf099e28d73a7fbd60ec8354750af3ac9a6bea16325832"
+      "sha256": "d26c4d0aec0c57c63b623e1f4a5a9d70c7a28581f8ddd7781bed9336cacae4b6"
     },
     {
       "path": "src/asterun/approval_digest.py",
@@ -160,7 +160,7 @@
     },
     {
       "path": "src/asterun/backup.py",
-      "sha256": "aab8df6bd7349419a09e642589ad492cb11d4b60c051387300acb0e17b389d1a"
+      "sha256": "f2120979b3c2b5c745ee3ab5a63cbf83f3a87a5ebfb4e534c5892c96ee475f36"
     },
     {
       "path": "src/asterun/binding.py",
