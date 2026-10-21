@@ -10,6 +10,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 
 from asterun.backends.grok import DEFAULT_CODE_MAX_TURNS
+from asterun.grok_profile import CODE_PROFILE
 from asterun.capsule.assemble import verify_capsule
 from asterun.capsule.model import render_prompt
 from asterun.capsule.store import _NAMESPACE, _TABLE, latest_with_blob, load_capsule, record_capsule
@@ -63,12 +64,27 @@ def _control_owned(app, task, run) -> bool:
         return True
 
 
+def _grok_execution_profile(app, run, configured):
+    """运行中的后端实例优先。app.backends 不可用时读配置对象上的 execution_profile。"""
+    backends = getattr(app, "backends", None)
+    if backends is not None:
+        key = getattr(getattr(run, "backend", None), "value", None)
+        try:
+            live = backends[key]
+        except Exception:
+            live = None
+        else:
+            return getattr(live, "execution_profile", None)
+    return getattr(configured, "execution_profile", None)
+
+
 def plan(app, task, run) -> dict | None:
     """enforce 且后端在 segmentation.backends 白名单、角色在 segmentation.roles、kind 属于 SEGMENT_KINDS、
-    匹配 profile 有 segment_turns 且 profile.get("segment") 不是 False、且任务不由 runner-control 持有时，返回段计划。
+    grok 的 execution_profile 为 workspace-code-v1、匹配 profile 有 segment_turns 且 profile.get("segment") 不是 False、
+    且任务不由 runner-control 持有时，返回段计划。
     mode 不是 enforce 或白名单为空时直接返回 None，不访问数据库。
     质量流程、修复目标绑定、read_scope、capability、dependencies、runner-control 持有的任务不分段。
-    无法确认控制层归属时也不分段。"""
+    text-only 的 grok 不分段。无法确认控制层归属时也不分段。"""
     if _segmentation_blocked(task, run):
         return None
     settings = context_budget_settings(getattr(app, "config", None))
@@ -91,6 +107,8 @@ def plan(app, task, run) -> dict | None:
     backend = app.config.get_backend(backend_name)
     kind = backend.kind
     if kind not in SEGMENT_KINDS:
+        return None
+    if kind == "grok" and _grok_execution_profile(app, run, backend) != CODE_PROFILE:
         return None
     profiles = settings.get("profiles") if isinstance(settings.get("profiles"), dict) else {}
     profile_key, _role = _matched_profile(app, backend_name, role, profiles)
@@ -335,11 +353,11 @@ def _continue_segment(app, task, run) -> dict | None:
         return None
     if task.paused or task.orchestration_owner == "human" or task.current_run_id != run.id:
         return None
-    if plan(app, task, run) is None:
-        return {"stopped": "segmentation_disabled"}
     if _control_owned(app, task, run):
         _stop(app, task, run, "control_owned")
         return {"stopped": "control_owned"}
+    if plan(app, task, run) is None:
+        return {"stopped": "segmentation_disabled"}
     seg = run.native["segment"]
     next_index = seg["index"] + 1
     max_segments = seg.get("max_segments")
@@ -402,6 +420,9 @@ def _continue_segment(app, task, run) -> dict | None:
     if app.store.find_idempotent_operation(operation) is not None:
         _backfill_continued_by(app, task, run)
         return {"reused": True}
+    if not app.scheduler.can_enqueue():
+        _stop(app, task, run, "queue_full")
+        return {"stopped": "queue_full"}
     new_run = Run(
         id=new_run_id(),
         task_id=task.id,

@@ -1,10 +1,12 @@
 """分段续段集成：回合上限后续段、段数上限、幂等与不续段条件。"""
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 
 import pytest
 
+from asterun.application import Application
 from asterun.backends.fake import FakeBackend
 from asterun.context_budget.segment import continue_segment, guard_continuation, plan
 from asterun.contracts import RunId, RunStatus, TaskId
@@ -130,6 +132,91 @@ def test_continue_segment_is_idempotent(managed, monkeypatch):
     assert again is None or (isinstance(again, dict) and again.get("reused") is True)
     assert reloaded.run_count == task.run_count
     assert len(list(managed.store.list_runs(task.id))) == 2
+
+
+def test_queue_full_does_not_continue(managed, monkeypatch):
+    _enforce(managed)
+    _patch_dispatch(monkeypatch, k=1)
+    monkeypatch.setattr(managed.scheduler, "can_enqueue", lambda: False)
+    task, source, runs = _start(managed)
+    assert task.run_count == 1
+    assert len(runs) == 1
+    assert source.native["segment_end"]["reason"] == "queue_full"
+    assert source.native["segment_end"].get("continued_by") is None
+
+
+def test_control_owned_source_segment_records_reason(managed, monkeypatch):
+    _enforce(managed)
+    _patch_dispatch(monkeypatch, k=1)
+    monkeypatch.setattr("asterun.context_budget.segment.continue_segment", lambda *args, **kwargs: None)
+    task, source, runs = _start(managed)
+    assert len(runs) == 1
+    assert source.native.get("segment")
+    assert "segment_end" not in source.native
+    managed.store._conn.execute(
+        "UPDATE operations SET idempotency_key=? WHERE run_id=?",
+        ("rcp_segment_source", source.id.value),
+    )
+    result = continue_segment(
+        managed,
+        managed.store.get_task(task.id),
+        managed.store.get_run(source.id),
+    )
+    assert result == {"stopped": "control_owned"}
+    source = managed.store.get_run(source.id)
+    assert source.native["segment_end"]["reason"] == "control_owned"
+    assert source.native["segment_end"].get("continued_by") is None
+    assert managed.store.get_task(task.id).run_count == 1
+    assert len(list(managed.store.list_runs(task.id))) == 1
+
+
+def test_restart_replays_unjudged_terminal_segment_once(managed, monkeypatch):
+    _enforce(managed)
+    source_path = managed.config.source_path
+    raw = json.loads(source_path.read_text(encoding="utf-8"))
+    raw["context_budget"] = managed.config.context_budget
+    source_path.write_text(json.dumps(raw), encoding="utf-8")
+    state = managed.state_dir
+    calls = {"n": 0}
+    real = continue_segment
+
+    def skip_first(app, task, run):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return None
+        return real(app, task, run)
+
+    monkeypatch.setattr("asterun.context_budget.segment.continue_segment", skip_first)
+    _patch_dispatch(monkeypatch, k=1)
+    task, source, runs = _start(managed)
+    assert calls["n"] == 1
+    assert task.run_count == 1
+    assert len(runs) == 1
+    assert source.native.get("segment")
+    assert source.native["segment"]["index"] == 0
+    assert "segment_end" not in source.native
+    task_id = task.id
+    managed.close()
+    reopened = Application.from_paths(source_path, state)
+    try:
+        task = reopened.store.get_task(task_id)
+        current = reopened.store.get_run(task.current_run_id)
+        runs = list(reopened.store.list_runs(task.id))
+        assert task.run_count == 2
+        assert len(runs) == 2
+        assert current.native["segment"]["index"] == 1
+        assert task.current_run_id == current.id
+        successor_id = current.id
+        reopened.close()
+        reopened = Application.from_paths(source_path, state)
+        task = reopened.store.get_task(task_id)
+        runs = list(reopened.store.list_runs(task.id))
+        assert task.run_count == 2
+        assert len(runs) == 2
+        assert task.current_run_id == successor_id
+        assert {run.native["segment"]["index"] for run in runs} == {0, 1}
+    finally:
+        reopened.close()
 
 
 def test_quota_exhausted_does_not_continue(managed, monkeypatch):

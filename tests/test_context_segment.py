@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from asterun.backends.grok import DEFAULT_CODE_MAX_TURNS, _segment_turns
 from asterun.context_budget import segment as segment_mod
 from asterun.context_budget.segment import plan
+from asterun.grok_profile import CODE_PROFILE, PROFILE
 
 
 def _settings(*, mode="enforce", backends=None, roles=None, profiles=None, segment_turns=5, segment=None, max_segments=4):
@@ -36,9 +37,12 @@ def _bind(monkeypatch, settings, matched=None):
     monkeypatch.setattr(segment_mod, "_matched_profile", match)
 
 
-def _app(kind="fake", max_turns=None):
+def _app(kind="fake", max_turns=None, execution_profile=None):
+    if execution_profile is None and kind == "grok":
+        execution_profile = CODE_PROFILE
+    backend = SimpleNamespace(kind=kind, max_turns=max_turns, execution_profile=execution_profile)
     return SimpleNamespace(
-        config=SimpleNamespace(get_backend=lambda name: SimpleNamespace(kind=kind, max_turns=max_turns)),
+        config=SimpleNamespace(get_backend=lambda name: backend),
         store=SimpleNamespace(
             list_runs=lambda task_id: [],
             find_operation_for_run=lambda run_id: None,
@@ -109,6 +113,21 @@ def test_plan_fake_ignores_backend_max_turns(monkeypatch):
     _bind(monkeypatch, _settings(segment_turns=5))
     result = plan(_app(kind="fake", max_turns=2), _task(), _run())
     assert result["max_turns"] == 5
+
+
+def test_plan_text_only_grok_returns_none(monkeypatch):
+    settings = _settings(
+        backends=["grok"],
+        profiles={"grok/implementation": {"segment_turns": 5, "max_segments": 2}},
+    )
+    _bind(monkeypatch, settings)
+    run = _run(backend="grok")
+    assert plan(_app(kind="grok", execution_profile=PROFILE), _task(), run) is None
+    configured = _app(kind="grok", execution_profile=CODE_PROFILE)
+    configured.backends = {"grok": SimpleNamespace(execution_profile=PROFILE)}
+    assert plan(configured, _task(), run) is None
+    configured.backends = {"grok": SimpleNamespace(execution_profile=CODE_PROFILE)}
+    assert plan(configured, _task(), run)["max_turns"] == 5
 
 
 def test_plan_grok_caps_at_backend_or_default(monkeypatch):

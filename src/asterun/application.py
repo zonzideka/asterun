@@ -2547,7 +2547,16 @@ class Application:
             for task_id in self.store.list_task_ids():
                 task = self.store.get_task(task_id)
                 run = self.store.get_run(task.current_run_id) if task.current_run_id else None
-                if run is None or run.status in TERMINAL_RUN_STATUSES:
+                if run is None:
+                    continue
+                if run.status in TERMINAL_RUN_STATUSES:
+                    if (isinstance(run.native, dict) and run.native.get("segment")
+                            and not run.native.get("segment_end")):
+                        try:
+                            from asterun.context_budget.segment import continue_segment
+                            continue_segment(self, task, run)
+                        except Exception:
+                            pass
                     continue
                 self._apply_retained_result_if_any(run)
                 run = self.store.get_run(run.id)
