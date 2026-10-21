@@ -30,6 +30,7 @@ _TERMINAL_TOOL_STATUSES = frozenset({"completed", "failed"})
 _FILE_INPUT_KEYS = ("path", "file_path", "target_file")
 _RESULT_KINDS = frozenset({"tool_call_update", "tool_result"})
 _PROGRAM_RE = re.compile(r"^[A-Za-z0-9._+-]{1,64}$")
+_NOTE_PREFIX = "ASTERUN-NOTE:"
 _NOTE_DROP_RES = (
     re.compile(
         r"(?i)(password|passwd|secret|token|api[_-]?key|authorization|bearer|cookie|private[_-]?key)\s*[:=]"
@@ -38,6 +39,23 @@ _NOTE_DROP_RES = (
     re.compile(r"[A-Za-z0-9_\-]{32,}"),
     re.compile(r"-----BEGIN"),
 )
+# 白名单用排除字符，而不是允许字符：中文和普通标点要能留下。
+_NOTE_FORBIDDEN_CHARS = frozenset((
+    "@", "=", "{", "}", "[", "]", "<", ">", "$", "`",
+    ";", "|", "(", ")", '"', "'", "\\",
+))
+_NOTE_KEYWORDS = (
+    "def", "class", "import", "from", "return", "function", "const", "let",
+    "var", "lambda", "export", "password", "passwd", "secret", "token",
+    "apikey", "api_key", "bearer", "authorization", "cookie",
+)
+_NOTE_KEYWORD_RE = re.compile(
+    r"(?<![A-Za-z0-9_])(?:"
+    + "|".join(re.escape(word) for word in sorted(_NOTE_KEYWORDS, key=len, reverse=True))
+    + r")(?![A-Za-z0-9_])",
+    re.IGNORECASE,
+)
+_NOTE_LONG_RUN_RE = re.compile(r"[A-Za-z0-9_+/-]{20,}")
 _EMPTY_WORKSPACE = {
     "head": None,
     "branch": None,
@@ -295,23 +313,51 @@ def _command_record(command: str) -> dict:
     }
 
 
-def _note_dropped(line: str) -> bool:
-    return any(pattern.search(line) for pattern in _NOTE_DROP_RES)
+def safe_note_line(line: str) -> str | None:
+    """去前缀并脱敏后，只有同时满足白名单的一行才保留。
+
+    行首关键字按前缀判断，文中关键字按独立标识符判断。大小写不敏感。
+    凭据模式仍整行丢弃。不合格返回 None，调用方只计数。
+    """
+    if not isinstance(line, str):
+        return None
+    body = line.strip()
+    if body.startswith(_NOTE_PREFIX):
+        body = body[len(_NOTE_PREFIX):].strip()
+    if "\n" in body or "\r" in body:
+        return None
+    redacted = redact_text(body)
+    if not 1 <= len(redacted) <= 200:
+        return None
+    if any(char in _NOTE_FORBIDDEN_CHARS for char in redacted):
+        return None
+    if "://" in redacted.lower():
+        return None
+    if _NOTE_LONG_RUN_RE.search(redacted):
+        return None
+    head = redacted.lstrip().lower()
+    if any(head.startswith(keyword) for keyword in _NOTE_KEYWORDS):
+        return None
+    if _NOTE_KEYWORD_RE.search(redacted):
+        return None
+    if any(pattern.search(redacted) for pattern in _NOTE_DROP_RES):
+        return None
+    return redacted
 
 
 def _redacted_notes(texts: list[str]) -> tuple[str | None, int]:
-    """先逐行脱敏，再丢掉仍像密文的行。丢弃的行只计数。"""
+    """笔记正文只经 safe_note_line。丢弃的行只计数。"""
     extracted = extract_notes(texts)
     if extracted is None:
         return None, 0
     kept: list[str] = []
     dropped = 0
     for line in extracted.splitlines():
-        redacted = redact_text(line)
-        if _note_dropped(redacted):
+        safe = safe_note_line(line)
+        if safe is None:
             dropped += 1
             continue
-        kept.append(redacted)
+        kept.append(safe)
     return "\n".join(kept), dropped
 
 

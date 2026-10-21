@@ -8,6 +8,7 @@ from asterun.capsule.assemble import (
     assemble_capsule,
     mandatory_for,
     progress_for,
+    safe_note_line,
     verify_capsule,
     workspace_for,
 )
@@ -387,10 +388,116 @@ def test_commands_and_notes_do_not_keep_secret_text(isolated_env, workspace_root
             assert item["length"] == len(command)
             assert item["sha256"] not in rendered
             assert item["sha256"][:12] in rendered
-        assert capsule["notes"]["dropped_lines"] == 1
-        assert capsule["notes"]["text"] == "进度 [redacted]\n正常保留这一步"
+        assert capsule["notes"]["dropped_lines"] == 2
+        assert capsule["notes"]["text"] == "正常保留这一步"
         assert "正常保留这一步" in rendered
         assert "password" not in capsule["notes"]["text"]
+        assert "进度" not in capsule["notes"]["text"]
+        assert "[redacted]" not in capsule["notes"]["text"]
+        assert verify_capsule(app, task, capsule) == []
+    finally:
+        app.close()
+
+
+def test_safe_note_line_whitelist(monkeypatch):
+    import inspect
+
+    from asterun.capsule import assemble as assemble_module
+    from asterun.redact import SECRET_ENV_NAMES
+
+    for name in SECRET_ENV_NAMES:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("HOME", "/tmp/notehome")
+    monkeypatch.setenv("ASTERUN_HOME", "/tmp/noteaster")
+
+    kept_cn = "完成解析器重构，测试 12 项通过"
+    kept_en = "fixed parser edge case, 3 tests pass"
+    assert safe_note_line(kept_cn) == kept_cn
+    assert safe_note_line(kept_en) == kept_en
+    assert safe_note_line(f"  ASTERUN-NOTE: {kept_en}  ") == kept_en
+    assert safe_note_line("the classical suite remains") == "the classical suite remains"
+
+    dropped = [
+        "https://alice:example-secret-12345@example.com/private",
+        "def calculate_total(items): return sum(items)",
+        "https://example.com/private",
+        "HTTPS://example.com/private",
+        "x = 1",
+        '{"a":1}',
+        "abcdef0123456789abcdef0123456789",
+        "updated helper (draft)",
+        "a" * 20,
+        "/" * 20,
+        "+" * 20,
+        "-" * 20,
+        "-----BEGIN RSA PRIVATE KEY-----",
+        "private_key: material",
+        "api-key: material",
+        "please return the summary",
+        "Secret material stays out",
+        "记下secret此项",
+        "default parser note today",
+        "Important note stays here",
+        "rotate api_key soon",
+        "rotate apikey soon",
+        "",
+        "see /tmp/notehome now",
+    ]
+    for line in dropped:
+        assert safe_note_line(line) is None, line
+    assert safe_note_line("a" * 19) == "a" * 19
+    assert safe_note_line("/" * 19) == "/" * 19
+    line_200 = ("aa " * 66) + "aa"
+    assert len(line_200) == 200
+    assert safe_note_line(line_200) == line_200
+    assert safe_note_line(line_200 + "b") is None
+    forbidden = [
+        "@", "=", "{", "}", "[", "]", "<", ">", "$", "`",
+        ";", "|", "(", ")", '"', "'", "\\",
+    ]
+    assert len(forbidden) == 17
+    for char in forbidden:
+        assert safe_note_line(f"note {char} end") is None, char
+    assert safe_note_line(None) is None
+
+    source = inspect.getsource(assemble_module._redacted_notes)
+    assert "safe_note_line(" in source
+    assert "redact_text(" not in source
+    assert "_NOTE_DROP_RES" not in source
+
+
+def test_assemble_drops_code_urls_and_keeps_plain_notes(isolated_env, workspace_root):
+    app, bundle, _directory = setup(isolated_env, workspace_root)
+    try:
+        task = app.store.get_task(TaskId(bundle["task_id"]))
+        run = app.store.get_run(RunId(bundle["expected_run_id"]))
+        kept_cn = "完成解析器重构，测试 12 项通过"
+        kept_en = "fixed parser edge case, 3 tests pass"
+        notes = [
+            "https://alice:example-secret-12345@example.com/private",
+            kept_cn,
+            "def calculate_total(items): return sum(items)",
+            "https://example.com/private",
+            kept_en,
+            "x = 1",
+            '{"a":1}',
+            "abcdef0123456789abcdef0123456789",
+            "updated helper (draft)",
+        ]
+        _message(app, run.id, {
+            "kind": "text",
+            "text": "\n".join(f"ASTERUN-NOTE: {line}" for line in notes),
+        })
+        capsule = assemble_capsule(app, task, run, trigger="manual")
+        body = canonical(capsule)
+        rendered = render_prompt(capsule, backend_kind="fake")
+        assert capsule["notes"]["dropped_lines"] == 7
+        assert capsule["notes"]["text"] == f"{kept_cn}\n{kept_en}"
+        for secret in ("example-secret-12345", "calculate_total", "alice", "example.com"):
+            assert secret.encode("utf-8") not in body
+            assert secret not in rendered
+        assert kept_cn in rendered
+        assert kept_en in rendered
         assert verify_capsule(app, task, capsule) == []
     finally:
         app.close()

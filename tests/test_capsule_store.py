@@ -393,6 +393,61 @@ def test_stored_capsule_and_inspect_omit_secret_command_and_note_text(managed):
     assert rendered.data["verify_issues"] == []
 
 
+def test_stored_notes_drop_urls_code_and_tokens(managed):
+    _enable(managed, markers=True)
+    task = _task()
+    run = _run()
+    managed.store.save_task(task)
+    kept_cn = "完成解析器重构，测试 12 项通过"
+    kept_en = "fixed parser edge case, 3 tests pass"
+    notes = [
+        "https://alice:example-secret-12345@example.com/private",
+        kept_cn,
+        "def calculate_total(items): return sum(items)",
+        "https://example.com/private",
+        kept_en,
+        "x = 1",
+        '{"a":1}',
+        "abcdef0123456789abcdef0123456789",
+        "updated helper (draft)",
+    ]
+    _message(managed, run.id, {
+        "kind": "text",
+        "text": "\n".join(f"ASTERUN-NOTE: {line}" for line in notes),
+    })
+    managed.store.save_run(run)
+
+    rows = list_capsules(managed.store._conn, task_id="task-cap")
+    assert len(rows) == 1
+    blob = managed.store.get_checkpoint_blob(rows[0]["blob_sha256"])
+    loaded = load_capsule(managed, rows[0]["blob_sha256"])
+    assert blob == canonical(loaded)
+    rendered = managed.handle("capsule.inspect", {"task_id": "task-cap", "render": True})
+    assert rendered.ok, rendered.error
+    prompt = rendered.data["rendered_prompt"]
+    stored = managed.store._conn.execute(
+        "SELECT content FROM control_blobs WHERE namespace_id=?",
+        ("asterun_checkpoint_v1",),
+    ).fetchall()
+    assert stored
+    surfaces = [blob, canonical(loaded)]
+    surfaces.extend(bytes(row["content"]) for row in stored)
+    for secret in ("example-secret-12345", "calculate_total", "alice"):
+        encoded = secret.encode("utf-8")
+        for surface in surfaces:
+            assert encoded not in surface
+        assert secret not in prompt
+    assert loaded["notes"]["dropped_lines"] == 7
+    assert loaded["notes"]["text"] == f"{kept_cn}\n{kept_en}"
+    for kept in (kept_cn, kept_en):
+        assert kept.encode("utf-8") in blob
+        assert kept in prompt
+    for leaked in ("example.com", "x = 1", '{"a":1}', "updated helper", "abcdef0123456789"):
+        assert leaked.encode("utf-8") not in blob
+        assert leaked not in prompt
+    assert rendered.data["verify_issues"] == []
+
+
 def test_cli_and_mcp_whitelist_capsule_inspect():
     import inspect
 
