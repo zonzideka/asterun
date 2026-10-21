@@ -5,6 +5,7 @@ plan 未启用时返回 None，不访问数据库。续段只在段末分类成�
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timezone
 
@@ -24,10 +25,30 @@ from asterun.usage.breakdown import normalize_breakdown
 SEGMENT_KINDS = frozenset({"grok", "fake"})  # 本 PR 只实现 grok；fake 用于离线测试
 
 
+def _segmentation_blocked(task, run) -> bool:
+    """质量流程、修复目标绑定、read_scope、capability、dependencies 不分段。只看内存字段。"""
+    if getattr(task, "quality", None):
+        return True
+    if getattr(run, "target_hash", ""):
+        return True
+    native = getattr(run, "native", None)
+    if isinstance(native, dict) and native.get("external_repair_target"):
+        return True
+    if getattr(task, "read_scope", None) is not None:
+        return True
+    if getattr(task, "capability", None):
+        return True
+    if getattr(task, "dependencies", None):
+        return True
+    return False
+
+
 def plan(app, task, run) -> dict | None:
     """enforce 且后端在 segmentation.backends 白名单、角色在 segmentation.roles、kind 属于 SEGMENT_KINDS、
-    匹配 profile 有 segment_turns 且 profile.get("segment") 不是 False 时，返回段计划；否则 None（不访问数据库）。"""
-    del task
+    匹配 profile 有 segment_turns 且 profile.get("segment") 不是 False 时，返回段计划；否则 None（不访问数据库）。
+    质量流程、修复目标绑定、read_scope、capability、dependencies 任务不分段。"""
+    if _segmentation_blocked(task, run):
+        return None
     settings = context_budget_settings(getattr(app, "config", None))
     if not isinstance(settings, dict) or settings.get("mode") != "enforce":
         return None
@@ -83,12 +104,16 @@ def guard_continuation(app, task, run) -> None:
         return
     if plan(app, task, run) is None:
         raise AsterunError("CAPABILITY_UNSUPPORTED", "续段排队期间分段已停用，未派发")
+    if task.run_count > app.config.scheduler.max_runs_per_task:
+        raise AsterunError("BUDGET_EXHAUSTED", "续段超过每任务运行上限，未派发")
     source = app.store.get_run(RunId(source_id))
     source_native = source.native if isinstance(getattr(source, "native", None), dict) else {}
     marker = source_native.get("segment_end", {})
     if not isinstance(marker, dict):
         marker = {}
-    if source.status not in TERMINAL_RUN_STATUSES or marker.get("continued_by") != run.id.value:
+    if source.status not in TERMINAL_RUN_STATUSES:
+        raise AsterunError("REVISION_CONFLICT", "续段源运行已变化，未派发")
+    if marker.get("continued_by") != run.id.value and not _restore_continued_by(app, task, source, run, marker):
         raise AsterunError("REVISION_CONFLICT", "续段源运行已变化，未派发")
     if task.current_run_id != run.id:
         raise AsterunError("REVISION_CONFLICT", "续段排队期间任务当前运行已变化，未派发")
@@ -200,6 +225,71 @@ def _mark_segment_end(app, run, reason: str, continued_by: str | None) -> None:
     app.store.save_run(src)
 
 
+def _restore_continued_by(app, task, source, run, marker) -> bool:
+    """continued_by 缺失时，用指向本 run 的续段幂等键把标记补上。已有其他后继则不改。"""
+    if marker.get("continued_by"):
+        return False
+    native = run.native if isinstance(getattr(run, "native", None), dict) else {}
+    if native.get("segment_source_run_id") != source.id.value:
+        return False
+    segment = native.get("segment")
+    if not isinstance(segment, dict) or "index" not in segment:
+        return False
+    operation = app.store.find_operation_for_run(run.id)
+    expected = f"seg:{task.id.value}:{source.id.value}:{segment['index']}"
+    if operation is None or operation.idempotency_key != expected:
+        return False
+    reason = marker.get("reason") if isinstance(marker.get("reason"), str) and marker.get("reason") else "turn_budget"
+    if not isinstance(source.native, dict):
+        source.native = {}
+    source.native["segment_end"] = {"reason": reason, "continued_by": run.id.value}
+    app.store.save_run(source)
+    return True
+
+
+def _backfill_continued_by(app, task, run) -> None:
+    """幂等重放时，若源 run 还没有 continued_by，补成已存在后继的 id。"""
+    src = app.store.get_run(run.id)
+    native = src.native if isinstance(src.native, dict) else {}
+    marker = native.get("segment_end") if isinstance(native.get("segment_end"), dict) else {}
+    if marker.get("continued_by"):
+        return
+    current = app.store.get_task(task.id)
+    successor_id = current.current_run_id
+    if successor_id is None or successor_id == run.id:
+        return
+    successor = app.store.get_run(successor_id)
+    succ_native = successor.native if isinstance(successor.native, dict) else {}
+    if succ_native.get("segment_source_run_id") != run.id.value:
+        return
+    reason = marker.get("reason") if isinstance(marker.get("reason"), str) and marker.get("reason") else "turn_budget"
+    if not isinstance(src.native, dict):
+        src.native = {}
+    src.native["segment_end"] = {"reason": reason, "continued_by": successor_id.value}
+    app.store.save_run(src)
+
+
+@contextmanager
+def _connection_transaction(store):
+    """连接空闲时开 BEGIN IMMEDIATE，让 commit_intent 变成 SAVEPOINT 而不是自行 COMMIT。
+
+    SqliteStore 没有 transaction()，Application._state_transaction() 因此是空上下文。
+    已经在事务里时不再 BEGIN，避免嵌套 BEGIN 失败。
+    """
+    conn = getattr(store, "_conn", None)
+    if conn is None or conn.in_transaction:
+        yield
+        return
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        yield
+        conn.execute("COMMIT")
+    except BaseException:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+
+
 def _stop(app, task, run, reason: str) -> None:
     _mark_segment_end(app, run, reason, None)
     if reason in {"max_segments", "budget"}:
@@ -227,6 +317,9 @@ def _continue_segment(app, task, run) -> dict | None:
     if _positive_int(max_segments) and next_index >= max_segments:
         _stop(app, task, run, "max_segments")
         return {"stopped": "max_segments"}
+    if task.run_count >= app.config.scheduler.max_runs_per_task:
+        _stop(app, task, run, "max_runs")
+        return {"stopped": "max_runs"}
     settings = _settings(app)
     profile = _profile_for(settings, seg)
     soft = _segment_soft(profile)
@@ -278,6 +371,7 @@ def _continue_segment(app, task, run) -> dict | None:
         created_at=now,
     )
     if app.store.find_idempotent_operation(operation) is not None:
+        _backfill_continued_by(app, task, run)
         return {"reused": True}
     new_run = Run(
         id=new_run_id(),
@@ -295,10 +389,20 @@ def _continue_segment(app, task, run) -> dict | None:
         },
     )
     task = replace(task, run_count=task.run_count + 1, current_run_id=new_run.id)
-    operation, task, new_run, reused = app.store.commit_intent(operation, task, new_run)
+    # _state_transaction 在 SqliteStore 上是空上下文；_connection_transaction 补上真正的外层事务。
+    with app._state_transaction():
+        with _connection_transaction(app.store):
+            operation, task, new_run, reused = app.store.commit_intent(operation, task, new_run)
+            if not reused:
+                src = app.store.get_run(run.id)
+                src.native["segment_end"] = {"reason": "turn_budget", "continued_by": new_run.id.value}
+                app.store.save_run(src)
+            else:
+                _backfill_continued_by(app, task, run)
+    if not reused and isinstance(getattr(run, "native", None), dict):
+        run.native["segment_end"] = {"reason": "turn_budget", "continued_by": new_run.id.value}
     if reused:
         return {"reused": True}
-    _mark_segment_end(app, run, "turn_budget", new_run.id.value)
     workspace_root = str(app.config.get_workspace(task.workspace).root.resolve())
     app.scheduler.enqueue(task.backend.value, task.id, new_run.id, workspace_root)
     app._event(new_run.id, EventType.RUN_QUEUED, "core",
@@ -310,5 +414,9 @@ def continue_segment(app, task, run) -> dict | None:
     """段末时幂等地提交后继段意图并排队。不满足条件返回 None 或 {"stopped": 原因}。"""
     try:
         return _continue_segment(app, task, run)
-    except Exception:
+    except Exception as exc:
+        try:
+            app._event(run.id, EventType.MESSAGE, "core", {"segment_continue_error": type(exc).__name__})
+        except Exception:
+            pass
         return None

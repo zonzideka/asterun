@@ -6,7 +6,7 @@ from dataclasses import replace
 import pytest
 
 from asterun.backends.fake import FakeBackend
-from asterun.context_budget.segment import continue_segment
+from asterun.context_budget.segment import continue_segment, plan
 from asterun.contracts import RunId, RunStatus, TaskId
 from tests.test_context_budget_observe import _enable, managed
 
@@ -198,3 +198,93 @@ def test_queued_successor_fails_when_mandatory_changes(managed, monkeypatch):
     assert successor.status == RunStatus.FAILED
     assert successor.error_code == "REVISION_CONFLICT"
     assert dispatch.calls == 1
+
+
+def test_max_runs_stops_without_a_successor(managed, monkeypatch):
+    _enforce(managed)
+    managed.config.scheduler.max_runs_per_task = 1
+    _patch_dispatch(monkeypatch, k=1)
+    task, source, runs = _start(managed)
+    assert task.run_count == 1
+    assert len(runs) == 1
+    assert source.native["segment_end"]["reason"] == "max_runs"
+    assert source.native["segment_end"].get("continued_by") is None
+
+
+def test_marker_write_failure_rolls_back_successor(managed, monkeypatch):
+    _enforce(managed)
+    real_save = managed.store.save_run
+    state = {"thrown": False}
+
+    def save_run(run):
+        native = run.native if isinstance(getattr(run, "native", None), dict) else {}
+        marker = native.get("segment_end")
+        if (not state["thrown"] and isinstance(marker, dict) and marker.get("reason") == "turn_budget"
+                and marker.get("continued_by")):
+            state["thrown"] = True
+            raise RuntimeError("marker write failed")
+        return real_save(run)
+
+    monkeypatch.setattr(managed.store, "save_run", save_run)
+    _patch_dispatch(monkeypatch, k=1)
+    result = managed.handle("task.submit", dict(_SUBMIT))
+    assert result.ok, getattr(result, "error", result)
+    _settle(managed)
+    task = managed.store.get_task(TaskId(result.ids["task_id"]))
+    source = managed.store.get_run(RunId(result.ids["run_id"]))
+    assert state["thrown"]
+    assert task.run_count == 1
+    assert task.current_run_id == source.id
+    assert len(list(managed.store.list_runs(task.id))) == 1
+    assert "segment_end" not in source.native
+    events = managed.store.list_events(source.id)
+    assert any((event.payload or {}).get("segment_continue_error") == "RuntimeError" for event in events)
+    again = continue_segment(managed, task, source)
+    _settle(managed)
+    task = managed.store.get_task(task.id)
+    runs = list(managed.store.list_runs(task.id))
+    assert again is not None and again.get("continued")
+    assert task.run_count == 2
+    assert len(runs) == 2
+    successor = _by_index(runs)[1]
+    source = managed.store.get_run(source.id)
+    assert source.native["segment_end"]["reason"] == "turn_budget"
+    assert source.native["segment_end"]["continued_by"] == successor.id.value
+    assert successor.status == RunStatus.SUCCEEDED
+
+
+def test_guard_restores_missing_continued_by(managed, monkeypatch):
+    _enforce(managed)
+    task, successor, dispatch = _queue_successor(managed, monkeypatch)
+    source = _by_index(list(managed.store.list_runs(task.id)))[0]
+    source.native["segment_end"].pop("continued_by")
+    managed.store.save_run(source)
+    assert "continued_by" not in managed.store.get_run(source.id).native["segment_end"]
+    managed._drain_queue()
+    successor = managed.store.get_run(successor.id)
+    source = managed.store.get_run(source.id)
+    assert successor.status == RunStatus.SUCCEEDED
+    assert source.native["segment_end"]["continued_by"] == successor.id.value
+    assert dispatch.calls == 2
+
+
+def test_plan_returns_none_for_quality_or_target_hash(managed):
+    from types import SimpleNamespace
+
+    _enforce(managed)
+    plain = SimpleNamespace(role="implementation", backend=SimpleNamespace(value="fake"), native={})
+    assert plan(managed, SimpleNamespace(), plain) is not None
+    assert plan(managed, SimpleNamespace(quality={"phase": "review"}), plain) is None
+    bound = SimpleNamespace(
+        role="implementation", backend=SimpleNamespace(value="fake"), native={}, target_hash="abc",
+    )
+    assert plan(managed, SimpleNamespace(), bound) is None
+    assert plan(managed, SimpleNamespace(read_scope={"path": "src"}), plain) is None
+    assert plan(managed, SimpleNamespace(capability="local.echo"), plain) is None
+    assert plan(managed, SimpleNamespace(dependencies=["task_other"]), plain) is None
+    repair = SimpleNamespace(
+        role="implementation",
+        backend=SimpleNamespace(value="fake"),
+        native={"external_repair_target": {"target_hash": "abc"}},
+    )
+    assert plan(managed, SimpleNamespace(), repair) is None

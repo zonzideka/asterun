@@ -82,11 +82,11 @@ observe 不改变派发、返回或计数；enforce 同样记录观测，另外�
 
 ### grok 分段（enforce，白名单）
 
-只在 `mode=enforce`、后端列在 `segmentation.backends`、角色在 `segmentation.roles`、匹配 profile 有 `segment_turns` 且 `segment` 不为 false 时生效。本版实现 grok（fake 仅用于离线测试），审查角色永不分段。每段派发原生 `--max-turns` 为 `min(segment_turns, 后端 max_turns)`。
+只在 `mode=enforce`、后端列在 `segmentation.backends`、角色在 `segmentation.roles`、匹配 profile 有 `segment_turns` 且 `segment` 不为 false 时生效。本版实现 grok（fake 仅用于离线测试），审查角色永不分段。质量流程、修复目标绑定、read_scope、capability、dependencies 任务不分段。每段派发原生 `--max-turns` 为 `min(segment_turns, 后端 max_turns)`。
 
-段以原生回合上限结束（源 run 仍记 failed/`GROK_RUN_INCOMPLETE`）时：未达 `max_segments`、预算有余、胶囊 ready 才提交后继段（幂等键 `seg:{task}:{source_run}:{index}`）。后继用胶囊加续段说明，默认新会话（只有处理量与驻留量都已知且低于阈值时才 resume）。`run_count` 递增，`repair_count` 不变。源 run 记 `native.segment_end`。
+段以原生回合上限结束（源 run 仍记 failed/`GROK_RUN_INCOMPLETE`）时：未达 `max_segments`、未达 `scheduler.max_runs_per_task`、预算有余、胶囊 ready 才提交后继段（幂等键 `seg:{task}:{source_run}:{index}`）。后继用胶囊加续段说明，默认新会话（只有处理量与驻留量都已知且低于阈值时才 resume）。`run_count` 递增，`repair_count` 不变。续段计入 `max_runs_per_task`。源 run 记 `native.segment_end`。
 
-停下的原因记在 `segment_end.reason`（`max_segments` / `budget` / `capsule_not_ready` / `capsule_too_large` / `segmentation_disabled`）。`max_segments` 与 `budget` 另生成 `budget_soft` 胶囊。续段派发前再核对：分段仍启用、源 run 已终止且指向本段、任务当前 run、胶囊 id 与 mandatory 未变。分段已停用则不派发，错误码 `CAPABILITY_UNSUPPORTED`；源 run、当前 run、胶囊 id 或 mandatory 已变化则不派发，错误码 `REVISION_CONFLICT`。
+停下的原因记在 `segment_end.reason`（`max_segments` / `max_runs` / `budget` / `capsule_not_ready` / `capsule_too_large` / `segmentation_disabled`）。`max_segments` 与 `budget` 另生成 `budget_soft` 胶囊。续段派发前再核对：分段仍启用、源 run 已终止且指向本段、任务当前 run、胶囊 id 与 mandatory 未变，且 `run_count` 不超过 `max_runs_per_task`。分段已停用则不派发，错误码 `CAPABILITY_UNSUPPORTED`；源 run、当前 run、胶囊 id 或 mandatory 已变化则不派发，错误码 `REVISION_CONFLICT`；续段超过每任务运行上限则不派发，错误码 `BUDGET_EXHAUSTED`。
 
 ## 上下文胶囊（v1，observe 仅生成不派发）
 
