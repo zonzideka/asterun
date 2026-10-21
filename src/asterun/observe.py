@@ -136,6 +136,39 @@ def _bounded_summary(value: dict[str, Any], result: dict[str, Any]) -> None:
                                if type(prior_length) is int and _small_scalar(prior_length) else len(summary))
 
 
+def _true_flag_names(value: dict[str, Any]) -> list[str]:
+    flags = value.get("flags")
+    if isinstance(flags, dict):
+        names = [name for name, flag in flags.items()
+                 if flag is True and isinstance(name, str) and _small_scalar(name)]
+    else:
+        prior = value.get("flags_true")
+        names = [name for name in prior if isinstance(name, str) and _small_scalar(name)] if isinstance(prior, list) else []
+    chosen: list[str] = []
+    for name in sorted(set(names)):
+        if _size([*chosen, name]) > COMPACT_FIELD_BYTES:
+            continue
+        chosen.append(name)
+    return chosen
+
+
+def _compact_context_budget(value: Any) -> Any:
+    """有观测行时只留判断阈值所需的字段。调用方在键缺失时不写入，避免改动旧 compact 字节。"""
+    if not isinstance(value, dict):
+        return value if _small_scalar(value) else None
+    short = _fields(value, ("profile_key", "task_processed", "task_new", "run_processed", "observed_at"))
+    ordered: dict[str, Any] = {}
+    for name in ("profile_key", "task_processed", "task_new", "run_processed"):
+        if name in short:
+            ordered[name] = short[name]
+    ordered["flags_true"] = _true_flag_names(value)
+    if "observed_at" in short:
+        ordered["observed_at"] = short["observed_at"]
+    if "omitted_fields" in short:
+        ordered["omitted_fields"] = short["omitted_fields"]
+    return ordered
+
+
 def compact_task_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     """保留状态判断和续查引用，不返回任务正文、完整原生日志或审批执行内容。"""
     result: dict[str, Any] = {"compact": True}
@@ -233,6 +266,8 @@ def compact_task_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     notes = snapshot.get("notes")
     if isinstance(notes, dict):
         result["notes"] = _fields(notes, ("run_success_is_not_acceptance", "fake_is_not_real_connection"))
+    if "context_budget" in snapshot:
+        result["context_budget"] = _compact_context_budget(snapshot.get("context_budget"))
     result["details"] = {"method": "task.get", "compact": False}
     if isinstance(task, dict) and isinstance(result["task"].get("id"), str):
         result["details"]["task_id"] = result["task"]["id"]

@@ -76,6 +76,28 @@ Unknown fields are rejected. A field named `enforcement`, and the value `hard`, 
 
 Observe mode records, when a run reaches a terminal status, that run's processed/new counts and the task's cumulative processed/new counts, plus the flags that would have fired (`segment_soft_exceeded`, `task_soft_exceeded`, `task_hard_exceeded`, `max_segments_exceeded`, `long_task`, `would_segment`, `capsule_candidate`). Read them with `asterun context-budget-inspect` or the `context_budget` field of task-get. This does not change dispatch, returned results, or counters. When mode is `off`, this record does not read or write the database.
 
+## Context capsules (v1, observe only generates and does not dispatch)
+
+When `capsule_candidate` is true, a continuation capsule is written after the observation row, with `trigger` `observe_only`. `capsule.progress_markers` does not affect this step, whether it is true or false. The capsule is stored only: `ready` is 0, nothing is dispatched, and the run result and counters stay unchanged. If generation fails, only that capsule is dropped; the observation row and `save_run` still complete. When `mode` is `off`, this step does not read or write the database.
+
+The capsule schema is `asterun.capsule/v1`. It keeps the contract, a workspace summary, progress, and open items needed to continue. Mandatory text is never trimmed: `objective` is a byte-for-byte copy of the task text, and `constraints`, `acceptance`, `review_requirements`, `findings` (including id and text), and `limits` are copied the same way. Non-mandatory content has a soft limit of 16384 bytes (16 KB) and a hard limit of 24576 bytes (24 KB). Past the soft limit, lossy trimming runs in a fixed order (note text, commands, files touched). If the hard limit still does not hold, the body is not stored and the row's `error_code` is `CAPSULE_TOO_LARGE`.
+
+A capsule does not contain source text, diff text, chat, or credentials. The workspace keeps HEAD, branch, dirty paths and statuses, file sha256 values, and the file/insertion/deletion counts from `diff --shortstat`. A command keeps a redacted summary of at most 200 characters and the sha256 of the original. An unconfirmed tool call keeps the tool name and an input digest.
+
+Lines marked `ASTERUN-NOTE:` become low-trust notes (`trust=low`). They do not change any task constraint. Note text is at most 4096 bytes. The rendered prompt labels them as low-trust notes that do not change task constraints.
+
+Verification is redone on read and does not trust a previous conclusion stored in the row. An empty list means the capsule checks out. Problem codes are `schema_mismatch`, `body_sha256_mismatch`, `capsule_id_mismatch`, `mandatory_sha256_mismatch`, `mandatory_mismatch`, `finding_missing:<id>`, and `finding_text_changed:<id>`. If the task contract digest no longer matches the one stored in the capsule, `contract_changed` is added.
+
+One row is kept per `(namespace, run, trigger)`; generating again updates that row. Table `context_capsules` is created on older databases automatically, and the schema version does not change. Rows are kept for 30 days and at most 2000 rows. Pruning deletes rows only, not blobs. A backup that lacks this table still restores. A backup that has the table with different columns is rejected.
+
+Read it with:
+
+```sh
+asterun capsule-inspect --task TASK_ID [--limit N] [--render]
+```
+
+The MCP tool name is `capsule_inspect`. `task_id` is required, `limit` is 1–200 and defaults to 20, and `render` defaults to false. Permission matches `context-budget-inspect`, and the caller also needs `task.get` on that task's workspace. The command does not create the table, write the database, or dispatch. When the table is missing, `capsules` is an empty list. `--render` loads the newest capsule for that task that has a body, verifies it against the current task, and returns `verify_issues` and `rendered_prompt`. The task contract inside the prompt is the original text stored in the capsule.
+
 ## Candidate groups and routing explanation
 
 Candidate groups exist only in configuration v2, under `routing.candidate_groups`. A group is 1 to 8 aliases with the same role, the same backend kind, and the same execution options. Models may differ. `models_allowed` is optional and is checked only when written. `primary` must be one of the members. A group name matches `^[a-z][a-z0-9_-]{0,31}$`. Each role has at most one group, and members of different roles cannot overlap. When `candidate_groups` or `quota_preference` is omitted, read-back does not fill defaults.

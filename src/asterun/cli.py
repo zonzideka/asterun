@@ -60,6 +60,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     context_budget_inspect.add_argument("--task", dest="task_id", help="只返回该任务的观测")
     context_budget_inspect.add_argument("--limit", type=int, help="返回条数，1–200，默认 20")
+    capsule_inspect = sub.add_parser(
+        "capsule-inspect", help="只读上下文胶囊；不建表，不写库，不派发",
+    )
+    capsule_inspect.add_argument("--task", dest="task_id", required=True, help="任务 id")
+    capsule_inspect.add_argument("--limit", type=int, help="返回条数，1–200，默认 20")
+    capsule_inspect.add_argument("--render", action="store_true", help="渲染该任务最新一条有正文的胶囊")
     routing_explain = sub.add_parser("routing-explain", help="只解释候选组选路；不改变派发，不写库")
     routing_explain_scope = routing_explain.add_mutually_exclusive_group(required=True)
     routing_explain_scope.add_argument("--group", help="候选组名")
@@ -326,6 +332,8 @@ def _load_request(args: argparse.Namespace) -> dict[str, Any]:
         payload["native"] = True
     if getattr(args, "compact", False):
         payload["compact"] = True
+    if getattr(args, "render", False):
+        payload["render"] = True
     if getattr(args, "include_runs", False):
         payload["include_runs"] = True
     if getattr(args, "include_observations", False):
@@ -366,14 +374,15 @@ def _app(args: argparse.Namespace, *, entry: str = "cli") -> Application:
     return Application.from_paths(config_path, state_dir, entry=entry,
                                   background=args.command in {"serve", "mcp"},
                                   restore_scheduler=args.command not in {
-                                      "usage-report", "quota-inspect", "routing-explain", "context-budget-inspect"})
+                                      "usage-report", "quota-inspect", "routing-explain",
+                                      "context-budget-inspect", "capsule-inspect"})
 
 
 COMMAND_METHODS = {
     **{name.replace(".", "-"): name for name in (
         "plugin.list", "plugin.inspect", "plugin.register", "plugin.enable", "plugin.disable",
         "connection.setup", "usage.inspect", "quota.inspect", "quota.set", "quota.clear", "quota.refresh",
-        "routing.explain", "context_budget.inspect",
+        "routing.explain", "context_budget.inspect", "capsule.inspect",
         "capability.invoke", "capability.discovery", "capability.prepare", "capability.submit", "capability.get")},
     "approval-assess": "approval.assess",
     "approval-apply-policy": "approval.apply-policy",

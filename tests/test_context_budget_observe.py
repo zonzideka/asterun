@@ -41,11 +41,11 @@ def _native(*, stop_reason="max_turn", input_tokens=40, cache_read=10, cache_wri
     }
 
 
-def _run(run_id, *, native=None, status=RunStatus.SUCCEEDED, role="implementation", task_id="task-budget"):
+def _run(run_id, *, native=None, status=RunStatus.SUCCEEDED, role="implementation", task_id="task-budget", backend="fake"):
     return Run(
         RunId(run_id),
         TaskId(task_id),
-        BackendId("fake"),
+        BackendId(backend),
         status,
         "2026-10-21T00:00:00Z",
         terminated=status in {RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELLED},
@@ -246,4 +246,148 @@ def test_cli_and_mcp_whitelist_context_budget_inspect():
     assert REQUEST_SCHEMAS["context_budget.inspect"]["properties"]["limit"] == {
         "type": "integer", "minimum": 1, "maximum": 200,
     }
+
+
+def test_task_get_compact_projects_context_budget_and_leaves_full_view(managed):
+    from asterun.observe import compact_task_snapshot
+
+    managed.store.save_task(_task())
+    missing = managed.handle("task.get", {"task_id": "task-budget", "compact": True})
+    assert missing.ok, missing.error
+    assert "context_budget" not in missing.data
+    bare = {"task": {"id": "tsk_1", "acceptance": "pending"}, "run": None}
+    projected = compact_task_snapshot(bare)
+    assert json.dumps(projected, ensure_ascii=False) == (
+        '{"compact": true, "task": {"id": "tsk_1", "acceptance": "pending"}, "run": null, '
+        '"details": {"method": "task.get", "compact": false, "task_id": "tsk_1"}}'
+    )
+
+    _enable(managed)
+    run = _run("run-visible", native=_native())
+    managed.store.save_task(_task(current_run_id=run.id))
+    managed.store.save_run(run)
+    full = managed.handle("task.get", {"task_id": "task-budget"})
+    assert full.ok, full.error
+    assert set(full.data["context_budget"]) == {
+        "namespace_id", "run_id", "task_id", "profile_key", "backend", "role",
+        "run_processed", "run_new", "task_processed", "task_new", "unknown_runs",
+        "flags", "policy_sha256", "observed_at",
+    }
+    assert "flags_true" not in full.data["context_budget"]
+    compact = managed.handle("task.get", {"task_id": "task-budget", "compact": True})
+    assert compact.ok, compact.error
+    assert compact.data["context_budget"] == {
+        "profile_key": "fake/implementation",
+        "task_processed": 70,
+        "task_new": 60,
+        "run_processed": 70,
+        "flags_true": [
+            "capsule_candidate", "long_task", "segment_soft_exceeded",
+            "task_soft_exceeded", "would_segment",
+        ],
+        "observed_at": full.data["context_budget"]["observed_at"],
+    }
+    assert compact_task_snapshot(compact.data) == compact.data
+
+
+def test_compact_context_budget_stays_inside_projection_limits():
+    from asterun.observe import COMPACT_FIELD_BYTES, COMPACT_USAGE_BYTES, compact_task_snapshot
+
+    snapshot = {
+        "task": {"id": "tsk_1", "acceptance": "pending"},
+        "run": {
+            "id": "run_1", "task_id": "tsk_1", "status": "succeeded", "terminated": True,
+            "native": {"usage": {"input_tokens": 50, "unknown_vendor_payload": "大" * 350000}},
+        },
+        "context_budget": {
+            "profile_key": "x" * 100000,
+            "task_processed": 70,
+            "task_new": 60,
+            "run_processed": 70,
+            "observed_at": "2026-10-21T00:00:00.000000Z",
+            "flags": {f"flag-{index:04d}": True for index in range(5000)} | {"task_soft_exceeded": False},
+            "policy_sha256": "ab" * 200000,
+            "run_id": "run_1",
+        },
+    }
+    result = compact_task_snapshot(snapshot)
+    budget = result["context_budget"]
+    assert "profile_key" not in budget
+    assert budget["omitted_fields"] == ["profile_key"]
+    assert budget["task_processed"] == 70 and budget["task_new"] == 60 and budget["run_processed"] == 70
+    assert budget["observed_at"] == "2026-10-21T00:00:00.000000Z"
+    assert "task_soft_exceeded" not in budget["flags_true"]
+    assert "policy_sha256" not in budget and "run_id" not in budget and "flags" not in budget
+    assert len(json.dumps(budget["flags_true"], ensure_ascii=False).encode()) <= COMPACT_FIELD_BYTES
+    native = result["run"]["native"]
+    assert native["usage"] == {"input_tokens": 50}
+    assert native["usage_truncated"] is True
+    assert native["usage_byte_limit"] == COMPACT_USAGE_BYTES
+    assert len(json.dumps(result, ensure_ascii=False).encode()) < 32000
+    assert compact_task_snapshot(result) == result
+    assert "unknown_vendor_payload" in snapshot["run"]["native"]["usage"]
+
+
+def _codex_budget(app, profiles):
+    from asterun.config import BackendConfig
+
+    app.config.backends["codex"] = BackendConfig(name="codex", kind="codex", enabled=True)
+    budget = default_context_budget()
+    budget["mode"] = "observe"
+    budget["profiles"] = profiles
+    app.config.context_budget = budget
+    return budget
+
+
+def test_codex_implementation_run_uses_review_profile_when_only_review_is_configured(managed):
+    _codex_budget(managed, {"codex/review": {
+        "segment_soft": 50, "task_soft": 60, "task_hard": 200, "max_segments": 1,
+    }})
+    run = _run("run-codex-review", native=_native(), backend="codex")
+    managed.store.save_run(run)
+    assert run.role == "implementation"
+    row = latest_for_task(managed.store._conn, "task-budget")
+    assert row["profile_key"] == "codex/review"
+    assert row["role"] == "review"
+    assert row["backend"] == "codex"
+    assert row["flags"]["segment_soft_exceeded"] is True
+    assert row["flags"]["task_soft_exceeded"] is True
+    assert row["flags"]["task_hard_exceeded"] is False
+    assert run.role == "implementation"
+
+
+def test_codex_implementation_profile_wins_when_it_is_configured(managed):
+    _codex_budget(managed, {
+        "codex/implementation": {
+            "segment_soft": 1000, "task_soft": 1000, "task_hard": 2000, "max_segments": 5,
+        },
+        "codex/review": {
+            "segment_soft": 50, "task_soft": 60, "task_hard": 200, "max_segments": 1,
+        },
+    })
+    run = _run("run-codex-impl", native=_native(), backend="codex")
+    managed.store.save_run(run)
+    row = latest_for_task(managed.store._conn, "task-budget")
+    assert row["profile_key"] == "codex/implementation"
+    assert row["role"] == "implementation"
+    assert row["flags"]["segment_soft_exceeded"] is False
+    assert row["flags"]["task_soft_exceeded"] is False
+    assert run.role == "implementation"
+
+
+def test_unknown_backend_keeps_implementation_profile_key(managed):
+    managed.config.backends.pop("codex", None)
+    budget = default_context_budget()
+    budget["mode"] = "observe"
+    budget["profiles"] = {"codex/review": {
+        "segment_soft": 50, "task_soft": 60, "task_hard": 200, "max_segments": 1,
+    }}
+    managed.config.context_budget = budget
+    run = _run("run-codex-missing", native=_native(), backend="codex")
+    managed.store.save_run(run)
+    row = latest_for_task(managed.store._conn, "task-budget")
+    assert row["profile_key"] == "codex/implementation"
+    assert row["role"] == "implementation"
+    assert row["flags"]["segment_soft_exceeded"] is False
+    assert run.role == "implementation"
 

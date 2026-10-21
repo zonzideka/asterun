@@ -372,11 +372,17 @@ class Application:
                 return ok(self.capabilities.handle(method, payload))
             if method.startswith("control."):
                 return self._handle_control(method, payload)
-            if method.startswith("quota.") or method in {"routing.explain", "context_budget.inspect"}:
+            if method.startswith("quota.") or method in {
+                "routing.explain", "context_budget.inspect", "capsule.inspect",
+            }:
                 if method == "context_budget.inspect":
                     from asterun.context_budget.inspect import handle as handle_context_budget
 
                     return ok(handle_context_budget(self, method, payload))
+                if method == "capsule.inspect":
+                    from asterun.capsule.inspect import handle as handle_capsule
+
+                    return ok(handle_capsule(self, method, payload))
                 from asterun.quota.service import handle as handle_quota
 
                 return ok(handle_quota(self, method, payload))
