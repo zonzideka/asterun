@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from asterun.application import _segment_session_native
 from asterun.backends.grok import DEFAULT_CODE_MAX_TURNS, _segment_turns
 from asterun.context_budget import segment as segment_mod
-from asterun.context_budget.segment import MARKER, plan, resume_decision, segment_end
+from asterun.context_budget.segment import MARKER, plan, resume_decision, run_processed, segment_end
 from asterun.contracts import Event, EventType, RunStatus
 from asterun.grok_profile import CODE_PROFILE, PROFILE
 from asterun.usage.breakdown import normalize_breakdown
@@ -573,3 +573,23 @@ def test_segment_end_marker_accepts_fresh_codex_thread_cumulative():
     assert native["segment_fresh_thread"] is True
     run = SimpleNamespace(status=RunStatus.SUCCEEDED, summary="本段到此。\n" + MARKER, native=native)
     assert segment_end(run) is True
+
+
+def test_run_processed_counts_fresh_codex_thread_only():
+    """可归属用量直接返回；codex 线程累计只在 segment_fresh_thread 为 True 时计入。"""
+    cumulative = _codex_thread_cumulative_native()
+    picture = normalize_breakdown(cumulative)
+    assert picture["convention"] == "codex_app_server"
+    assert picture["scope"] == "thread_cumulative"
+    assert picture["attributable"] is False
+    assert type(picture["processed"]) is int
+    assert run_processed(cumulative) is None
+    assert run_processed({**cumulative, "segment_fresh_thread": False}) is None
+    fresh = _codex_thread_cumulative_native(fresh=True)
+    assert run_processed(fresh) == picture["processed"]
+    attributable = _processed_native(100)
+    assert normalize_breakdown(attributable)["attributable"] is True
+    assert run_processed(attributable) == 100
+    assert run_processed(None) is None
+    assert run_processed("token_usage") is None
+    assert run_processed({}) is None

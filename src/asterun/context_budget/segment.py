@@ -241,6 +241,22 @@ def _is_antigravity_native(native: dict) -> bool:
     return _ANTIGRAVITY_DISPATCH_KEY in native
 
 
+def run_processed(native) -> int | None:
+    """本 run 可归属的 processed；codex 线程累计仅在本段新开线程时计入。未知返回 None。"""
+    if not isinstance(native, dict):
+        return None
+    picture = normalize_breakdown(native)
+    processed = picture.get("processed")
+    if not (type(processed) is int and processed >= 0):
+        return None
+    if picture.get("attributable"):
+        return processed
+    if (picture.get("convention") == "codex_app_server" and picture.get("scope") == "thread_cumulative"
+            and native.get("segment_fresh_thread") is True):
+        return processed
+    return None
+
+
 def segment_end(run) -> bool:
     """回合上限自然结束，或成功回复以 MARKER 收尾且本段处理量达到 segment_soft。"""
     seg = run.native.get("segment") if isinstance(run.native, dict) else None
@@ -260,13 +276,9 @@ def segment_end(run) -> bool:
         return False
     if run.native.get("subagent_count"):
         return False   # agy 委派一律不续段
-    picture = normalize_breakdown(run.native)
-    if not picture.get("attributable"):
-        fresh = (picture.get("convention") == "codex_app_server" and picture.get("scope") == "thread_cumulative"
-                 and run.native.get("segment_fresh_thread") is True)
-        if not fresh:
-            return False
-    processed = picture["processed"]
+    processed = run_processed(run.native)
+    if processed is None:
+        return False
     soft = seg.get("segment_soft")
     return type(processed) is int and type(soft) is int and processed >= soft
 

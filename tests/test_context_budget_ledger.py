@@ -182,6 +182,74 @@ def test_observe_task_get_omits_historical_budget(managed):
         assert context is None
 
 
+def _codex_thread_cumulative(*, fresh=False):
+    """与 breakdown._codex 相同的 token_usage.total 形状：totalTokens = input + output。"""
+    native = {
+        "token_usage": {
+            "tokenUsage": {
+                "total": {
+                    "inputTokens": 800_000,
+                    "cachedInputTokens": 100_000,
+                    "outputTokens": 50_000,
+                    "reasoningOutputTokens": 1_000,
+                    "totalTokens": 850_000,
+                },
+            },
+        },
+    }
+    if fresh:
+        native["segment_fresh_thread"] = True
+    return native
+
+
+def _submit_held(app):
+    """非终态脚本留下 HELD 预留，随后把这条 run 写成终态再结算。"""
+    _enforce(app)
+    result = app.handle("task.submit", {**_SUBMIT, "script": "timeout"})
+    assert result.ok
+    run_id = result.ids["run_id"]
+    assert _reservation(app, run_id)["status"] == "HELD"
+    assert _load_run(app, run_id).status not in TERMINAL_RUN_STATUSES
+    return run_id
+
+
+def test_codex_fresh_thread_cumulative_settles_processed(managed):
+    """新开线程的 codex thread_cumulative 等于本段用量，终态按 processed 结算。"""
+    run_id = _submit_held(managed)
+    run = _load_run(managed, run_id)
+    run.native.update(_codex_thread_cumulative(fresh=True))
+    run.status = RunStatus.SUCCEEDED
+    managed.store.save_run(run)
+
+    picture = normalize_breakdown(run.native)
+    assert picture["convention"] == "codex_app_server"
+    assert picture["scope"] == "thread_cumulative"
+    assert picture["attributable"] is False
+    assert picture["processed"] == 850_000
+    reservation = _reservation(managed, run_id)
+    assert reservation["status"] == "SETTLED"
+    assert reservation["status"] != "UNCERTAIN"
+    assert _token_amount(reservation["actual"]) == picture["processed"]
+
+
+def test_codex_thread_cumulative_without_fresh_thread_is_uncertain(managed):
+    """没有 segment_fresh_thread 时线程累计不可归属，预留转为 UNCERTAIN。"""
+    run_id = _submit_held(managed)
+    run = _load_run(managed, run_id)
+    run.native.update(_codex_thread_cumulative())
+    assert run.native.get("segment_fresh_thread") is not True
+    run.status = RunStatus.SUCCEEDED
+    managed.store.save_run(run)
+
+    picture = normalize_breakdown(run.native)
+    assert picture["convention"] == "codex_app_server"
+    assert picture["scope"] == "thread_cumulative"
+    assert picture["attributable"] is False
+    assert picture["processed"] == 850_000
+    reservation = _reservation(managed, run_id)
+    assert reservation["status"] == "UNCERTAIN"
+
+
 def test_enforce_memory_store_submit_returns_budget_unknown(config_path):
     raw = migrate_v1_to_v2(config_path)["config"]
     config_path.write_text(json.dumps(raw))
