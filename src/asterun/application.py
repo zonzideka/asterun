@@ -1961,6 +1961,9 @@ class Application:
                   "asterun_identity": {"account": self.account_ref.value, "runtime": self.runtime_ref.value}}
         if run.native.get("segment"):
             native["segment_max_turns"] = run.native["segment"]["max_turns"]
+        if run.native.get("segment_resume") == "new_session":
+            native["backend_session_id"] = None
+            native["turn_id"] = None
         if run.native.get("context_transition"):
             transition = run.native["context_transition"]
             native.update(transition["source_native"])
@@ -2327,6 +2330,12 @@ class Application:
         run = outcome["run"]
         self._project_slot(run)
         if run.status in TERMINAL_RUN_STATUSES:
+            if isinstance(run.native, dict) and run.native.get("segment"):
+                try:
+                    from asterun.context_budget.segment import continue_segment
+                    continue_segment(self, self.store.get_task(run.task_id), self.store.get_run(run.id))
+                except Exception:
+                    pass
             self._drain_queue()
         if outcome["has_presentation"]:
             self._persist_native_presentation(run, outcome["presentation"])
