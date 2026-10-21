@@ -1930,6 +1930,10 @@ class Application:
         from asterun.context_budget.segment import guard_continuation
         guard_continuation(self, task, run)
         dispatch_text = build_dispatch(self, task, run)
+        segment_plan = run.native.get("segment")
+        if isinstance(segment_plan, dict) and segment_plan.get("trigger") == "marker":
+            from asterun.context_budget.segment import MARKER
+            dispatch_text += "\n分段约定：如果任务尚未完成且上下文已经很长，请在回复最后单独一行输出 " + MARKER + "；任务完成时不要输出该行。agy 不得使用子代理。"
         if run.native.get("external_repair_target"):
             from asterun.quality import snapshot
             bound = run.native["external_repair_target"]
@@ -1990,10 +1994,13 @@ class Application:
                   "turn_id": session.latest_turn_id if session else None,
                   "asterun_identity": {"account": self.account_ref.value, "runtime": self.runtime_ref.value}}
         if run.native.get("segment"):
-            native["segment_max_turns"] = run.native["segment"]["max_turns"]
+            segment_max_turns = run.native["segment"]["max_turns"]
+            if type(segment_max_turns) is int:
+                native["segment_max_turns"] = segment_max_turns
         if run.native.get("segment_resume") == "new_session":
             native["backend_session_id"] = None
             native["turn_id"] = None
+            native.pop("thread_id", None)
         elif run.native.get("segment_resume") == "resume":
             native.update(_segment_session_native(self.store, run))
         if run.native.get("context_transition"):

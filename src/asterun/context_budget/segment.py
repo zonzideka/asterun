@@ -1,4 +1,4 @@
-"""把一次派发计划成有限回合的段，并在回合上限处续段。
+"""把一次派发计划成一段，并在回合上限或回复标记处续段。
 
 plan 未启用时返回 None，不访问数据库。续段只在段末分类成立时写意图。
 """
@@ -23,7 +23,9 @@ from asterun.ids import RunId, new_operation_id, new_run_id
 from asterun.quality import bounded_prompt, digest
 from asterun.usage.breakdown import grok_residency_curve, normalize_breakdown
 
-SEGMENT_KINDS = frozenset({"grok", "fake"})  # 本 PR 只实现 grok；fake 用于离线测试
+SEGMENT_KINDS = frozenset({"grok", "fake", "codex", "antigravity"})
+MARKER = "ASTERUN-SEGMENT: CONTINUE"
+MARKER_KINDS = frozenset({"codex", "antigravity"})
 
 
 def _segmentation_blocked(task, run) -> bool:
@@ -79,9 +81,12 @@ def _grok_execution_profile(app, run, configured):
 
 
 def plan(app, task, run) -> dict | None:
-    """enforce 且后端在 segmentation.backends 白名单、角色在 segmentation.roles、kind 属于 SEGMENT_KINDS、
-    grok 的 execution_profile 为 workspace-code-v1、匹配 profile 有 segment_turns 且 profile.get("segment") 不是 False、
-    且任务不由 runner-control 持有时，返回段计划。
+    """enforce 且后端在白名单、角色在白名单、kind 属于 SEGMENT_KINDS 时返回段计划。
+
+    grok 还要求 execution_profile 为 workspace-code-v1。grok/fake 的 profile 必须有 segment_turns，
+    计划 trigger 为 turn_limit。codex 只允许 implementation。antigravity 仅当 profile 的 segment 为 True。
+    codex/antigravity 不看 segment_turns，要求正整数 segment_soft；计划 trigger 为 marker，max_turns 为 None。
+    审查角色、external_require_review、profile segment 为 False 时不分段。
     mode 不是 enforce 或白名单为空时直接返回 None，不访问数据库。
     质量流程、修复目标绑定、read_scope、capability、dependencies、runner-control 持有的任务不分段。
     text-only 的 grok 不分段。无法确认控制层归属时也不分段。"""
@@ -110,16 +115,39 @@ def plan(app, task, run) -> dict | None:
         return None
     if kind == "grok" and _grok_execution_profile(app, run, backend) != CODE_PROFILE:
         return None
+    if kind == "codex" and role != "implementation":
+        return None
+    if kind in MARKER_KINDS and getattr(task, "external_require_review", False):
+        return None
     profiles = settings.get("profiles") if isinstance(settings.get("profiles"), dict) else {}
     profile_key, _role = _matched_profile(app, backend_name, role, profiles)
     profile = profiles.get(profile_key)
-    if not isinstance(profile, dict) or "segment_turns" not in profile or profile.get("segment") is False:
+    if not isinstance(profile, dict):
+        return None
+    if kind == "antigravity":
+        if profile.get("segment") is not True:
+            return None
+    elif profile.get("segment") is False:
+        return None
+    if kind in MARKER_KINDS:
+        if not _positive_int(profile.get("segment_soft")):
+            return None
+    elif "segment_turns" not in profile:
         return None
     if _control_owned(app, task, run):
         return None
     native = getattr(run, "native", None)
     if isinstance(native, dict) and native.get("segment") is not None:
         return native["segment"]
+    if kind in MARKER_KINDS:
+        return {
+            "index": 0,
+            "max_turns": None,
+            "profile_key": profile_key,
+            "max_segments": profile.get("max_segments"),
+            "trigger": "marker",
+            "segment_soft": profile["segment_soft"],
+        }
     segment_turns = profile["segment_turns"]
     if kind == "fake":
         max_turns = segment_turns
@@ -130,6 +158,7 @@ def plan(app, task, run) -> dict | None:
         "max_turns": max_turns,
         "profile_key": profile_key,
         "max_segments": profile.get("max_segments"),
+        "trigger": "turn_limit",
     }
 
 
@@ -198,11 +227,24 @@ def _below(value, limit) -> bool:
 
 
 def segment_end(run) -> bool:
-    """属于分段派发且以原生回合上限自然结束（不是拒绝、不是其他失败）。"""
+    """回合上限自然结束，或成功回复以 MARKER 收尾且本段处理量达到 segment_soft。"""
     seg = run.native.get("segment") if isinstance(run.native, dict) else None
-    failure = run.native.get("provider_failure") if isinstance(run.native, dict) else None
-    return (isinstance(seg, dict) and run.status == RunStatus.FAILED
-            and isinstance(failure, dict) and failure.get("kind") == "turn_limit")
+    if not isinstance(seg, dict):
+        return False
+    if seg.get("trigger", "turn_limit") == "turn_limit":
+        failure = run.native.get("provider_failure")
+        return run.status == RunStatus.FAILED and isinstance(failure, dict) and failure.get("kind") == "turn_limit"
+    # marker：只认成功结束且摘要最后一个非空行恰为 MARKER，且本段 processed ≥ seg["segment_soft"]。
+    if run.status != RunStatus.SUCCEEDED:
+        return False
+    lines = [line.strip() for line in (run.summary or "").splitlines() if line.strip()]
+    if not lines or lines[-1] != MARKER:
+        return False
+    if run.native.get("subagent_count"):
+        return False   # agy 委派一律不续段
+    processed = normalize_breakdown(run.native)["processed"]
+    soft = seg.get("segment_soft")
+    return type(processed) is int and type(soft) is int and processed >= soft
 
 
 def _settings(app) -> dict:

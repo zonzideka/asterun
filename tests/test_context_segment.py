@@ -6,8 +6,8 @@ from types import SimpleNamespace
 from asterun.application import _segment_session_native
 from asterun.backends.grok import DEFAULT_CODE_MAX_TURNS, _segment_turns
 from asterun.context_budget import segment as segment_mod
-from asterun.context_budget.segment import plan, resume_decision
-from asterun.contracts import Event, EventType
+from asterun.context_budget.segment import MARKER, plan, resume_decision, segment_end
+from asterun.contracts import Event, EventType, RunStatus
 from asterun.grok_profile import CODE_PROFILE, PROFILE
 
 
@@ -83,6 +83,7 @@ def test_plan_fake_profile_returns_segment(monkeypatch):
         "max_turns": 5,
         "profile_key": "fake/implementation",
         "max_segments": 4,
+        "trigger": "turn_limit",
     }
 
 
@@ -141,6 +142,7 @@ def test_plan_grok_caps_at_backend_or_default(monkeypatch):
         "max_turns": 40,
         "profile_key": "grok/implementation",
         "max_segments": 2,
+        "trigger": "turn_limit",
     }
     defaulted = _settings(
         backends=["grok"],
@@ -304,3 +306,128 @@ def test_segment_session_native_copies_source_session_id():
     assert decide({"backend_session_id": "  ", "session_id": "sess-grok"})["backend_session_id"] == "sess-grok"
     assert decide({}) == {"backend_session_id": None, "turn_id": None}
     assert decide({"session_id": ""}) == {"backend_session_id": None, "turn_id": None}
+
+
+def _marker_profiles(kind, *, segment_soft=80, segment=None, max_segments=4):
+    profile = {"segment_soft": segment_soft, "max_segments": max_segments}
+    if segment is not None:
+        profile["segment"] = segment
+    return {f"{kind}/implementation": profile, f"{kind}/repair": dict(profile), f"{kind}/review": dict(profile)}
+
+
+def test_plan_codex_marker_only_for_implementation(monkeypatch):
+    _bind(monkeypatch, _settings(
+        backends=["codex"],
+        roles=["implementation", "repair", "review"],
+        profiles=_marker_profiles("codex"),
+    ))
+    app = _app(kind="codex")
+    assert plan(app, _task(), _run(backend="codex")) == {
+        "index": 0,
+        "max_turns": None,
+        "profile_key": "codex/implementation",
+        "max_segments": 4,
+        "trigger": "marker",
+        "segment_soft": 80,
+    }
+    assert plan(app, _task(), _run(backend="codex", role="repair")) is None
+    assert plan(app, _task(), _run(backend="codex", role="review")) is None
+    reviewed = _task()
+    reviewed.external_require_review = True
+    assert plan(app, reviewed, _run(backend="codex")) is None
+    _bind(monkeypatch, _settings(
+        backends=["codex"],
+        profiles={"codex/implementation": {"segment_turns": 5, "max_segments": 4}},
+    ))
+    assert plan(app, _task(), _run(backend="codex")) is None
+    _bind(monkeypatch, _settings(
+        backends=["codex"],
+        profiles={"codex/implementation": {"segment_soft": 80, "segment": False}},
+    ))
+    assert plan(app, _task(), _run(backend="codex")) is None
+
+
+def test_plan_antigravity_requires_explicit_segment(monkeypatch):
+    app = _app(kind="antigravity")
+    run = _run(backend="antigravity")
+    _bind(monkeypatch, _settings(
+        backends=["antigravity"],
+        profiles=_marker_profiles("antigravity", segment_soft=50, max_segments=2),
+    ))
+    assert plan(app, _task(), run) is None
+    _bind(monkeypatch, _settings(
+        backends=["antigravity"],
+        profiles=_marker_profiles("antigravity", segment_soft=50, segment=True, max_segments=2),
+    ))
+    assert plan(app, _task(), run) == {
+        "index": 0,
+        "max_turns": None,
+        "profile_key": "antigravity/implementation",
+        "max_segments": 2,
+        "trigger": "marker",
+        "segment_soft": 50,
+    }
+    reviewed = _task()
+    reviewed.external_require_review = True
+    assert plan(app, reviewed, run) is None
+
+
+def _processed_native(processed, **extra):
+    native = {
+        "usage_source": "native_headless_report",
+        "usage": {
+            "input_tokens": processed,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": processed,
+        },
+    }
+    native.update(extra)
+    return native
+
+
+def _marker_end_run(*, status=RunStatus.SUCCEEDED, summary=None, processed=100, soft=80, subagent_count=0):
+    native = _processed_native(processed, segment={
+        "index": 0,
+        "max_turns": None,
+        "trigger": "marker",
+        "segment_soft": soft,
+    })
+    if subagent_count:
+        native["subagent_count"] = subagent_count
+    if summary is None:
+        summary = "本段到此。\n" + MARKER
+    return SimpleNamespace(status=status, summary=summary, native=native)
+
+
+def test_segment_end_marker_when_processed_reaches_soft():
+    assert segment_end(_marker_end_run(processed=100, soft=80)) is True
+    assert segment_end(_marker_end_run(processed=80, soft=80)) is True
+
+
+def test_segment_end_marker_rejects_incomplete_runs():
+    assert segment_end(_marker_end_run(summary="做完了，没有标记")) is False
+    assert segment_end(_marker_end_run(processed=10, soft=80)) is False
+    assert segment_end(_marker_end_run(subagent_count=2)) is False
+    assert segment_end(_marker_end_run(status=RunStatus.FAILED, summary="失败\n" + MARKER)) is False
+
+
+def test_segment_end_grok_turn_limit_unchanged():
+    native = {
+        "segment": {"index": 0, "max_turns": 5, "trigger": "turn_limit"},
+        "provider_failure": {"kind": "turn_limit"},
+    }
+    assert segment_end(SimpleNamespace(status=RunStatus.FAILED, summary="turn limit", native=native)) is True
+    legacy = {
+        "segment": {"index": 0, "max_turns": 5},
+        "provider_failure": {"kind": "turn_limit"},
+    }
+    assert segment_end(SimpleNamespace(status=RunStatus.FAILED, summary="turn limit", native=legacy)) is True
+    rejected = {
+        "segment": {"index": 0, "max_turns": 5, "trigger": "turn_limit"},
+        "provider_failure": {"kind": "rejected"},
+    }
+    assert segment_end(SimpleNamespace(status=RunStatus.FAILED, summary="no", native=rejected)) is False
+    assert segment_end(SimpleNamespace(status=RunStatus.SUCCEEDED, summary=MARKER, native=native)) is False
+    assert segment_end(SimpleNamespace(status=RunStatus.FAILED, summary="", native={})) is False
