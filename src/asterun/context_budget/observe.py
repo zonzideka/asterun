@@ -33,9 +33,15 @@ _FLAG_KEYS = (
 def observe_run(app, run) -> int:
     """observe 与 enforce 模式下为终态 run 写一行幂等观测。关闭、非终态或任何异常都返回 0。"""
     try:
-        return _observe_run(app, run)
+        result = _observe_run(app, run)
     except Exception:
-        return 0
+        result = 0
+    try:
+        from asterun.context_budget.ledger import settle_run
+        settle_run(app, run)
+    except Exception:
+        pass
+    return result
 
 
 def latest_for_task(conn, task_id) -> dict | None:

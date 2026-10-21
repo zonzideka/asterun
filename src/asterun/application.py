@@ -1923,6 +1923,14 @@ class Application:
             raise backend.unavailable_error()
         from asterun.grok_quota import guard as guard_grok_quota, scopes as grok_quota_scopes
         guard_grok_quota(self, backend_name)
+        if hasattr(self.store, "_conn"):
+            from asterun.context_budget.ledger import guard_dispatch as guard_context_budget
+            try:
+                guard_context_budget(self, run)
+            except AsterunError as exc:
+                if exc.code == "BUDGET_EXHAUSTED":
+                    _record_budget_capsule(self, task)
+                raise
         quota_scopes = grok_quota_scopes(self, backend_name)
         if quota_scopes:
             run.native["quota_latch_scopes"] = quota_scopes
@@ -2947,7 +2955,28 @@ class Application:
                     view["context_budget"] = row
         except Exception:
             pass
+        try:
+            if hasattr(self.store, "_conn"):
+                from asterun.context_budget.ledger import budget_view
+                budget = budget_view(self.store._conn, task.id.value)
+                if budget is not None:
+                    view.setdefault("context_budget", {})
+                    if isinstance(view["context_budget"], dict):
+                        view["context_budget"]["budget"] = budget
+        except Exception:
+            pass
         return view
+
+
+def _record_budget_capsule(app, task) -> None:
+    """预算准入拒绝时为上一个终态 run 生成 budget_soft 胶囊。失败不影响拒绝本身。"""
+    try:
+        from asterun.capsule.store import record_capsule
+        runs = [item for item in app.store.list_runs(task.id) if item.status in TERMINAL_RUN_STATUSES]
+        if runs:
+            record_capsule(app, task, runs[-1], trigger="budget_soft")
+    except Exception:
+        return
 
 
 def _conversation_ids(task: Task) -> dict[str, str]:

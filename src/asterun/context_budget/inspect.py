@@ -28,10 +28,20 @@ def _authorize(app) -> None:
 def inspect_context_budget(app, payload: dict) -> dict:
     """返回观测与当前 mode。表不存在时观测为空列表，且不建表。"""
     limit = 20 if payload.get("limit") is None else payload["limit"]
-    return {
-        "observations": list_observations(app.store._conn, task_id=payload.get("task_id"), limit=limit),
+    task_id = payload.get("task_id")
+    result = {
+        "observations": list_observations(app.store._conn, task_id=task_id, limit=limit),
         "mode": context_budget_settings(app.config)["mode"],
     }
+    if task_id:
+        try:
+            from asterun.context_budget.ledger import budget_view
+            budget = budget_view(app.store._conn, task_id)
+            if budget is not None:
+                result["budget"] = budget
+        except Exception:
+            pass
+    return result
 
 
 def handle(app, method: str, payload: dict | None) -> dict:
