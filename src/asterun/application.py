@@ -1895,6 +1895,10 @@ class Application:
             raise AsterunError(CAPABILITY_UNSUPPORTED, "v2 固定执行计划尚未绑定变换后投递，不能启用实验投递变换")
         from asterun.context_transition import guard as guard_context
         guard_context(self, task, run)
+        from asterun.context_budget.segment import plan as plan_segment
+        segment = plan_segment(self, task, run)
+        if segment is not None:
+            run.native["segment"] = segment
         dispatch_text = build_dispatch(self, task, run)
         if run.native.get("external_repair_target"):
             from asterun.quality import snapshot
@@ -1955,6 +1959,8 @@ class Application:
         native = {"backend_session_id": session.backend_session_id.value if session and session.backend_session_id else None,
                   "turn_id": session.latest_turn_id if session else None,
                   "asterun_identity": {"account": self.account_ref.value, "runtime": self.runtime_ref.value}}
+        if run.native.get("segment"):
+            native["segment_max_turns"] = run.native["segment"]["max_turns"]
         if run.native.get("context_transition"):
             transition = run.native["context_transition"]
             native.update(transition["source_native"])
