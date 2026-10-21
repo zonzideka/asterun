@@ -10,6 +10,7 @@ import json
 from typing import Any
 
 from asterun.contracts import Run, Task, TERMINAL_RUN_STATUSES
+from asterun.usage.breakdown import normalize_breakdown
 
 
 TOKEN_FIELDS = (
@@ -201,7 +202,7 @@ def _row(run: Run, task: Task | None) -> dict:
             "usage_is_partial": incomplete or bool(issues),
             "costs": _costs(run, eligible=eligible, partial=cost_partial, cumulative=cumulative),
             "native_usage": deepcopy({key: native[key] for key in _NATIVE_FIELDS if key in native}),
-            "issues": issues}
+            "issues": issues, "breakdown": normalize_breakdown(native)}
 
 
 def _aggregate(rows: list[dict]) -> dict:
@@ -221,7 +222,27 @@ def _aggregate(rows: list[dict]) -> dict:
                       "partial": len(known) != len(rows) or any(cost["partial"] for cost in known),
                       "source": "persisted_native_report", "billed_usage_verified": False})
     return {"run_count": len(rows), "task_count": len({row["task_id"] for row in rows}),
-            "tokens": tokens, "costs": costs}
+            "tokens": tokens, "costs": costs, "breakdown": _breakdown_totals(rows)}
+
+
+_BREAKDOWN_FIELDS = ("input_uncached", "cache_read", "cache_write", "output", "processed", "new")
+
+
+def _breakdown_totals(rows: list[dict]) -> dict:
+    """只加 attributable 的运行。不可归属的线程累计不进入 unknown_runs。"""
+    selected = [row["breakdown"] for row in rows if row.get("breakdown", {}).get("attributable") is True]
+    summary = {}
+    for field in _BREAKDOWN_FIELDS:
+        known = [item[field] for item in selected if item.get(field) is not None]
+        summary[field] = {"known_sum": sum(known) if known else None, "reported_runs": len(known),
+                          "unknown_runs": len(selected) - len(known)}
+    completeness = {"complete": 0, "partial": 0, "unknown": 0}
+    for item in selected:
+        label = item.get("completeness")
+        if label in completeness:
+            completeness[label] += 1
+    summary["completeness"] = completeness
+    return summary
 
 
 def build_usage_report(runs: Iterable[Run], *, tasks: Iterable[Task] = ()) -> dict:
@@ -255,7 +276,8 @@ def build_usage_report(runs: Iterable[Run], *, tasks: Iterable[Task] = ()) -> di
                       "仅已识别 Grok/Codex schema 按缓存/推理包含关系归一化；其它来源保持未知。",
                       "modelUsage 是原生分解，不与运行总量重复相加。",
                       "会话累计用量保留为观察值；没有运行起点基线时不计入运行总量。",
-                      "USD 与 native_usd_ticks 分开保留，不相加、不换算，不代表实际扣款。"]}
+                      "USD 与 native_usd_ticks 分开保留，不相加、不换算，不代表实际扣款。",
+                      "breakdown 只汇总 attributable 的运行；processed 含缓存读，new 不含；缺失为 null，仅 cache_write 缺失时对其余已知项求和并标 partial。Codex 线程累计不计入该汇总。"]}
 
 
 _DETAIL_COLLECTIONS = ("tasks", "groups", "runs")
@@ -273,9 +295,12 @@ def _bounded_detail(row: dict) -> dict:
         return row
     omitted = {"reason": "detail_byte_limit", "full_detail_bytes": len(encoded),
                "full_detail_sha256": hashlib.sha256(encoded).hexdigest()}
-    if "native_usage" in row:
-        reduced = {key: value for key, value in row.items() if key != "native_usage"}
-        reduced["detail_omitted"] = {**omitted, "fields": ["native_usage"]}
+    # 先去掉 native_usage。仍超限时再去掉 breakdown，避免新字段撑破单条预算。
+    removable = [key for key in ("native_usage", "breakdown") if key in row]
+    for count in range(1, len(removable) + 1):
+        fields = removable[:count]
+        reduced = {key: value for key, value in row.items() if key not in fields}
+        reduced["detail_omitted"] = {**omitted, "fields": fields}
         if len(_json_bytes(reduced)) <= _ITEM_BUDGET_BYTES:
             return reduced
     # A model/account identifier can itself be very large. A small explicit

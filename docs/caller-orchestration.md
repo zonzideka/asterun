@@ -241,6 +241,8 @@ asterun --state-dir .asterun/state --connect usage-report \
 
 报告按原 task 下保存的全部运行计量，包含失败、取消和修复轮，不只看最后一次成功。缺失值保持未知，部分用量保留不完整标记；原生费用不是已核验账单，`billed_usage_verified` 保持 `false`。输入缓存与输出内的 reasoning 是不同统计维度，不能把父项与子项重复相加。Codex Runtime 会保留已收到的非空 `token_usage` 通知，标记 `thread_cumulative`；没有通知时保持未知。线程累计计数不能直接当作每轮增量反复累加；不可加总的范围与原因会单列。
 
+逐运行明细以及 `totals` / `groups` 另附 `breakdown`（schema `asterun.usage_breakdown/v1`）。它把已识别来源归一为四项：`input_uncached`（未缓存输入）、`cache_read`（缓存读）、`cache_write`（缓存写）、`output`（输出）。`processed` 是这四项之和，包含缓存读；`new` 是 `input_uncached + cache_write + output`，不包含缓存读。缺失记 `null`，不记 0。只有 `cache_write` 缺失时，`processed` 和 `new` 用其余已知项求和，并把 `completeness` 标为 `partial`；`input_uncached`、`cache_read` 或 `output` 缺失时，这两项保持 `null`。`total_tokens` 只用来核对包含关系：对得上为 `verified`，没有总数为 `unverified`，对不上为 `mismatch` 且 `completeness=unknown`，不按错误口径填数。汇总里的 `breakdown` 只加 `attributable=true` 的运行。Codex 的 `token_usage` 是线程累计，`scope=thread_cumulative`、`attributable=false`，只留在该行的观察里，不进入 breakdown 汇总。
+
 Claude 单次调用的美元费用独立于 token 来源计入运行汇总，依据原生一次性快照及费用上报标记识别，不能只凭后端名称推断。新快照用 `cost_reported`、`cost_source` 区分原生确报零费用与未报告费用；旧快照中的正数仍可计入，旧版默认零值无法证明免费，保留原始值但在规范统计中记为未知。累计会话或线程费用不会作为单次费用重复相加。
 
 衡量搭配效果时，另行记录主控模型的用量、等待、验收与返工，按相同任务范围和质量门比较整个完成过程。Asterun 的输出变短、Grok 承担编码或缓存命中增加，都不能单独证明 Astra 节省了某个百分比；没有可比较的实测对照时，节省率应保持未测量。
