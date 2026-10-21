@@ -14,6 +14,7 @@ from asterun.backup import DB_NAME, _validate_snapshot, backup_state, restore_st
 from asterun.control_protocol import validate
 from asterun.control_store import ControlStore, TABLE_COLUMNS
 from asterun.errors import AsterunError
+from asterun.plugin_store import CONTEXT_BUDGET_TABLE_COLUMNS
 from asterun.sqlite_store import SCHEMA, SCHEMA_VERSION, SqliteStore
 from tests.test_control_runtime import create_task, start_command
 
@@ -205,3 +206,48 @@ def test_legacy_backup_versions_remain_readable(tmp_path, version):
     archive = tmp_path / "legacy.tar.gz"
     assert backup_state(state, archive)["schema_version"] == version
     assert restore_state(archive, tmp_path / "restored")["schema_version"] == version
+
+
+def test_old_backup_without_context_budget_table_still_restores(tmp_path):
+    root = tmp_path / "source"
+    root.mkdir()
+    db = SqliteStore(root / DB_NAME)
+    try:
+        columns = {row[1] for row in db._conn.execute("PRAGMA table_info(context_budget_observations)")}
+        assert columns == CONTEXT_BUDGET_TABLE_COLUMNS["context_budget_observations"]
+    finally:
+        db.close()
+    assert _validate_snapshot(root / DB_NAME) == 6
+    with closing(sqlite3.connect(root / DB_NAME)) as conn:
+        conn.execute("DROP TABLE context_budget_observations")
+        conn.commit()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    assert _validate_snapshot(root / DB_NAME) == 6
+    archive = tmp_path / "old.tar.gz"
+    assert backup_state(root, archive)["schema_version"] == 6
+    restored = tmp_path / "restored"
+    assert restore_state(archive, restored)["schema_version"] == 6
+    with closing(sqlite3.connect(restored / DB_NAME)) as conn:
+        names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "tasks" in names
+    assert "context_budget_observations" not in names
+
+
+def test_context_budget_backup_rejects_column_mismatch(tmp_path):
+    root = tmp_path / "source"
+    root.mkdir()
+    db = SqliteStore(root / DB_NAME)
+    db.close()
+    with closing(sqlite3.connect(root / DB_NAME)) as conn:
+        conn.execute("DROP TABLE context_budget_observations")
+        conn.execute(
+            """CREATE TABLE context_budget_observations (
+                namespace_id TEXT, run_id TEXT PRIMARY KEY, task_id TEXT, payload TEXT)"""
+        )
+        conn.commit()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    with pytest.raises(AsterunError) as caught:
+        _validate_snapshot(root / DB_NAME)
+    assert "表结构" in caught.value.message
+    with pytest.raises(AsterunError, match="表结构"):
+        backup_state(root, tmp_path / "invalid.tar.gz")

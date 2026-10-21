@@ -199,6 +199,15 @@ def _validate_snapshot(path: Path) -> int:
                 actual = {row[1] for row in conn.execute(f"PRAGMA table_info({name})")}
                 if ROUTING_TABLE_COLUMNS[name] != actual:
                     raise AsterunError(INVALID_REQUEST, "备份数据库表结构不兼容")
+            # 上下文预算观测表可选。没有则通过；出现时列必须完全一致。
+            from asterun.plugin_store import CONTEXT_BUDGET_TABLE_COLUMNS
+            present = [name for name in CONTEXT_BUDGET_TABLE_COLUMNS if name in tables]
+            if present and len(present) != len(CONTEXT_BUDGET_TABLE_COLUMNS):
+                raise AsterunError(INVALID_REQUEST, "备份数据库表结构不兼容")
+            for name in present:
+                actual = {row[1] for row in conn.execute(f"PRAGMA table_info({name})")}
+                if CONTEXT_BUDGET_TABLE_COLUMNS[name] != actual:
+                    raise AsterunError(INVALID_REQUEST, "备份数据库表结构不兼容")
         if conn.execute("SELECT 1 FROM sqlite_master WHERE type IN ('trigger', 'view') LIMIT 1").fetchone():
             raise AsterunError(INVALID_REQUEST, "备份含有未支持的触发器或视图")
         revision = conn.execute("SELECT value FROM meta WHERE key='applied_config_revision'").fetchone()

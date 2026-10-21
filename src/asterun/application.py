@@ -2928,6 +2928,15 @@ class Application:
         decision = routing_decision(self, task.id.value)
         if decision is not None:
             view["routing"] = decision
+        try:
+            if hasattr(self.store, "_conn"):
+                from asterun.context_budget.observe import latest_for_task
+
+                row = latest_for_task(self.store._conn, task.id.value)
+                if row is not None:
+                    view["context_budget"] = row
+        except Exception:
+            pass
         return view
 
 
