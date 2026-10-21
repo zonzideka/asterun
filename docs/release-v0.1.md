@@ -2,13 +2,19 @@
 
 # 首版发行说明
 
-当前公开源码版本为 `0.1.0a26`，正式稳定版 `0.1.0` 尚未发布。本次预发布的安装资产和校验文件见[对应版本发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a26)。首版范围已冻结，发布准备集中在现有行为、兼容和打包修复。项目采用 [Apache-2.0](../LICENSE)。`v0.1.0a26` 标签尚未打出，发行页上的文件要等该标签进入 `main` 且发行工作流成功之后才会出现。
+当前公开源码版本为 `0.1.0a27`，正式稳定版 `0.1.0` 尚未发布。本次预发布的安装资产和校验文件见[对应版本发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a27)。首版范围已冻结，发布准备集中在现有行为、兼容和打包修复。项目采用 [Apache-2.0](../LICENSE)。`v0.1.0a27` 标签尚未打出，发行页上的文件要等该标签进入 `main` 且发行工作流成功之后才会出现。
+
+## 0.1.0a27
+
+相对 2026-10-21 已发布的 [`v0.1.0a26`](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a26)，本版是上下文胶囊与 Token 预算第二阶段（默认关闭）。`context_budget.mode` 新增 `enforce`：任务级 Token 预算准入（`admission_only`），首次派发建立 Budget、上限按首次快照，超限 `BUDGET_EXHAUSTED` 并生成 `budget_soft` 胶囊，终态按 processed 结算、未知转 `UNCERTAIN`；enforce 需至少一个带 `task_hard` 的 profile。白名单内分段（`segmentation.backends`）：grok（`workspace-code-v1`）以原生回合上限分段；codex 仅实现角色、agy 仅 profile `segment: true`，以回复末行 `ASTERUN-SEGMENT: CONTINUE` 且本段 processed ≥ `segment_soft` 触发，新线程 + 胶囊续段（native_compact 不进自动流程）；审查、质量流程、外部强制审查等任务永不分段。续段幂等（`seg:{task}:{run}:{idx}`），计入 `max_runs_per_task`，重启与人工交接 resume 会对未判定的终态段重新判定。grok 续段仅在处理量与驻留峰值都已知且低于阈值时 resume 原会话。备份校验预算预留引用的 run 存在且同任务。默认 `off`，未写此键的既有配置序列化与摘要不变；schema 版本仍为 6。插件版本不变（Antigravity `1.0.7`、Cursor `1.0.1`、Jules `1.0.0`）；协议与标准 skill 最低接口 `0.1.0a14` 不变。
+
+尚未打 `v0.1.0a27`。资产要等该标签进入 `main` 且发行工作流成功之后，才会出现在[发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a27)。本次资产为核心 wheel、源码包、`asterun-skill-0.1.0a27.zip`、三个外部插件的 wheel 与源码包（Antigravity `1.0.7`，Cursor `1.0.1`，Jules `1.0.0`），以及 `SHA256SUMS`。
 
 ## 0.1.0a26
 
 相对 2026-10-20 已发布的 [`v0.1.0a25`](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a25)，本版是上下文胶囊与 Token 预算第一阶段（纯观测，默认关闭）。usage-report 每行与汇总新增 `breakdown`：统一未缓存输入、缓存读、缓存写、输出四分量，processed（含缓存读）与 new（不含缓存读）两种口径；缺失记 null 不记 0；用 total 做包含关系自检，不符判 unknown；Codex 线程累计不归属到运行；Codex cacheWrite 不计入（partial）；新增 Grok 逐请求驻留曲线（按 message_id 去重）。v2 新命名空间 `context_budget` 只接受 off（默认）/observe，enforce 尚未实现会被拒绝；未写此键的既有配置序列化与摘要不变。observe 模式在运行终态把本 run 与任务累计 processed/new 及本该触发的标记（`segment_soft_exceeded`、`task_soft_exceeded`、`task_hard_exceeded`、`max_segments_exceeded`、`long_task`、`would_segment`、`capsule_candidate`）写入新表 `context_budget_observations`；task-get 在有记录时显示 `context_budget`；新只读命令 `context-budget-inspect`（MCP `context_budget_inspect`）。不改变任何派发、返回或计数。SQLite 新增观测表（旧库自动创建，旧备份仍可恢复），schema 版本仍为 6。插件版本不变（Antigravity `1.0.7`、Cursor `1.0.1`、Jules `1.0.0`）；协议与标准 skill 最低接口 `0.1.0a14` 不变。
 
-尚未打 `v0.1.0a26`。资产要等该标签进入 `main` 且发行工作流成功之后，才会出现在[发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a26)。本次资产为核心 wheel、源码包、`asterun-skill-0.1.0a26.zip`、三个外部插件的 wheel 与源码包（Antigravity `1.0.7`，Cursor `1.0.1`，Jules `1.0.0`），以及 `SHA256SUMS`。
+`v0.1.0a26` 已于 2026-10-21 发布，资产见[发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a26)：核心 wheel、源码包、`asterun-skill-0.1.0a26.zip`、三个外部插件的 wheel 与源码包（Antigravity `1.0.7`，Cursor `1.0.1`，Jules `1.0.0`），以及 `SHA256SUMS`。
 
 ## 0.1.0a25
 
