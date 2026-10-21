@@ -9,14 +9,15 @@ from dataclasses import replace
 from datetime import datetime, timezone
 
 from asterun.backends.grok import DEFAULT_CODE_MAX_TURNS
+from asterun.capsule.assemble import verify_capsule
 from asterun.capsule.model import render_prompt
-from asterun.capsule.store import latest_with_blob, load_capsule, record_capsule
+from asterun.capsule.store import _NAMESPACE, _TABLE, latest_with_blob, load_capsule, record_capsule
 from asterun.config_v2 import context_budget_settings
 from asterun.context_budget.ledger import budget_view
 from asterun.context_budget.observe import _matched_profile
-from asterun.contracts import EventType, Operation, OperationStatus, Run, RunStatus
+from asterun.contracts import TERMINAL_RUN_STATUSES, EventType, Operation, OperationStatus, Run, RunStatus
 from asterun.errors import AsterunError
-from asterun.ids import new_operation_id, new_run_id
+from asterun.ids import RunId, new_operation_id, new_run_id
 from asterun.quality import bounded_prompt, digest
 from asterun.usage.breakdown import normalize_breakdown
 
@@ -67,6 +68,45 @@ def plan(app, task, run) -> dict | None:
         "profile_key": profile_key,
         "max_segments": profile.get("max_segments"),
     }
+
+
+def guard_continuation(app, task, run) -> None:
+    """续段派发前再核对。没有 segment_source_run_id 时直接返回，不访问数据库。
+
+    任一核对失败抛 AsterunError，调用方不得派发后端。
+    """
+    native = run.native if isinstance(getattr(run, "native", None), dict) else None
+    if not isinstance(native, dict):
+        return
+    source_id = native.get("segment_source_run_id")
+    if not source_id:
+        return
+    if plan(app, task, run) is None:
+        raise AsterunError("CAPABILITY_UNSUPPORTED", "续段排队期间分段已停用，未派发")
+    source = app.store.get_run(RunId(source_id))
+    source_native = source.native if isinstance(getattr(source, "native", None), dict) else {}
+    marker = source_native.get("segment_end", {})
+    if not isinstance(marker, dict):
+        marker = {}
+    if source.status not in TERMINAL_RUN_STATUSES or marker.get("continued_by") != run.id.value:
+        raise AsterunError("REVISION_CONFLICT", "续段源运行已变化，未派发")
+    if task.current_run_id != run.id:
+        raise AsterunError("REVISION_CONFLICT", "续段排队期间任务当前运行已变化，未派发")
+    row = app.store._conn.execute(
+        f"SELECT blob_sha256, ready FROM {_TABLE} WHERE namespace_id=? AND run_id=? AND trigger=?",
+        (_NAMESPACE, source_id, "segment_end"),
+    ).fetchone()
+    matched = False
+    if row is not None and row["ready"] == 1 and isinstance(row["blob_sha256"], str) and row["blob_sha256"]:
+        try:
+            capsule = load_capsule(app, row["blob_sha256"])
+        except Exception:
+            capsule = None
+        matched = (isinstance(capsule, dict)
+                   and capsule.get("capsule_id") == native.get("restored_from_capsule_id")
+                   and verify_capsule(app, task, capsule) == [])
+    if not matched:
+        raise AsterunError("REVISION_CONFLICT", "续段胶囊或任务约束已变化，未派发")
 
 
 _SESSION_KEYS = ("backend_session_id", "session_id", "thread_id", "provider_session_id")

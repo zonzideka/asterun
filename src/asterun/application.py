@@ -1899,6 +1899,8 @@ class Application:
         segment = plan_segment(self, task, run)
         if segment is not None:
             run.native["segment"] = segment
+        from asterun.context_budget.segment import guard_continuation
+        guard_continuation(self, task, run)
         dispatch_text = build_dispatch(self, task, run)
         if run.native.get("external_repair_target"):
             from asterun.quality import snapshot

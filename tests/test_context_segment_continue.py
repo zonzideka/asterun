@@ -1,6 +1,8 @@
 """分段续段集成：回合上限后续段、段数上限、幂等与不续段条件。"""
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from asterun.backends.fake import FakeBackend
@@ -151,3 +153,48 @@ def test_capsule_not_ready_does_not_continue(managed, monkeypatch):
     assert task.run_count == 1
     assert len(runs) == 1
     assert source.native["segment_end"]["reason"] == "capsule_not_ready"
+
+
+def _queue_successor(app, monkeypatch):
+    """首段回合上限结束后拦住自动 drain，使后继停在队列里。"""
+    dispatch = _patch_dispatch(monkeypatch, k=1)
+    real_drain = app._drain_queue
+    state = {"block": True}
+
+    def drain():
+        if not state["block"]:
+            real_drain()
+
+    monkeypatch.setattr(app, "_drain_queue", drain)
+    result = app.handle("task.submit", dict(_SUBMIT))
+    assert result.ok, getattr(result, "error", result)
+    task = app.store.get_task(TaskId(result.ids["task_id"]))
+    runs = list(app.store.list_runs(task.id))
+    successor = _by_index(runs)[1]
+    assert successor.status == RunStatus.QUEUED
+    assert dispatch.calls == 1
+    state["block"] = False
+    return task, successor, dispatch
+
+
+def test_queued_successor_fails_when_segmentation_disabled(managed, monkeypatch):
+    _enforce(managed)
+    _task, successor, dispatch = _queue_successor(managed, monkeypatch)
+    managed.config.context_budget["mode"] = "observe"
+    managed._drain_queue()
+    successor = managed.store.get_run(successor.id)
+    assert successor.status == RunStatus.FAILED
+    assert successor.error_code == "CAPABILITY_UNSUPPORTED"
+    assert dispatch.calls == 1
+
+
+def test_queued_successor_fails_when_mandatory_changes(managed, monkeypatch):
+    _enforce(managed)
+    task, successor, dispatch = _queue_successor(managed, monkeypatch)
+    task = managed.store.get_task(task.id)
+    managed.store.save_task(replace(task, findings=[{"id": "f-1", "text": "changed"}]))
+    managed._drain_queue()
+    successor = managed.store.get_run(successor.id)
+    assert successor.status == RunStatus.FAILED
+    assert successor.error_code == "REVISION_CONFLICT"
+    assert dispatch.calls == 1
