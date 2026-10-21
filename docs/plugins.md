@@ -86,7 +86,7 @@ observe 不改变派发、返回或计数；enforce 同样记录观测，另外�
 
 段以原生回合上限结束（源 run 仍记 failed/`GROK_RUN_INCOMPLETE`）时：未达 `max_segments`、未达 `scheduler.max_runs_per_task`、预算有余、胶囊 ready 才提交后继段（幂等键 `seg:{task}:{source_run}:{index}`）。后继用胶囊加续段说明，默认新会话（只有处理量与驻留量都已知且低于阈值时才 resume）。`run_count` 递增，`repair_count` 不变。续段计入 `max_runs_per_task`。源 run 记 `native.segment_end`。
 
-停下的原因记在 `segment_end.reason`（`max_segments` / `max_runs` / `budget` / `capsule_not_ready` / `capsule_too_large` / `segmentation_disabled` / `control_owned` / `queue_full`）。`max_segments` 与 `budget` 另生成 `budget_soft` 胶囊。续段派发前再核对：分段仍启用、源 run 已终止且指向本段、任务当前 run、胶囊 id 与 mandatory 未变，且 `run_count` 不超过 `max_runs_per_task`。分段已停用，或任务由 runner-control 持有，则不派发，错误码 `CAPABILITY_UNSUPPORTED`；源 run、当前 run、胶囊 id 或 mandatory 已变化则不派发，错误码 `REVISION_CONFLICT`；续段超过每任务运行上限则不派发，错误码 `BUDGET_EXHAUSTED`。进程重启时，会对已终态但尚未写入 `segment_end` 的段重新做幂等续段判定；已经判定过的段不会再次创建后继。
+停下的原因记在 `segment_end.reason`（`max_segments` / `max_runs` / `budget` / `capsule_not_ready` / `capsule_too_large` / `segmentation_disabled` / `control_owned` / `queue_full`）。`max_segments` 与 `budget` 另生成 `budget_soft` 胶囊。续段派发前再核对：分段仍启用、源 run 已终止且指向本段、任务当前 run、胶囊 id 与 mandatory 未变，且 `run_count` 不超过 `max_runs_per_task`。分段已停用，或任务由 runner-control 持有，则不派发，错误码 `CAPABILITY_UNSUPPORTED`；源 run、当前 run、胶囊 id 或 mandatory 已变化则不派发，错误码 `REVISION_CONFLICT`；续段超过每任务运行上限则不派发，错误码 `BUDGET_EXHAUSTED`。进程重启时，会对已终态但尚未写入 `segment_end` 的段重新做幂等续段判定；已经判定过的段不会再次创建后继。人工交接 resume 时也会对未判定的终态段重新做幂等续段判定。
 
 ## 上下文胶囊（v1，observe 仅生成不派发）
 

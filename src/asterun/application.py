@@ -1272,6 +1272,14 @@ class Application:
             self._event(run.id, EventType.HANDOFF_RESUMED, "core", {"orchestration_owner": "core"})
             run = self.store.get_run(run.id)
         self.store.save_task(task)
+        if action == "resume" and run is not None and run.status in TERMINAL_RUN_STATUSES:
+            native = run.native if isinstance(run.native, dict) else {}
+            if native.get("segment") and not native.get("segment_end"):
+                try:
+                    from asterun.context_budget.segment import continue_segment
+                    continue_segment(self, self.store.get_task(task.id), self.store.get_run(run.id))
+                except Exception:
+                    pass
         self._drain_queue()
         run = self.store.get_run(run.id) if run is not None else None
         return ok(

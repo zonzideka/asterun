@@ -348,15 +348,26 @@ def _capsule_not_ready(app, task, run) -> dict:
     return {"stopped": "capsule_not_ready"}
 
 
+def _segmentation_disabled(run) -> bool:
+    """segment_end 已记下停用。重新 enforce 后不得再补后继。"""
+    native = run.native if isinstance(getattr(run, "native", None), dict) else {}
+    marker = native.get("segment_end")
+    return isinstance(marker, dict) and marker.get("reason") == "segmentation_disabled"
+
+
 def _continue_segment(app, task, run) -> dict | None:
     if not segment_end(run):
         return None
+    # 停用判定一旦落盘就结束。调用方手里的 run 可能是旧对象，以库中的标记为准。
+    if _segmentation_disabled(run) or _segmentation_disabled(app.store.get_run(run.id)):
+        return {"stopped": "segmentation_disabled"}
     if task.paused or task.orchestration_owner == "human" or task.current_run_id != run.id:
         return None
     if _control_owned(app, task, run):
         _stop(app, task, run, "control_owned")
         return {"stopped": "control_owned"}
     if plan(app, task, run) is None:
+        _stop(app, task, run, "segmentation_disabled")
         return {"stopped": "segmentation_disabled"}
     seg = run.native["segment"]
     next_index = seg["index"] + 1

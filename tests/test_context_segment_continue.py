@@ -446,3 +446,73 @@ def test_guard_continuation_rejects_control_owned(monkeypatch):
         guard_continuation(app, task, run)
     assert caught.value.code == "CAPABILITY_UNSUPPORTED"
     assert caught.value.message == "runner-control 任务本版不分段，未派发"
+
+
+def test_segmentation_disabled_persists_and_blocks_later_continue(managed, monkeypatch):
+    _enforce(managed)
+    _patch_dispatch(monkeypatch, k=1)
+    monkeypatch.setattr("asterun.context_budget.segment.continue_segment", lambda *args, **kwargs: None)
+    task, source, runs = _start(managed)
+    assert len(runs) == 1
+    assert source.native.get("segment")
+    assert "segment_end" not in source.native
+    managed.config.context_budget["mode"] = "observe"
+    result = continue_segment(
+        managed,
+        managed.store.get_task(task.id),
+        managed.store.get_run(source.id),
+    )
+    assert result == {"stopped": "segmentation_disabled"}
+    source = managed.store.get_run(source.id)
+    assert source.native["segment_end"]["reason"] == "segmentation_disabled"
+    assert source.native["segment_end"].get("continued_by") is None
+    managed.config.context_budget["mode"] = "enforce"
+    again = continue_segment(
+        managed,
+        managed.store.get_task(task.id),
+        managed.store.get_run(source.id),
+    )
+    _settle(managed)
+    task = managed.store.get_task(task.id)
+    runs = list(managed.store.list_runs(task.id))
+    assert again == {"stopped": "segmentation_disabled"}
+    assert task.run_count == 1
+    assert len(runs) == 1
+
+
+def test_handoff_resume_continues_unjudged_terminal_segment(managed, monkeypatch):
+    _enforce(managed)
+    original = FakeBackend.dispatch
+
+    def dispatch(self, task_id, run_id, script, text, *, cwd=None):
+        dispatch.calls += 1
+        if dispatch.calls == 1:
+            current = managed.store.get_task(task_id)
+            managed.store.save_task(replace(current, orchestration_owner="human"))
+            return _failure("turn_limit")
+        return original(self, task_id, run_id, "success", text, cwd=cwd)
+
+    dispatch.calls = 0
+    monkeypatch.setattr(FakeBackend, "dispatch", dispatch)
+    result = managed.handle("task.submit", dict(_SUBMIT))
+    assert result.ok, getattr(result, "error", result)
+    _settle(managed)
+    task = managed.store.get_task(TaskId(result.ids["task_id"]))
+    source = managed.store.get_run(RunId(result.ids["run_id"]))
+    runs = list(managed.store.list_runs(task.id))
+    assert task.orchestration_owner == "human"
+    assert task.run_count == 1
+    assert len(runs) == 1
+    assert source.native.get("segment")
+    assert "segment_end" not in source.native
+    resumed = managed.handle("task.handoff", {"task_id": task.id.value, "action": "resume"})
+    assert resumed.ok, getattr(resumed, "error", resumed)
+    _settle(managed)
+    task = managed.store.get_task(task.id)
+    source = managed.store.get_run(source.id)
+    runs = list(managed.store.list_runs(task.id))
+    assert task.run_count == 2
+    assert len(runs) == 2
+    successor = _by_index(runs)[1]
+    assert successor.native["segment"]["index"] == 1
+    assert source.native["segment_end"]["continued_by"] == successor.id.value
