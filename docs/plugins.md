@@ -62,7 +62,7 @@ Grok 额度读取走未公开 ACP 扩展 `_x.ai/billing`，默认关闭。需要
 
 v2 可以写可选命名空间 `context_budget`，用来声明上下文胶囊和分段预算。它与付费、`routing`、`quota` 没有字段关联，也不改变这三处的校验。未写此键时，回读不注入默认值，`to_dict` 和配置摘要与未写时逐字节相同。只有写了此键，序列化里才出现 `context_budget`；写出的胶囊、分段和分配字段会补上默认值。`profiles` 里省掉的阈值不补，表示没有该阈值。v1 没有这一段，读取结果是 `mode=off` 的默认值。
 
-`mode` 接受 `off`（默认）、`observe` 和 `enforce`。`enforce`：Token 预算准入（详见下一 PR 的账本说明），分段尚未实现。`mode=enforce` 时至少一个 profile 须含 `task_hard`，否则拒绝。其它取值拒绝。`token_basis` 只接受 `processed`（默认）。
+`mode` 接受 `off`（默认）、`observe` 和 `enforce`。`enforce`：Token 预算准入（admission_only，见下文"Token 预算账本"），分段尚未实现。`mode=enforce` 时至少一个 profile 须含 `task_hard`，否则拒绝。其它取值拒绝。`token_basis` 只接受 `processed`（默认）。
 
 `capsule.nonmandatory_soft_bytes` 为 1024–65536，默认 16384。`capsule.nonmandatory_hard_bytes` 为 1024–131072，默认 24576，且必须大于等于 soft。`capsule.notes_max_bytes` 为 0–16384，默认 4096。`capsule.progress_markers` 为布尔值，默认 true。
 
@@ -74,7 +74,11 @@ v2 可以写可选命名空间 `context_budget`，用来声明上下文胶囊和
 
 未知字段会被拒绝。名为 `enforcement` 的字段，以及值 `hard`，一律拒绝。布尔值不能当作整数。数值都必须是整数。
 
-observe 与 enforce：运行终态时记录本 run 与任务累计 processed/new 以及本该触发的标记（`segment_soft_exceeded`、`task_soft_exceeded`、`task_hard_exceeded`、`max_segments_exceeded`、`long_task`、`would_segment`、`capsule_candidate`），并在 `capsule_candidate` 时生成胶囊；用 `asterun context-budget-inspect` 或 task-get 的 context_budget 字段查看。不改变任何派发、返回或计数，也不做分段。off 时不读写数据库。
+observe 不改变派发、返回或计数；enforce 同样记录观测，另外执行预算准入。
+
+### Token 预算账本（enforce）
+
+任务首次在 enforce 下派发、且匹配 profile 有 `task_hard` 时建立任务 Budget，上限按首次快照，之后改配置不改已有上限；之后该任务所有 run 都受其约束。每次派发在本地校验之后预留 `segment_soft`（无则剩余额度，至少 1，不超过上限）；已结算+在途+本次 > 上限时拒绝派发，错误码 `BUDGET_EXHAUSTED`，并为上一个终态 run 生成 `budget_soft` 胶囊；需显式加额（本版无加额命令）。终态按 processed 结算；用量不可归属时转 `UNCERTAIN` 并按预留额继续占用。不使用付费额度、不切换后端或角色。`task-get` 与 `context-budget-inspect --task` 在 enforce 下显示 budget（`task_hard`/`settled`/`held`/`uncertain_reservations`）。
 
 ## 上下文胶囊（v1，observe 仅生成不派发）
 

@@ -1923,14 +1923,6 @@ class Application:
             raise backend.unavailable_error()
         from asterun.grok_quota import guard as guard_grok_quota, scopes as grok_quota_scopes
         guard_grok_quota(self, backend_name)
-        if hasattr(self.store, "_conn"):
-            from asterun.context_budget.ledger import guard_dispatch as guard_context_budget
-            try:
-                guard_context_budget(self, run)
-            except AsterunError as exc:
-                if exc.code == "BUDGET_EXHAUSTED":
-                    _record_budget_capsule(self, task)
-                raise
         quota_scopes = grok_quota_scopes(self, backend_name)
         if quota_scopes:
             run.native["quota_latch_scopes"] = quota_scopes
@@ -1940,6 +1932,14 @@ class Application:
         bind_dependencies(self, task, run)
         from asterun.checkpoints import before_dispatch
         before_dispatch(self, task, run)
+        if hasattr(self.store, "_conn"):
+            from asterun.context_budget.ledger import guard_dispatch as guard_context_budget
+            try:
+                guard_context_budget(self, run)
+            except AsterunError as exc:
+                if exc.code == "BUDGET_EXHAUSTED":
+                    _record_budget_capsule(self, task)
+                raise
         self._assign_slot(run, held=True)
         self._set_run(run, RunStatus.DISPATCHING)
         self._event(run.id, EventType.RUN_DISPATCHING, "core", {"backend": backend_name})
@@ -2957,12 +2957,14 @@ class Application:
             pass
         try:
             if hasattr(self.store, "_conn"):
-                from asterun.context_budget.ledger import budget_view
-                budget = budget_view(self.store._conn, task.id.value)
-                if budget is not None:
-                    view.setdefault("context_budget", {})
-                    if isinstance(view["context_budget"], dict):
-                        view["context_budget"]["budget"] = budget
+                from asterun.config_v2 import context_budget_settings
+                if context_budget_settings(self.config)["mode"] == "enforce":
+                    from asterun.context_budget.ledger import budget_view
+                    budget = budget_view(self.store._conn, task.id.value)
+                    if budget is not None:
+                        view.setdefault("context_budget", {})
+                        if isinstance(view["context_budget"], dict):
+                            view["context_budget"]["budget"] = budget
         except Exception:
             pass
         return view

@@ -16,14 +16,6 @@ from asterun.usage.breakdown import normalize_breakdown
 
 NAMESPACE = "asterun.context_budget.v1"
 
-_UNCERTAIN_COUNT_SQL = (
-    "SELECT COUNT(*) FROM control_reservations r "
-    "JOIN control_entities e ON e.namespace_id=r.namespace_id "
-    "AND e.kind='Reservation' AND e.id=r.id "
-    "WHERE r.namespace_id=? AND r.budget_id=? "
-    "AND json_extract(e.payload,'$.status')='UNCERTAIN'"
-)
-
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -99,15 +91,12 @@ def _profile(app, run):
         return None
     profiles = settings.get("profiles")
     if not isinstance(profiles, dict):
-        return None
+        profiles = {}
     role = run.role or "implementation"
     key, _matched_role = _matched_profile(app, run.backend.value, role, profiles)
     profile = profiles.get(key)
     if not isinstance(profile, dict):
-        return None
-    task_hard = profile.get("task_hard")
-    if not _positive_int(task_hard):
-        return None
+        profile = {}
     return settings, key, profile
 
 
@@ -124,21 +113,36 @@ def guard_dispatch(app, run) -> dict | None:
         return None
     settings, profile_key, profile = selected
     store = ControlStore(app.store._conn)
-    hard = profile["task_hard"]
-    amount = min(profile.get("segment_soft") or hard, hard)
     run_id = run.id.value
+    task_id = run.task_id.value
     with store.transaction():
-        bud = ensure_budget(
-            store,
-            run.task_id.value,
-            profile_key,
-            hard,
-            _policy_sha(settings),
-        )
+        try:
+            bud = store.get("Budget", budget_id(task_id), NAMESPACE)
+        except AsterunError as exc:
+            if exc.code != "NOT_FOUND":
+                raise
+            task_hard = profile.get("task_hard")
+            if not _positive_int(task_hard):
+                return None
+            bud = ensure_budget(
+                store,
+                task_id,
+                profile_key,
+                task_hard,
+                _policy_sha(settings),
+            )
+        limit = bud["limits"][0]["limit"]
+        soft = profile.get("segment_soft")
+        if _positive_int(soft):
+            amount = min(soft, limit)
+        else:
+            totals = _totals(store, bud["id"])
+            remaining = limit - totals["settled"] - totals["held"]
+            amount = max(1, min(limit, remaining))
         reservation = _entity(
             "Reservation",
             reservation_id(run_id),
-            task_id=run.task_id.value,
+            task_id=task_id,
             budget_id=bud["id"],
             action_id=run_id,
             reserved=[
@@ -209,32 +213,56 @@ def settle_run(app, run) -> None:
         return
 
 
-def _uncertain_count(conn, bid: str) -> int:
-    row = conn.execute(_UNCERTAIN_COUNT_SQL, (NAMESPACE, bid)).fetchone()
-    if row is None:
+def _token_amount(items) -> int:
+    total = 0
+    if not isinstance(items, list):
         return 0
-    return int(row[0])
+    for item in items:
+        if isinstance(item, dict) and item.get("meter") == "tokens":
+            amount = item.get("amount")
+            if type(amount) is int:
+                total += amount
+    return total
 
 
 def budget_view(conn, task_id) -> dict | None:
     try:
-        store = ControlStore(conn, initialize=False)
-        try:
-            bud = store.get("Budget", budget_id(task_id), NAMESPACE)
-        except AsterunError as exc:
-            if exc.code == "NOT_FOUND":
-                return None
-            raise
-        totals = _totals(store, bud["id"])
+        bid = budget_id(task_id)
+        row = conn.execute(
+            "SELECT payload FROM control_entities WHERE namespace_id=? AND kind='Budget' AND id=?",
+            (NAMESPACE, bid),
+        ).fetchone()
+        if row is None:
+            return None
+        bud = json.loads(row[0])
+        settled = 0
+        held = 0
+        uncertain = 0
+        rows = conn.execute(
+            "SELECT e.payload FROM control_reservations r "
+            "JOIN control_entities e ON e.namespace_id=r.namespace_id "
+            "AND e.kind='Reservation' AND e.id=r.id "
+            "WHERE r.namespace_id=? AND r.budget_id=?",
+            (NAMESPACE, bid),
+        ).fetchall()
+        for item in rows:
+            payload = json.loads(item[0])
+            status = payload.get("status")
+            if status == "SETTLED":
+                settled += _token_amount(payload.get("actual"))
+            elif status in ("HELD", "UNCERTAIN"):
+                held += _token_amount(payload.get("reserved"))
+                if status == "UNCERTAIN":
+                    uncertain += 1
         limits = bud.get("limits") or []
         task_hard = limits[0]["limit"] if limits else None
         extensions = bud.get("extensions") or {}
         return {
             "budget_id": bud["id"],
             "task_hard": task_hard,
-            "settled": totals["settled"],
-            "held": totals["held"],
-            "uncertain_reservations": _uncertain_count(conn, bud["id"]),
+            "settled": settled,
+            "held": held,
+            "uncertain_reservations": uncertain,
             "profile_key": extensions.get("asterun.profile_key"),
             "enforcement": "admission_only",
         }

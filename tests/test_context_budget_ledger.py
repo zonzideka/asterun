@@ -163,3 +163,19 @@ def test_observe_submit_does_not_open_budget(managed):
     result = _submit(managed)
     assert result.ok
     assert budget_view(managed.store._conn, result.ids["task_id"]) is None
+
+
+def test_observe_task_get_omits_historical_budget(managed):
+    _enforce(managed)
+    result = _submit(managed)
+    assert result.ok
+    task_id = result.ids["task_id"]
+    assert budget_view(managed.store._conn, task_id) is not None
+    managed.config.context_budget["mode"] = "observe"
+    view = managed.handle("task.get", {"task_id": task_id})
+    assert view.ok
+    context = view.data.get("context_budget") if isinstance(view.data, dict) else None
+    if isinstance(context, dict):
+        assert "budget" not in context
+    else:
+        assert context is None

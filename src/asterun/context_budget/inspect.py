@@ -35,10 +35,11 @@ def inspect_context_budget(app, payload: dict) -> dict:
     }
     if task_id:
         try:
-            from asterun.context_budget.ledger import budget_view
-            budget = budget_view(app.store._conn, task_id)
-            if budget is not None:
-                result["budget"] = budget
+            if context_budget_settings(app.config)["mode"] == "enforce":
+                from asterun.context_budget.ledger import budget_view
+                budget = budget_view(app.store._conn, task_id)
+                if budget is not None:
+                    result["budget"] = budget
         except Exception:
             pass
     return result

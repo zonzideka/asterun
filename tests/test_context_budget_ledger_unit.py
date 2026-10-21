@@ -287,6 +287,121 @@ def test_budget_view_reports_fields_and_none_without_budget(monkeypatch, conn):
     assert ledger.budget_view(conn, "tsk_other") is None
 
 
+def test_repair_after_settle_stays_on_first_limit(monkeypatch, conn):
+    """implementation 结算 70 后，repair 仍受首次上限约束。"""
+    app = _app(conn)
+    holder = {
+        "settings": {
+            "mode": "enforce",
+            "profiles": {
+                "grok-code/implementation": {"task_hard": 100, "segment_soft": 60},
+            },
+        }
+    }
+    monkeypatch.setattr(
+        "asterun.context_budget.ledger.context_budget_settings",
+        lambda config: holder["settings"],
+    )
+    monkeypatch.setattr(
+        "asterun.context_budget.ledger.normalize_breakdown",
+        lambda native: {"processed": 70, "attributable": True},
+    )
+    run = _run("run_1", role="implementation", native={"usage": {"processed": 70}})
+    ledger.guard_dispatch(app, run)
+    ledger.settle_run(app, run)
+    assert ledger.budget_view(conn, "tsk_1")["settled"] == 70
+    assert _load_budget(conn, "tsk_1")["limits"][0]["limit"] == 100
+
+    holder["settings"] = {
+        "mode": "enforce",
+        "profiles": {"grok-code/repair": {"segment_soft": 60}},
+    }
+    with pytest.raises(AsterunError) as soft_only:
+        ledger.guard_dispatch(app, _run("run_soft", role="repair"))
+    assert soft_only.value.code == "BUDGET_EXHAUSTED"
+    assert soft_only.value.details["task_hard"] == 100
+    assert soft_only.value.details["settled"] == 70
+    assert soft_only.value.details["held"] == 0
+    assert soft_only.value.details["requested"] == 60
+    with pytest.raises(AsterunError) as missing:
+        _load_reservation(conn, "run_soft")
+    assert missing.value.code == "NOT_FOUND"
+
+    holder["settings"] = {"mode": "enforce", "profiles": {}}
+    bare = ledger.guard_dispatch(app, _run("run_bare", role="repair"))
+    assert bare is not None
+    assert bare["status"] == "HELD"
+    assert bare["reserved"][0]["amount"] == 30
+    assert _load_budget(conn, "tsk_1")["limits"][0]["limit"] == 100
+    view = ledger.budget_view(conn, "tsk_1")
+    assert view["task_hard"] == 100
+    assert view["settled"] == 70
+    assert view["held"] == 30
+
+    with pytest.raises(AsterunError) as again:
+        ledger.guard_dispatch(app, _run("run_bare_2", role="repair"))
+    assert again.value.code == "BUDGET_EXHAUSTED"
+    assert again.value.details == {
+        "budget_id": ledger.budget_id("tsk_1"),
+        "task_hard": 100,
+        "settled": 70,
+        "held": 30,
+        "requested": 1,
+    }
+
+
+def test_missing_segment_soft_reserves_remaining(monkeypatch, conn):
+    app = _app(conn)
+    holder = {"settings": _settings(task_hard=100, segment_soft=60)}
+    monkeypatch.setattr(
+        "asterun.context_budget.ledger.context_budget_settings",
+        lambda config: holder["settings"],
+    )
+    monkeypatch.setattr(
+        "asterun.context_budget.ledger._matched_profile",
+        lambda app, backend, role, profiles: (_PROFILE_KEY, "implementation"),
+    )
+    monkeypatch.setattr(
+        "asterun.context_budget.ledger.normalize_breakdown",
+        lambda native: {"processed": 40, "attributable": True},
+    )
+    ledger.guard_dispatch(app, _run("run_1"))
+    ledger.settle_run(app, _run("run_1"))
+    holder["settings"] = _settings(task_hard=500, segment_soft=None)
+    second = ledger.guard_dispatch(app, _run("run_2"))
+    assert second["status"] == "HELD"
+    assert second["reserved"][0]["amount"] == 60
+    assert _load_budget(conn, "tsk_1")["limits"][0]["limit"] == 100
+    view = ledger.budget_view(conn, "tsk_1")
+    assert view["settled"] == 40
+    assert view["held"] == 60
+    assert view["task_hard"] == 100
+
+
+def test_budget_view_reads_without_opening_a_transaction(monkeypatch, conn):
+    app = _app(conn)
+    _install(monkeypatch, _settings(task_hard=100, segment_soft=60))
+    ledger.guard_dispatch(app, _run())
+    assert conn.in_transaction is False
+
+    def _explode(self):
+        raise AssertionError("transaction opened")
+
+    monkeypatch.setattr(ControlStore, "transaction", _explode)
+    assert conn.in_transaction is False
+    view = ledger.budget_view(conn, "tsk_1")
+    assert conn.in_transaction is False
+    assert view == {
+        "budget_id": ledger.budget_id("tsk_1"),
+        "task_hard": 100,
+        "settled": 0,
+        "held": 60,
+        "uncertain_reservations": 0,
+        "profile_key": _PROFILE_KEY,
+        "enforcement": "admission_only",
+    }
+
+
 def test_settle_ignores_non_terminal_and_swallows_errors(monkeypatch, conn):
     app = _app(conn)
     _install(

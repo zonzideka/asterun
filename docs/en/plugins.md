@@ -62,7 +62,7 @@ A persistent quota latch comes from a saved native failure classification and do
 
 v2 may include the optional `context_budget` namespace for context-capsule and segmentation budgets. It shares no fields with billing, `routing`, or `quota`, and it does not change validation of those three. When the key is omitted, read-back does not fill defaults, and `to_dict` and the configuration digest stay byte-for-byte the same. The key appears in serialization only when it was written. Capsule, segmentation, and assignment fields that were written are filled with the defaults below. A threshold omitted inside `profiles` stays omitted, which means that threshold is unset. v1 has no such section; readers get the `mode=off` defaults.
 
-`mode` accepts `off` (the default), `observe`, and `enforce`. `enforce`: token-budget admission (see the ledger notes in the next PR); segmentation is not implemented yet. When `mode` is `enforce`, at least one profile must include `task_hard`, or the configuration is rejected. Any other value is rejected. `token_basis` accepts only `processed` (the default).
+`mode` accepts `off` (the default), `observe`, and `enforce`. `enforce`: token-budget admission (`admission_only`; see "Token budget ledger" below); segmentation is not implemented yet. When `mode` is `enforce`, at least one profile must include `task_hard`, or the configuration is rejected. Any other value is rejected. `token_basis` accepts only `processed` (the default).
 
 `capsule.nonmandatory_soft_bytes` is 1024–65536, default 16384. `capsule.nonmandatory_hard_bytes` is 1024–131072, default 24576, and must be greater than or equal to soft. `capsule.notes_max_bytes` is 0–16384, default 4096. `capsule.progress_markers` is a boolean, default true.
 
@@ -74,7 +74,11 @@ v2 may include the optional `context_budget` namespace for context-capsule and s
 
 Unknown fields are rejected. A field named `enforcement`, and the value `hard`, are always rejected. A boolean is not an integer. Every number must be an integer.
 
-Observe and enforce both record, when a run reaches a terminal status, that run's processed/new counts and the task's cumulative processed/new counts, plus the flags that would have fired (`segment_soft_exceeded`, `task_soft_exceeded`, `task_hard_exceeded`, `max_segments_exceeded`, `long_task`, `would_segment`, `capsule_candidate`). A capsule is also written when `capsule_candidate` is true. Read them with `asterun context-budget-inspect` or the `context_budget` field of task-get. This does not change dispatch, returned results, or counters, and it does not segment. When mode is `off`, this record does not read or write the database.
+Observe does not change dispatch, returned results, or counters. Enforce records the same observations and also performs budget admission.
+
+### Token budget ledger (enforce)
+
+A task Budget is created the first time that task is dispatched under `enforce` and the matched profile has `task_hard`. The limit is the snapshot from that first dispatch; later configuration changes do not change an existing limit. Every later run of that task is constrained by it. Each dispatch, after local checks, reserves `segment_soft` (or the remaining allowance when `segment_soft` is absent: at least 1, and not above the limit). When settled plus in-flight plus this reservation would exceed the limit, dispatch is rejected with error code `BUDGET_EXHAUSTED`, and a `budget_soft` capsule is written for the previous terminal run. Raising the limit requires an explicit top-up; this release has no top-up command. A terminal run settles on `processed`. When usage cannot be attributed, the reservation becomes `UNCERTAIN` and continues to occupy its reserved amount. This does not use paid quota and does not switch backend or role. `task-get` and `context-budget-inspect --task` show `budget` (`task_hard` / `settled` / `held` / `uncertain_reservations`) when mode is `enforce`.
 
 ## Context capsules (v1, observe only generates and does not dispatch)
 
