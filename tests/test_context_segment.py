@@ -373,6 +373,72 @@ def test_plan_antigravity_requires_explicit_segment(monkeypatch):
     assert plan(app, reviewed, run) is None
 
 
+def test_plan_external_antigravity_plugin_kind_segments(monkeypatch):
+    app = _app(kind="google.antigravity-cli")
+    run = _run(backend="google.antigravity-cli")
+    _bind(monkeypatch, _settings(
+        backends=["google.antigravity-cli"],
+        profiles=_marker_profiles("google.antigravity-cli", segment_soft=50, max_segments=2),
+    ))
+    assert plan(app, _task(), run) is None
+    _bind(monkeypatch, _settings(
+        backends=["google.antigravity-cli"],
+        profiles=_marker_profiles("google.antigravity-cli", segment_soft=50, segment=True, max_segments=2),
+    ))
+    assert plan(app, _task(), run) == {
+        "index": 0,
+        "max_turns": None,
+        "profile_key": "google.antigravity-cli/implementation",
+        "max_segments": 2,
+        "trigger": "marker",
+        "segment_soft": 50,
+    }
+
+
+def _antigravity_usage_native(**extra):
+    native = {
+        "asterun.antigravity_dispatch_v1": {"stage": "result"},
+        "usage_scope": "session",
+        "usage": {
+            "input_tokens": 100,
+            "output_tokens": 10,
+            "cache_read_tokens": 0,
+            "total_tokens": 110,
+        },
+        "segment": {
+            "index": 0,
+            "max_turns": None,
+            "trigger": "marker",
+            "segment_soft": 80,
+        },
+    }
+    native.update(extra)
+    return native
+
+
+def test_segment_end_antigravity_missing_subagent_count_is_false():
+    native = _antigravity_usage_native(plugin_id="google.antigravity-cli")
+    native.pop("asterun.antigravity_dispatch_v1")
+    assert "subagent_count" not in native
+    picture = normalize_breakdown(native)
+    assert picture["convention"] != "antigravity"
+    run = SimpleNamespace(status=RunStatus.SUCCEEDED, summary="本段到此。\n" + MARKER, native=native)
+    assert segment_end(run) is False
+    shaped = _antigravity_usage_native()
+    assert "subagent_count" not in shaped
+    assert normalize_breakdown(shaped)["convention"] == "antigravity"
+    assert segment_end(SimpleNamespace(status=RunStatus.SUCCEEDED, summary="本段到此。\n" + MARKER, native=shaped)) is False
+
+
+def test_segment_end_antigravity_zero_subagents_continues():
+    native = _antigravity_usage_native(subagent_count=0)
+    assert normalize_breakdown(native)["convention"] == "antigravity"
+    run = SimpleNamespace(status=RunStatus.SUCCEEDED, summary="本段到此。\n" + MARKER, native=native)
+    assert segment_end(run) is True
+    delegated = _antigravity_usage_native(subagent_count=1)
+    assert segment_end(SimpleNamespace(status=RunStatus.SUCCEEDED, summary="本段到此。\n" + MARKER, native=delegated)) is False
+
+
 def _processed_native(processed, **extra):
     native = {
         "usage_source": "native_headless_report",

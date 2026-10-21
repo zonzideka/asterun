@@ -2007,12 +2007,38 @@ class Application:
             transition = run.native["context_transition"]
             native.update(transition["source_native"])
             native["context_transition"] = transition
-        if (run.native.get("segment") and native.get("backend_session_id") is None
-                and backend.config.kind == "codex"):
+        from asterun.context_budget.segment import _KIND_ALIASES
+        from asterun.grok_profile import CODE_PROFILE
+        segment_kind = _KIND_ALIASES.get(backend.config.kind, backend.config.kind)
+        # 与下面选择派发方式的条件相同。同步路径不把 native 交给 dispatch 时，
+        # CodexBackend.dispatch 不接收 native，总会新建线程。
+        background_dispatch = self.executor is not None and backend.config.kind != "fake"
+        sync_grok_code_stream = (
+            not background_dispatch
+            and run.role != "review"
+            and not task.capability
+            and hasattr(backend, "dispatch_stream")
+            and backend.config.kind == "grok"
+            and getattr(backend, "execution_profile", None) == CODE_PROFILE
+        )
+        sync_plain_dispatch = not background_dispatch and not task.capability and not sync_grok_code_stream
+        sync_dispatch_omits_native = sync_plain_dispatch and not (
+            getattr(backend, "accepts_native_context", False) and run.role != "review"
+        )
+        executor_plain_dispatch = (
+            background_dispatch
+            and reader is None
+            and not task.capability
+            and run.role != "review"
+            and not hasattr(backend, "dispatch_stream")
+        )
+        dispatch_omits_native = sync_dispatch_omits_native or executor_plain_dispatch
+        if (run.native.get("segment") and segment_kind == "codex"
+                and (native.get("backend_session_id") is None or dispatch_omits_native)):
             # 新开线程时 thread_cumulative 才等于本段用量。派发前落盘，结果合并不得覆盖。
             run.native = {**run.native, "segment_fresh_thread": True}
             self.store.save_run(run)
-        if self.executor is not None and backend.config.kind != "fake":
+        if background_dispatch:
             if reader is not None:
                 native["read_scope_binding"] = task.read_scope
             cwd = self.config.get_workspace(task.workspace).root
@@ -2026,7 +2052,7 @@ class Application:
                                                               cwd=cwd, publish=publish, stopping=stopping)
                 if run.role == "review":
                     return backend.dispatch_review(task.id, run.id, task.script, run.prompt, cwd=cwd)
-                if hasattr(backend, "dispatch_stream"):
+                if not executor_plain_dispatch:
                     return backend.dispatch_stream(task.id, run.id, task.script, dispatch_text, cwd=cwd,
                                                    native=native, publish=publish, stopping=stopping)
                 return backend.dispatch(task.id, run.id, task.script, dispatch_text, cwd=cwd)
@@ -2036,14 +2062,11 @@ class Application:
                       "operation": operation.to_dict(), "session": self._session_for_task(task)}),
                       ids={"task_id": task.id.value, "run_id": run.id.value,
                            "operation_id": operation.id.value, **_conversation_ids(task)})
-        from asterun.grok_profile import CODE_PROFILE
         try:
             if task.capability:
                 result = backend.dispatch_capability(task.id, run.id, task.capability, task.capability_input,
                                                       cwd=self.config.get_workspace(task.workspace).root)
-            elif (run.role != "review" and not task.capability and hasattr(backend, "dispatch_stream")
-                  and backend.config.kind == "grok"
-                  and getattr(backend, "execution_profile", None) == CODE_PROFILE):
+            elif sync_grok_code_stream:
                 from threading import Event
 
                 def persist(snapshot):
@@ -2055,11 +2078,11 @@ class Application:
                     task.id, run.id, task.script, dispatch_text,
                     cwd=self.config.get_workspace(task.workspace).root,
                     native=native, publish=persist, stopping=Event())
-            else:
+            elif sync_plain_dispatch:
                 dispatch = backend.dispatch_review if run.role == "review" else backend.dispatch
                 result = dispatch(task.id, run.id, task.script, dispatch_text,
                                           cwd=self.config.get_workspace(task.workspace).root,
-                                          **({"native": native} if getattr(backend, "accepts_native_context", False) and run.role != "review" else {}))
+                                          **({} if sync_dispatch_omits_native else {"native": native}))
         except Exception as error:
             # 调用已经发生：即使是本地抛出的异常，也不能推断远端没有执行。
             with self._state_transaction():

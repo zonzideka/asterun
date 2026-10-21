@@ -26,6 +26,9 @@ from asterun.usage.breakdown import grok_residency_curve, normalize_breakdown
 SEGMENT_KINDS = frozenset({"grok", "fake", "codex", "antigravity"})
 MARKER = "ASTERUN-SEGMENT: CONTINUE"
 MARKER_KINDS = frozenset({"codex", "antigravity"})
+# v2 用 manifest_path 注册外部插件时，backend.kind 是 plugin_id 而不是兼容短名。
+_KIND_ALIASES = {"google.antigravity-cli": "antigravity"}
+_ANTIGRAVITY_DISPATCH_KEY = "asterun.antigravity_dispatch_v1"
 
 
 def _segmentation_blocked(task, run) -> bool:
@@ -110,7 +113,7 @@ def plan(app, task, run) -> dict | None:
     if not isinstance(backend_name, str) or backend_name not in backends:
         return None
     backend = app.config.get_backend(backend_name)
-    kind = backend.kind
+    kind = _KIND_ALIASES.get(backend.kind, backend.kind)
     if kind not in SEGMENT_KINDS:
         return None
     if kind == "grok" and _grok_execution_profile(app, run, backend) != CODE_PROFILE:
@@ -228,6 +231,16 @@ def _below(value, limit) -> bool:
     return type(value) is int and value >= 0 and type(limit) is int and value < limit
 
 
+def _is_antigravity_native(native: dict) -> bool:
+    """内置回执带派发键。外部 worker 只留下 plugin_id，不保留 subagent_count。"""
+    if not isinstance(native, dict):
+        return False
+    plugin_id = native.get("plugin_id")
+    if plugin_id in _KIND_ALIASES and _KIND_ALIASES[plugin_id] == "antigravity":
+        return True
+    return _ANTIGRAVITY_DISPATCH_KEY in native
+
+
 def segment_end(run) -> bool:
     """回合上限自然结束，或成功回复以 MARKER 收尾且本段处理量达到 segment_soft。"""
     seg = run.native.get("segment") if isinstance(run.native, dict) else None
@@ -241,6 +254,9 @@ def segment_end(run) -> bool:
         return False
     lines = [line.strip() for line in (run.summary or "").splitlines() if line.strip()]
     if not lines or lines[-1] != MARKER:
+        return False
+    # 外部插件结果不保留 subagent_count。键缺失就无法确认没有委派，不续段。
+    if _is_antigravity_native(run.native) and "subagent_count" not in run.native:
         return False
     if run.native.get("subagent_count"):
         return False   # agy 委派一律不续段
@@ -489,7 +505,8 @@ def _continue_segment(app, task, run) -> dict | None:
         capsule = load_capsule(app, blob_sha)
     except Exception:
         return _capsule_not_ready(app, task, run)
-    kind = app.config.get_backend(run.backend.value).kind
+    raw_kind = app.config.get_backend(run.backend.value).kind
+    kind = _KIND_ALIASES.get(raw_kind, raw_kind)
     try:
         prompt = bounded_prompt(render_prompt(capsule, backend_kind=kind) + CONTINUE_NOTE)
     except AsterunError:

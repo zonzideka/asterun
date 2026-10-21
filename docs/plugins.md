@@ -92,7 +92,7 @@ observe 不改变派发、返回或计数；enforce 同样记录观测，另外�
 
 codex 只对 implementation 角色自动续段：新线程加上胶囊，即 handoff_fresh 语义。`native_compact` 不进入自动流程。审查角色永不分段。antigravity 默认不分段，只有匹配 profile 写 `segment: true` 才启用。外部强制审查的任务不分段。需要 profile 的正整数 `segment_soft`；标记计划不看 `segment_turns`。
 
-段末条件：run 成功、摘要最后一个非空行恰为 `ASTERUN-SEGMENT: CONTINUE`、没有子代理、本段 processed 大于等于 `segment_soft`（用量须可归属到本 run；codex 只报线程累计，仅当本段新开线程时才视为本段用量，否则不续段）。要求外部审查的任务不分段。派发文本追加分段约定（任务尚未完成且上下文已经很长时，在回复最后单独一行输出该标记；任务完成时不要输出；agy 不得使用子代理）。停下的原因与续段派发前的核对同上一节 grok 分段。
+段末条件：run 成功、摘要最后一个非空行恰为 `ASTERUN-SEGMENT: CONTINUE`、没有子代理、本段 processed 大于等于 `segment_soft`（用量须可归属到本 run；codex 只报线程累计，仅当本段新开线程时才视为本段用量，否则不续段）。要求外部审查的任务不分段。通过 `manifest_path` 注册的外部 Antigravity 插件（kind `google.antigravity-cli`）按 antigravity 规划，但其结果不保留 `subagent_count`，无法确认没有委派，因此不会续段。派发文本追加分段约定（任务尚未完成且上下文已经很长时，在回复最后单独一行输出该标记；任务完成时不要输出；agy 不得使用子代理）。停下的原因与续段派发前的核对同上一节 grok 分段。
 
 resume：grok 仅当处理量已知且低于 `min_long_task_processed`，源 run usage 事件得到的驻留峰值已知（有 usage 事件且曲线非 partial）且低于 `resume_max_residency`，并且该 run 有原生会话时，沿用源会话；否则新会话。codex 与 agy 一律新会话。
 
