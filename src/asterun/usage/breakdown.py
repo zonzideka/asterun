@@ -112,7 +112,8 @@ def _codex(native: dict) -> dict:
     raw = _mapping(token_usage.get("total"))
     reported_input, _ = _component(raw, "inputTokens", issues)
     cache_read, _ = _component(raw, "cachedInputTokens", issues)
-    cache_write, _ = _component(raw, "cacheWriteInputTokens", issues)
+    # total 只核对 input+output。cacheWriteInputTokens 不在等式里，计入会让
+    # processed 偏离已核对总数，并把未覆盖分量标成 verified/complete。
     output, _ = _component(raw, "outputTokens", issues)
     reasoning, _ = _component(raw, "reasoningOutputTokens", issues)
     total, _ = _component(raw, "totalTokens", issues)
@@ -132,7 +133,7 @@ def _codex(native: dict) -> dict:
             issues.append("inclusion_mismatch")
             inclusion = "mismatch"
     return _picture(convention="codex_app_server", scope="thread_cumulative", attributable=False,
-                    input_uncached=input_uncached, cache_read=cache_read, cache_write=cache_write,
+                    input_uncached=input_uncached, cache_read=cache_read, cache_write=None,
                     output=output, reasoning=reasoning, inclusion=inclusion, issues=issues,
                     reasoning_subset=True)
 

@@ -144,8 +144,8 @@ def test_codex_thread_total_is_not_attributable_and_cache_write_is_partial():
     assert result["input_uncached"] != 1
 
     written = normalize_breakdown(codex(cacheWriteInputTokens=7))
-    assert written["cache_write"] == 7 and written["completeness"] == "complete"
-    assert written["processed"] == 127 and written["new"] == 37
+    assert written["cache_write"] is None and written["completeness"] == "partial"
+    assert written["processed"] == 120 and written["new"] == 30
     assert written["attributable"] is False
 
     over = normalize_breakdown(codex(cachedInputTokens=140))
@@ -157,6 +157,30 @@ def test_codex_thread_total_is_not_attributable_and_cache_write_is_partial():
     assert empty["convention"] == "codex_app_server" and empty["attributable"] is False
     assert empty["completeness"] == "unknown" and empty["processed"] is None
     assert "unrecognized_codex_usage_shape" in empty["issues"]
+
+
+def test_codex_cache_write_is_outside_total_check_and_stays_partial():
+    # input=100, cached=90, cacheWrite=7, output=20, total=120。
+    # total 自检只看 input+output；cache write 不计入 processed/new。
+    result = normalize_breakdown(codex(inputTokens=100, cachedInputTokens=90, cacheWriteInputTokens=7,
+                                       outputTokens=20, totalTokens=120))
+    assert result["cache_write"] is None
+    assert result["input_uncached"] == 10 and result["cache_read"] == 90 and result["output"] == 20
+    assert result["processed"] == 100 + 20
+    assert result["processed"] == 10 + 90 + 20 == 120
+    assert result["new"] == 10 + 20
+    assert result["completeness"] == "partial"
+    assert result["inclusion_check"] == "verified"
+    assert result["issues"] == []
+
+    zero = normalize_breakdown(codex(cacheWriteInputTokens=0))
+    assert zero["cache_write"] is None and zero["completeness"] == "partial"
+    assert zero["processed"] == 120 and zero["new"] == 30
+
+    invalid = normalize_breakdown(codex(cacheWriteInputTokens=True))
+    assert invalid["cache_write"] is None and invalid["processed"] == 120
+    assert invalid["completeness"] == "partial"
+    assert not any(issue.startswith("invalid_counter:cacheWrite") for issue in invalid["issues"])
 
 
 def test_antigravity_session_is_one_run_and_thinking_has_two_shapes():
