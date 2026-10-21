@@ -7,7 +7,7 @@ import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
-from asterun.config_v2 import context_budget_settings
+from asterun.config_v2 import _ROLE_KINDS, context_budget_settings
 from asterun.contracts import TERMINAL_RUN_STATUSES
 from asterun.usage.breakdown import normalize_breakdown
 
@@ -76,6 +76,25 @@ def list_observations(conn, *, task_id=None, limit=20) -> list[dict]:
     return [_row_dict(row) for row in rows]
 
 
+def _matched_profile(app, backend: str, role: str, profiles: dict) -> tuple[str, str]:
+    """返回 (profile_key, 记录用 role)。implementation 未配置时按后端 kind 回退，不修改 run。"""
+    profile_key = f"{backend}/{role}"
+    if profile_key in profiles or role != "implementation":
+        return profile_key, role
+    try:
+        kind = app.config.get_backend(backend).kind
+    except Exception:
+        return profile_key, role
+    matches = [name for name, kinds in _ROLE_KINDS.items() if kind in kinds]
+    if len(matches) != 1:
+        return profile_key, role
+    inferred = matches[0]
+    inferred_key = f"{backend}/{inferred}"
+    if inferred != "implementation" and inferred_key in profiles:
+        return inferred_key, inferred
+    return profile_key, role
+
+
 def _observe_run(app, run) -> int:
     settings = context_budget_settings(getattr(app, "config", None))
     if settings.get("mode") != "observe":
@@ -84,8 +103,8 @@ def _observe_run(app, run) -> int:
         return 0
     role = getattr(run, "role", None) or "implementation"
     backend = run.backend.value
-    profile_key = f"{backend}/{role}"
     profiles = settings.get("profiles") if isinstance(settings.get("profiles"), dict) else {}
+    profile_key, role = _matched_profile(app, backend, role, profiles)
     profile = profiles.get(profile_key) or {}
     if not isinstance(profile, dict):
         profile = {}
