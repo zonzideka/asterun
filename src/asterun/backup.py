@@ -68,7 +68,12 @@ def _validate_control_snapshot(conn: sqlite3.Connection) -> None:
                     and 0 <= item["size_bytes"] <= 512 * 1024)
         else:
             require(kind in _CONTROL_KINDS)
-            validate(item, kind)
+            # 与 context_budget.ledger.NAMESPACE 相同。侧账本的 namespace 不是协议 Id，
+            # Budget 也不带协议超额字段；写字面量以避免循环导入。交叉引用见下方预留循环。
+            if namespace == "asterun.context_budget.v1":
+                require(kind in {"Budget", "Reservation"})
+            else:
+                validate(item, kind)
         if kind in {"Upload", "Artifact"}:
             require(blobs.get((namespace, item["sha256"])) == item["size_bytes"])
             if kind == "Artifact":
@@ -91,9 +96,14 @@ def _validate_control_snapshot(conn: sqlite3.Connection) -> None:
         require(item is not None)
         require((item["budget_id"], item["action_id"]) == (budget_id, action_id))
         budget = entities.get((namespace, "Budget", budget_id))
-        action = entities.get((namespace, "Action", action_id))
-        require(budget is not None and action is not None)
-        require(item["task_id"] == budget["task_id"] == action["task_id"])
+        # 该账本预留的 action_id 是旧系统 run id，不引用 Action。
+        if namespace == "asterun.context_budget.v1":
+            require(budget is not None and id == "res_cb_" + action_id)
+            require(item["task_id"] == budget["task_id"])
+        else:
+            action = entities.get((namespace, "Action", action_id))
+            require(budget is not None and action is not None)
+            require(item["task_id"] == budget["task_id"] == action["task_id"])
         require((namespace, id) not in indexed_reservations)
         indexed_reservations.add((namespace, id))
     require(indexed_reservations == {(ns, id) for ns, kind, id in entities if kind == "Reservation"})

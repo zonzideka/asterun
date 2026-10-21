@@ -11,6 +11,7 @@ import tarfile
 import pytest
 
 from asterun.backup import DB_NAME, _validate_snapshot, backup_state, restore_state
+from asterun.context_budget.ledger import _entity, budget_id, reservation_id
 from asterun.control_protocol import validate
 from asterun.control_store import ControlStore, TABLE_COLUMNS
 from asterun.errors import AsterunError
@@ -251,3 +252,57 @@ def test_context_budget_backup_rejects_column_mismatch(tmp_path):
     assert "表结构" in caught.value.message
     with pytest.raises(AsterunError, match="表结构"):
         backup_state(root, tmp_path / "invalid.tar.gz")
+
+
+def _seed_context_budget_reservation(root: Path, reservation: str, action_id: str) -> None:
+    """Budget 与 Reservation 的形状与 ledger._entity / guard_dispatch 相同。"""
+    task_id = "tsk_1"
+    root.mkdir()
+    database = SqliteStore(root / DB_NAME)
+    try:
+        store = ControlStore(database._conn)
+        bid = budget_id(task_id)
+        budget = _entity(
+            "Budget",
+            bid,
+            task_id=task_id,
+            limits=[{
+                "meter": "tokens",
+                "limit": 100,
+                "enforcement": "admission_only",
+                "billing_pool_ref": None,
+            }],
+        )
+        budget["extensions"] = {
+            "asterun.legacy_task_id": task_id,
+            "asterun.profile_key": "grok-code/implementation",
+            "asterun.budget_policy_sha256": "a" * 64,
+            "asterun.token_basis": "processed",
+        }
+        store.put(budget)
+        store.reserve(_entity(
+            "Reservation",
+            reservation,
+            task_id=task_id,
+            budget_id=bid,
+            action_id=action_id,
+            reserved=[{"meter": "tokens", "amount": 60, "billing_pool_ref": None}],
+            actual=None,
+            status="HELD",
+            receipt_evidence_ids=[],
+        ))
+    finally:
+        database.close()
+
+
+def test_context_budget_reservation_backup_accepts_run_id_and_rejects_other_ids(tmp_path):
+    run_id = "run_1"
+    good = tmp_path / "good"
+    _seed_context_budget_reservation(good, reservation_id(run_id), run_id)
+    assert reservation_id(run_id) == "res_cb_" + run_id
+    assert _validate_snapshot(good / DB_NAME) == 6
+
+    bad = tmp_path / "bad"
+    _seed_context_budget_reservation(bad, "res_cb_other", run_id)
+    with pytest.raises(AsterunError, match="不一致"):
+        _validate_snapshot(bad / DB_NAME)

@@ -78,11 +78,11 @@ observe 不改变派发、返回或计数；enforce 同样记录观测，另外�
 
 ### Token 预算账本（enforce）
 
-任务首次在 enforce 下派发、且匹配 profile 有 `task_hard` 时建立任务 Budget，上限按首次快照，之后改配置不改已有上限；之后该任务所有 run 都受其约束。每次派发在本地校验之后预留 `segment_soft`（无则剩余额度，至少 1，不超过上限）；已结算+在途+本次 > 上限时拒绝派发，错误码 `BUDGET_EXHAUSTED`，并为上一个终态 run 生成 `budget_soft` 胶囊；需显式加额（本版无加额命令）。终态按 processed 结算；用量不可归属时转 `UNCERTAIN` 并按预留额继续占用。不使用付费额度、不切换后端或角色。`task-get` 与 `context-budget-inspect --task` 在 enforce 下显示 budget（`task_hard`/`settled`/`held`/`uncertain_reservations`）。
+任务首次在 enforce 下派发、且匹配 profile 有 `task_hard` 时建立任务 Budget，上限按首次快照，之后改配置不改已有上限；之后该任务所有 run 都受其约束。每次派发在本地校验之后预留 `segment_soft`（无则剩余额度，至少 1，不超过上限）；已结算+在途+本次 > 上限时拒绝派发，错误码 `BUDGET_EXHAUSTED`，并为上一个终态 run 生成 `budget_soft` 胶囊；需显式加额（本版无加额命令）。终态按 processed 结算；用量不可归属时转 `UNCERTAIN` 并按预留额继续占用。不使用付费额度、不切换后端或角色。`task-get` 与 `context-budget-inspect --task` 在 enforce 下显示 budget（`task_hard`/`settled`/`held`/`uncertain_reservations`）。结算由运行是否已有预留决定，与终态时的 mode 无关（off 下终态只做一次只读查询）。
 
 ## 上下文胶囊（v1，observe 仅生成不派发）
 
-`capsule_candidate` 为真时，观测行写入之后再生成一条续段胶囊，`trigger` 为 `observe_only`。`capsule.progress_markers` 是真是假都不影响这一步。胶囊只落库：`ready` 写 0，不派发，不改运行结果，不改计数。生成失败只丢掉这条胶囊，观测行和 `save_run` 照常完成。`mode=off` 时不读不写数据库。
+`capsule_candidate` 为真时，观测行写入之后再生成一条续段胶囊，`trigger` 为 `observe_only`。`capsule.progress_markers` 是真是假都不影响这一步。胶囊只落库：`ready` 写 0，不派发，不改运行结果，不改计数。生成失败只丢掉这条胶囊，观测行和 `save_run` 照常完成。`mode=off` 时不写数据库；终态只读查询是否有历史预留。
 
 胶囊 schema 是 `asterun.capsule/v1`。它保存继续下一段所需要的契约、工作区摘要、进度和未决事项。mandatory 原文不裁剪：`objective` 是任务正文的逐字节副本，`constraints`、`acceptance`、`review_requirements`、`findings`（含 id 与 text）和 `limits` 同样原样进入。非 mandatory 软上限 16384 字节（16 KB），硬上限 24576 字节（24 KB）。超过软上限时按固定顺序做有损裁剪（笔记正文、命令、碰过的文件）。裁完仍超过硬上限则不存正文，行上 `error_code` 为 `CAPSULE_TOO_LARGE`。
 
