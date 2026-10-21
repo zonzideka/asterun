@@ -55,6 +55,11 @@ def build_parser() -> argparse.ArgumentParser:
     quota_inspect_scope = quota_inspect.add_mutually_exclusive_group()
     quota_inspect_scope.add_argument("--scope", dest="scope_ref")
     quota_inspect_scope.add_argument("--backend")
+    context_budget_inspect = sub.add_parser(
+        "context-budget-inspect", help="只读上下文预算观测；不建表，不改变派发或计数",
+    )
+    context_budget_inspect.add_argument("--task", dest="task_id", help="只返回该任务的观测")
+    context_budget_inspect.add_argument("--limit", type=int, help="返回条数，1–200，默认 20")
     routing_explain = sub.add_parser("routing-explain", help="只解释候选组选路；不改变派发，不写库")
     routing_explain_scope = routing_explain.add_mutually_exclusive_group(required=True)
     routing_explain_scope.add_argument("--group", help="候选组名")
@@ -360,14 +365,15 @@ def _app(args: argparse.Namespace, *, entry: str = "cli") -> Application:
         return app
     return Application.from_paths(config_path, state_dir, entry=entry,
                                   background=args.command in {"serve", "mcp"},
-                                  restore_scheduler=args.command not in {"usage-report", "quota-inspect", "routing-explain"})
+                                  restore_scheduler=args.command not in {
+                                      "usage-report", "quota-inspect", "routing-explain", "context-budget-inspect"})
 
 
 COMMAND_METHODS = {
     **{name.replace(".", "-"): name for name in (
         "plugin.list", "plugin.inspect", "plugin.register", "plugin.enable", "plugin.disable",
         "connection.setup", "usage.inspect", "quota.inspect", "quota.set", "quota.clear", "quota.refresh",
-        "routing.explain",
+        "routing.explain", "context_budget.inspect",
         "capability.invoke", "capability.discovery", "capability.prepare", "capability.submit", "capability.get")},
     "approval-assess": "approval.assess",
     "approval-apply-policy": "approval.apply-policy",
@@ -411,6 +417,8 @@ COMMAND_METHODS = {
     "state-backup": "state.backup",
     "state-restore": "state.restore",
 }
+# 方法名里的下划线不是点，自动替换会得到 context_budget-inspect。
+COMMAND_METHODS["context-budget-inspect"] = COMMAND_METHODS.pop("context_budget-inspect")
 
 
 def emit(envelope: Envelope, stream: Any = None) -> None:

@@ -64,6 +64,15 @@ _SCHEMA = (
         payload TEXT, evaluated_at TEXT)""",
     """CREATE INDEX IF NOT EXISTS idx_plugin_routing_decisions_key
         ON plugin_routing_decisions(namespace_id, group_name, evaluated_at)""",
+    """CREATE TABLE IF NOT EXISTS context_budget_observations (
+        namespace_id TEXT NOT NULL, run_id TEXT NOT NULL, task_id TEXT NOT NULL,
+        profile_key TEXT NOT NULL, backend TEXT NOT NULL, role TEXT NOT NULL,
+        run_processed INTEGER, run_new INTEGER, task_processed INTEGER, task_new INTEGER,
+        unknown_runs INTEGER NOT NULL, flags TEXT NOT NULL, policy_sha256 TEXT NOT NULL,
+        observed_at TEXT NOT NULL,
+        PRIMARY KEY(namespace_id, run_id))""",
+    """CREATE INDEX IF NOT EXISTS idx_context_budget_observations_key
+        ON context_budget_observations(namespace_id, task_id, observed_at)""",
 )
 SCHEMA = ";\n".join(_SCHEMA) + ";\n"
 TABLE_COLUMNS = {
@@ -90,6 +99,14 @@ ROUTING_TABLE_COLUMNS = {
     "plugin_routing_decisions": {
         "namespace_id", "id", "task_id", "run_id", "role", "group_name", "chosen",
         "primary_alias", "mode", "reason_code", "payload", "evaluated_at",
+    },
+}
+# 上下文预算观测随 PR-2B 补上，不升 schema。旧备份可以没有；出现时列必须完全一致。
+CONTEXT_BUDGET_TABLE_COLUMNS = {
+    "context_budget_observations": {
+        "namespace_id", "run_id", "task_id", "profile_key", "backend", "role",
+        "run_processed", "run_new", "task_processed", "task_new", "unknown_runs",
+        "flags", "policy_sha256", "observed_at",
     },
 }
 QUOTA_SNAPSHOT_LIMIT = 500

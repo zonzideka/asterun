@@ -256,9 +256,10 @@ class Application:
     def _bind_quota_hook(self) -> None:
         if not hasattr(self.store, "quota_hook"):
             return
+        from asterun.context_budget.observe import observe_run
         from asterun.quota.passive import persist_run_quota
 
-        self.store.quota_hook = lambda run: persist_run_quota(self, run)
+        self.store.quota_hook = lambda run: (persist_run_quota(self, run), observe_run(self, run))
 
     @property
     def control(self):
@@ -371,7 +372,11 @@ class Application:
                 return ok(self.capabilities.handle(method, payload))
             if method.startswith("control."):
                 return self._handle_control(method, payload)
-            if method.startswith("quota.") or method == "routing.explain":
+            if method.startswith("quota.") or method in {"routing.explain", "context_budget.inspect"}:
+                if method == "context_budget.inspect":
+                    from asterun.context_budget.inspect import handle as handle_context_budget
+
+                    return ok(handle_context_budget(self, method, payload))
                 from asterun.quota.service import handle as handle_quota
 
                 return ok(handle_quota(self, method, payload))
@@ -2927,6 +2932,15 @@ class Application:
         decision = routing_decision(self, task.id.value)
         if decision is not None:
             view["routing"] = decision
+        try:
+            if hasattr(self.store, "_conn"):
+                from asterun.context_budget.observe import latest_for_task
+
+                row = latest_for_task(self.store._conn, task.id.value)
+                if row is not None:
+                    view["context_budget"] = row
+        except Exception:
+            pass
         return view
 
 
