@@ -74,6 +74,8 @@ v2 可以写可选命名空间 `context_budget`，用来声明上下文胶囊和
 
 未知字段会被拒绝。名为 `enforcement` 的字段，以及值 `hard`，一律拒绝。布尔值不能当作整数。数值都必须是整数。
 
+observe 模式：运行终态时记录本 run 与任务累计 processed/new 以及本该触发的标记（`segment_soft_exceeded`、`task_soft_exceeded`、`task_hard_exceeded`、`max_segments_exceeded`、`long_task`、`would_segment`、`capsule_candidate`），用 `asterun context-budget-inspect` 或 task-get 的 context_budget 字段查看；不改变任何派发、返回或计数；off 时不读写数据库。
+
 ## 候选组与选路解释
 
 候选组只写在配置 v2 的 `routing.candidate_groups`。一组是同一角色、同一后端种类、同一执行选项的 1 到 8 个别名，模型可以不同。`models_allowed` 不写则不限制模型；写了才校验。`primary` 必须是成员之一。组名匹配 `^[a-z][a-z0-9_-]{0,31}$`。同一角色最多一组，不同角色的成员不能相交。未写 `candidate_groups` 或 `quota_preference` 时，配置回读不注入默认值。

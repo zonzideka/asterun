@@ -45,6 +45,7 @@ REQUEST_SCHEMAS = {
     "connection.setup": obj({"connection_ref": IDENTIFIER}, ["connection_ref"]),
     "usage.inspect": obj({"pool_ref": IDENTIFIER, "meter": IDENTIFIER, "window_id": IDENTIFIER}),
     "quota.inspect": obj({"scope_ref": IDENTIFIER, "backend": IDENTIFIER}),
+    "context_budget.inspect": obj({"task_id": IDENTIFIER, "limit": {"type": "integer", "minimum": 1, "maximum": 200}}),
     "quota.set": obj({
         "scope_ref": IDENTIFIER, "backend": IDENTIFIER, "bucket_id": IDENTIFIER,
         "window_kind": {"type": "string", "enum": ["5h", "weekly", "monthly", "billing_period", "other"]},

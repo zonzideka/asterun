@@ -74,6 +74,8 @@ v2 may include the optional `context_budget` namespace for context-capsule and s
 
 Unknown fields are rejected. A field named `enforcement`, and the value `hard`, are always rejected. A boolean is not an integer. Every number must be an integer.
 
+Observe mode records, when a run reaches a terminal status, that run's processed/new counts and the task's cumulative processed/new counts, plus the flags that would have fired (`segment_soft_exceeded`, `task_soft_exceeded`, `task_hard_exceeded`, `max_segments_exceeded`, `long_task`, `would_segment`, `capsule_candidate`). Read them with `asterun context-budget-inspect` or the `context_budget` field of task-get. This does not change dispatch, returned results, or counters. When mode is `off`, this record does not read or write the database.
+
 ## Candidate groups and routing explanation
 
 Candidate groups exist only in configuration v2, under `routing.candidate_groups`. A group is 1 to 8 aliases with the same role, the same backend kind, and the same execution options. Models may differ. `models_allowed` is optional and is checked only when written. `primary` must be one of the members. A group name matches `^[a-z][a-z0-9_-]{0,31}$`. Each role has at most one group, and members of different roles cannot overlap. When `candidate_groups` or `quota_preference` is omitted, read-back does not fill defaults.
