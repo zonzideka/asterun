@@ -6,8 +6,9 @@ from dataclasses import replace
 import pytest
 
 from asterun.backends.fake import FakeBackend
-from asterun.context_budget.segment import continue_segment, plan
+from asterun.context_budget.segment import continue_segment, guard_continuation, plan
 from asterun.contracts import RunId, RunStatus, TaskId
+from asterun.errors import AsterunError
 from tests.test_context_budget_observe import _enable, managed
 
 _SUBMIT = {"workspace": "demo", "backend": "fake", "text": "hi", "script": "success"}
@@ -272,8 +273,13 @@ def test_plan_returns_none_for_quality_or_target_hash(managed):
     from types import SimpleNamespace
 
     _enforce(managed)
-    plain = SimpleNamespace(role="implementation", backend=SimpleNamespace(value="fake"), native={})
-    assert plan(managed, SimpleNamespace(), plain) is not None
+    plain = SimpleNamespace(
+        id=SimpleNamespace(value="run_plain_segment"),
+        role="implementation",
+        backend=SimpleNamespace(value="fake"),
+        native={},
+    )
+    assert plan(managed, SimpleNamespace(id=SimpleNamespace(value="tsk_plain_segment")), plain) is not None
     assert plan(managed, SimpleNamespace(quality={"phase": "review"}), plain) is None
     bound = SimpleNamespace(
         role="implementation", backend=SimpleNamespace(value="fake"), native={}, target_hash="abc",
@@ -288,3 +294,68 @@ def test_plan_returns_none_for_quality_or_target_hash(managed):
         native={"external_repair_target": {"target_hash": "abc"}},
     )
     assert plan(managed, SimpleNamespace(), repair) is None
+
+
+def _control_app():
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        store=SimpleNamespace(
+            list_runs=lambda task_id: [],
+            find_operation_for_run=lambda run_id: None,
+        ),
+    ), SimpleNamespace(id=SimpleNamespace(value="tsk_control")), SimpleNamespace(
+        id=SimpleNamespace(value="run_control"),
+        role="implementation",
+        backend=SimpleNamespace(value="fake"),
+        native={},
+    )
+
+
+def test_plan_rcp_operation_returns_none(managed, monkeypatch):
+    from types import SimpleNamespace
+
+    _enforce(managed)
+    app, task, run = _control_app()
+    app.config = managed.config
+    monkeypatch.setattr(app.store, "find_operation_for_run", lambda run_id: SimpleNamespace(idempotency_key="rcp_x"))
+    assert plan(app, task, run) is None
+
+
+def test_plan_quality_control_operation_returns_none(managed, monkeypatch):
+    from types import SimpleNamespace
+
+    _enforce(managed)
+    app, task, run = _control_app()
+    app.config = managed.config
+    monkeypatch.setattr(
+        app.store,
+        "find_operation_for_run",
+        lambda run_id: SimpleNamespace(idempotency_key="idem_plain"),
+    )
+    app.capabilities = SimpleNamespace(quality_control_for_operation=lambda operation: True)
+    assert plan(app, task, run) is None
+
+
+def test_plan_operation_lookup_error_returns_none(managed, monkeypatch):
+    _enforce(managed)
+    app, task, run = _control_app()
+    app.config = managed.config
+
+    def find(_run_id):
+        raise RuntimeError("store down")
+
+    monkeypatch.setattr(app.store, "find_operation_for_run", find)
+    assert plan(app, task, run) is None
+
+
+def test_guard_continuation_rejects_control_owned(monkeypatch):
+    from types import SimpleNamespace
+
+    app, task, run = _control_app()
+    run.native = {"segment_source_run_id": "run_source", "segment": {"index": 1}}
+    monkeypatch.setattr(app.store, "find_operation_for_run", lambda run_id: SimpleNamespace(idempotency_key="rcp_x"))
+    with pytest.raises(AsterunError) as caught:
+        guard_continuation(app, task, run)
+    assert caught.value.code == "CAPABILITY_UNSUPPORTED"
+    assert caught.value.message == "runner-control 任务本版不分段，未派发"

@@ -43,10 +43,32 @@ def _segmentation_blocked(task, run) -> bool:
     return False
 
 
+def _control_owned(app, task, run) -> bool:
+    """任务的任一运行意图由 runner-control 持有（rcp_ 键或质量控制），或无法确认时，返回 True。"""
+    try:
+        runs = list(app.store.list_runs(task.id))
+        if run.id not in [r.id for r in runs]:
+            runs.append(run)
+        for item in runs:
+            operation = app.store.find_operation_for_run(item.id)
+            if operation is None:
+                continue
+            if operation.idempotency_key.startswith("rcp_"):
+                return True
+            capabilities = getattr(app, "capabilities", None)
+            if capabilities is not None and capabilities.quality_control_for_operation(operation):
+                return True
+        return False
+    except Exception:
+        return True
+
+
 def plan(app, task, run) -> dict | None:
     """enforce 且后端在 segmentation.backends 白名单、角色在 segmentation.roles、kind 属于 SEGMENT_KINDS、
-    匹配 profile 有 segment_turns 且 profile.get("segment") 不是 False 时，返回段计划；否则 None（不访问数据库）。
-    质量流程、修复目标绑定、read_scope、capability、dependencies 任务不分段。"""
+    匹配 profile 有 segment_turns 且 profile.get("segment") 不是 False、且任务不由 runner-control 持有时，返回段计划。
+    mode 不是 enforce 或白名单为空时直接返回 None，不访问数据库。
+    质量流程、修复目标绑定、read_scope、capability、dependencies、runner-control 持有的任务不分段。
+    无法确认控制层归属时也不分段。"""
     if _segmentation_blocked(task, run):
         return None
     settings = context_budget_settings(getattr(app, "config", None))
@@ -75,6 +97,8 @@ def plan(app, task, run) -> dict | None:
     profile = profiles.get(profile_key)
     if not isinstance(profile, dict) or "segment_turns" not in profile or profile.get("segment") is False:
         return None
+    if _control_owned(app, task, run):
+        return None
     native = getattr(run, "native", None)
     if isinstance(native, dict) and native.get("segment") is not None:
         return native["segment"]
@@ -102,6 +126,8 @@ def guard_continuation(app, task, run) -> None:
     source_id = native.get("segment_source_run_id")
     if not source_id:
         return
+    if _control_owned(app, task, run):
+        raise AsterunError("CAPABILITY_UNSUPPORTED", "runner-control 任务本版不分段，未派发")
     if plan(app, task, run) is None:
         raise AsterunError("CAPABILITY_UNSUPPORTED", "续段排队期间分段已停用，未派发")
     if task.run_count > app.config.scheduler.max_runs_per_task:
@@ -311,6 +337,9 @@ def _continue_segment(app, task, run) -> dict | None:
         return None
     if plan(app, task, run) is None:
         return {"stopped": "segmentation_disabled"}
+    if _control_owned(app, task, run):
+        _stop(app, task, run, "control_owned")
+        return {"stopped": "control_owned"}
     seg = run.native["segment"]
     next_index = seg["index"] + 1
     max_segments = seg.get("max_segments")
