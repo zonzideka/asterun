@@ -256,9 +256,10 @@ class Application:
     def _bind_quota_hook(self) -> None:
         if not hasattr(self.store, "quota_hook"):
             return
+        from asterun.context_budget.observe import observe_run
         from asterun.quota.passive import persist_run_quota
 
-        self.store.quota_hook = lambda run: persist_run_quota(self, run)
+        self.store.quota_hook = lambda run: (persist_run_quota(self, run), observe_run(self, run))
 
     @property
     def control(self):
