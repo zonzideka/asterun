@@ -9,6 +9,7 @@ from asterun.context_budget import segment as segment_mod
 from asterun.context_budget.segment import MARKER, plan, resume_decision, segment_end
 from asterun.contracts import Event, EventType, RunStatus
 from asterun.grok_profile import CODE_PROFILE, PROFILE
+from asterun.usage.breakdown import normalize_breakdown
 
 
 def _settings(*, mode="enforce", backends=None, roles=None, profiles=None, segment_turns=5, segment=None, max_segments=4):
@@ -431,3 +432,56 @@ def test_segment_end_grok_turn_limit_unchanged():
     assert segment_end(SimpleNamespace(status=RunStatus.FAILED, summary="no", native=rejected)) is False
     assert segment_end(SimpleNamespace(status=RunStatus.SUCCEEDED, summary=MARKER, native=native)) is False
     assert segment_end(SimpleNamespace(status=RunStatus.FAILED, summary="", native={})) is False
+
+
+def test_plan_external_require_review_returns_none_for_grok_and_fake(monkeypatch):
+    reviewed = _task()
+    reviewed.external_require_review = True
+    _bind(monkeypatch, _settings())
+    app = _app(kind="fake")
+    assert plan(app, _task(), _run()) is not None
+    assert plan(app, reviewed, _run()) is None
+    _bind(monkeypatch, _settings(
+        backends=["grok"],
+        profiles={"grok/implementation": {"segment_turns": 5, "max_segments": 2}},
+    ))
+    app = _app(kind="grok")
+    run = _run(backend="grok")
+    assert plan(app, _task(), run) is not None
+    assert plan(app, reviewed, run) is None
+
+
+def test_segment_end_marker_rejects_unattributable_codex_thread_cumulative():
+    """total 是线程累计且很大，last 很小；不可归属时即使回复带 MARKER 也不续段。"""
+    native = {
+        "token_usage": {
+            "tokenUsage": {
+                "total": {
+                    "inputTokens": 800_000,
+                    "cachedInputTokens": 100_000,
+                    "outputTokens": 50_000,
+                    "reasoningOutputTokens": 1_000,
+                    "totalTokens": 850_000,
+                },
+                "last": {
+                    "inputTokens": 20,
+                    "cachedInputTokens": 10,
+                    "outputTokens": 5,
+                    "reasoningOutputTokens": 0,
+                    "totalTokens": 25,
+                },
+            },
+        },
+        "segment": {
+            "index": 0,
+            "max_turns": None,
+            "trigger": "marker",
+            "segment_soft": 80,
+        },
+    }
+    picture = normalize_breakdown(native)
+    assert picture["scope"] == "thread_cumulative"
+    assert picture["attributable"] is False
+    assert picture["processed"] >= 80
+    run = SimpleNamespace(status=RunStatus.SUCCEEDED, summary="本段到此。\n" + MARKER, native=native)
+    assert segment_end(run) is False

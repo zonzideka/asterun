@@ -117,7 +117,7 @@ def plan(app, task, run) -> dict | None:
         return None
     if kind == "codex" and role != "implementation":
         return None
-    if kind in MARKER_KINDS and getattr(task, "external_require_review", False):
+    if getattr(task, "external_require_review", False):
         return None
     profiles = settings.get("profiles") if isinstance(settings.get("profiles"), dict) else {}
     profile_key, _role = _matched_profile(app, backend_name, role, profiles)
@@ -175,6 +175,8 @@ def guard_continuation(app, task, run) -> None:
         return
     if _control_owned(app, task, run):
         raise AsterunError("CAPABILITY_UNSUPPORTED", "runner-control 任务本版不分段，未派发")
+    if getattr(task, "external_require_review", False):
+        raise AsterunError("CAPABILITY_UNSUPPORTED", "要求外部审查的任务本版不分段，未派发")
     if plan(app, task, run) is None:
         raise AsterunError("CAPABILITY_UNSUPPORTED", "续段排队期间分段已停用，未派发")
     if task.run_count > app.config.scheduler.max_runs_per_task:
@@ -242,7 +244,10 @@ def segment_end(run) -> bool:
         return False
     if run.native.get("subagent_count"):
         return False   # agy 委派一律不续段
-    processed = normalize_breakdown(run.native)["processed"]
+    picture = normalize_breakdown(run.native)
+    if not picture.get("attributable"):
+        return False   # 线程累计等不可归属用量按未知处理
+    processed = picture["processed"]
     soft = seg.get("segment_soft")
     return type(processed) is int and type(soft) is int and processed >= soft
 
