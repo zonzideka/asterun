@@ -164,6 +164,8 @@ def _compact_context_budget(value: Any) -> Any:
     ordered["flags_true"] = _true_flag_names(value)
     if "observed_at" in short:
         ordered["observed_at"] = short["observed_at"]
+    if isinstance(value.get("budget"), dict):
+        ordered["budget"] = {k: value["budget"].get(k) for k in ("task_hard", "settled", "held")}
     if "omitted_fields" in short:
         ordered["omitted_fields"] = short["omitted_fields"]
     return ordered

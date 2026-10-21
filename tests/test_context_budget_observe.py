@@ -81,6 +81,19 @@ def _count(conn) -> int:
     return conn.execute("SELECT COUNT(*) FROM context_budget_observations").fetchone()[0]
 
 
+def test_enforce_writes_observation_row(managed):
+    _enable(managed)
+    managed.config.context_budget["mode"] = "enforce"
+    assert context_budget_settings(managed.config)["mode"] == "enforce"
+    managed.store.save_run(_run("run-enforce", native=_native()))
+    conn = managed.store._conn
+    assert _count(conn) == 1
+    row = latest_for_task(conn, "task-budget")
+    assert row["run_id"] == "run-enforce"
+    assert row["profile_key"] == "fake/implementation"
+    assert row["run_processed"] == 70
+
+
 def test_off_mode_does_not_write(managed):
     budget = default_context_budget()
     budget["mode"] = "off"

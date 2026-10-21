@@ -10,7 +10,7 @@ import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
-from asterun.capsule.assemble import assemble_capsule, verify_capsule
+from asterun.capsule.assemble import assemble_capsule, segment_index_for, verify_capsule
 from asterun.capsule.model import CapsuleTooLarge, canonical
 
 _TABLE = "context_capsules"
@@ -34,7 +34,7 @@ def record_capsule(app, task, run, *, trigger) -> dict | None:
     from asterun.plugin_store import PluginStore
 
     store = PluginStore(app.store._conn)
-    segment_index = len(app.store.list_runs(task.id)) - 1
+    segment_index = segment_index_for(app, task, run)
     try:
         capsule = assemble_capsule(
             app, task, run, trigger=trigger, segment_index=segment_index,
