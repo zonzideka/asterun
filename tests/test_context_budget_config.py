@@ -1,4 +1,4 @@
-"""v2 context_budget：未写不进 to_dict / digest；只接受 off 与 observe。"""
+"""v2 context_budget：未写不进 to_dict / digest；off、observe，以及带 task_hard 的 enforce。"""
 
 from __future__ import annotations
 
@@ -191,9 +191,31 @@ def test_v1_settings_are_off(config_path, isolated_env):
     assert caught.value.code == UNKNOWN_FIELD
 
 
+def test_enforce_accepts_a_profile_with_task_hard(config_path, isolated_env):
+    budget = {
+        "mode": "enforce",
+        "profiles": {
+            "fake/review": {"task_soft": 5},
+            "fake/implementation": {"task_soft": 10, "task_hard": 1000},
+        },
+    }
+    _, loaded = _load(config_path, isolated_env, "cb-enforce.json", budget)
+    settings = context_budget_settings(loaded)
+    assert loaded.context_budget_explicit is True
+    assert settings["mode"] == "enforce"
+    assert settings["profiles"]["fake/implementation"]["task_hard"] == 1000
+    assert "task_hard" not in settings["profiles"]["fake/review"]
+    assert loaded.to_dict()["context_budget"] == settings
+
+
 @pytest.mark.parametrize("budget, code, fragment", [
-    ({"mode": "enforce"}, INVALID_CONFIG, "enforce 尚未实现"),
-    ({"mode": "on"}, INVALID_CONFIG, "只能是 off 或 observe"),
+    ({"mode": "enforce"}, INVALID_CONFIG, "enforce 需要至少一个带 task_hard 的 profile"),
+    (
+        {"mode": "enforce", "profiles": {"fake/implementation": {"task_soft": 5}}},
+        INVALID_CONFIG,
+        "enforce 需要至少一个带 task_hard 的 profile",
+    ),
+    ({"mode": "on"}, INVALID_CONFIG, "只能是 off、observe 或 enforce"),
     ({"mode": "hard"}, INVALID_CONFIG, "不允许值 hard"),
     ({"token_basis": "raw"}, INVALID_CONFIG, "token_basis"),
     ({"token_basis": "hard"}, INVALID_CONFIG, "不允许值 hard"),

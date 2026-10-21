@@ -6,7 +6,7 @@ Install a plugin in a separate environment, then register it with Asterun. Built
 
 ## Configuration and migration
 
-In v2, `plugins` stores installation registrations, `provider_accounts` holds provider identity references, `connections` pins authentication, environment, and model, `billing_pools` describes shared resource pools, and `backends` aliases point to connections. The optional `quota` section configures the Codex quota probe, passive collection, and the Grok quota probe, which is off by default; fields and defaults are below. The optional `context_budget` section configures context-capsule and segmentation budgets. It currently accepts only `off` and `observe`. Omitting the key leaves the configuration digest unchanged. Fields are below. Start with the [offline fake example](../../examples/plugins/fake-v2.json).
+In v2, `plugins` stores installation registrations, `provider_accounts` holds provider identity references, `connections` pins authentication, environment, and model, `billing_pools` describes shared resource pools, and `backends` aliases point to connections. The optional `quota` section configures the Codex quota probe, passive collection, and the Grok quota probe, which is off by default; fields and defaults are below. The optional `context_budget` section configures context-capsule and segmentation budgets. `enforce` is token-budget admission (see the ledger notes in the next PR); segmentation is not implemented yet. Omitting the key leaves the configuration digest unchanged. Fields are below. Start with the [offline fake example](../../examples/plugins/fake-v2.json).
 
 Inspect a migration candidate for a v1 configuration:
 
@@ -62,7 +62,7 @@ A persistent quota latch comes from a saved native failure classification and do
 
 v2 may include the optional `context_budget` namespace for context-capsule and segmentation budgets. It shares no fields with billing, `routing`, or `quota`, and it does not change validation of those three. When the key is omitted, read-back does not fill defaults, and `to_dict` and the configuration digest stay byte-for-byte the same. The key appears in serialization only when it was written. Capsule, segmentation, and assignment fields that were written are filled with the defaults below. A threshold omitted inside `profiles` stays omitted, which means that threshold is unset. v1 has no such section; readers get the `mode=off` defaults.
 
-`mode` currently accepts only `off` (the default) and `observe`. `enforce` is rejected with the message that enforce is not implemented yet (`enforce 尚未实现`). Any other value is rejected. `token_basis` accepts only `processed` (the default).
+`mode` accepts `off` (the default), `observe`, and `enforce`. `enforce`: token-budget admission (see the ledger notes in the next PR); segmentation is not implemented yet. When `mode` is `enforce`, at least one profile must include `task_hard`, or the configuration is rejected. Any other value is rejected. `token_basis` accepts only `processed` (the default).
 
 `capsule.nonmandatory_soft_bytes` is 1024–65536, default 16384. `capsule.nonmandatory_hard_bytes` is 1024–131072, default 24576, and must be greater than or equal to soft. `capsule.notes_max_bytes` is 0–16384, default 4096. `capsule.progress_markers` is a boolean, default true.
 
@@ -74,7 +74,7 @@ v2 may include the optional `context_budget` namespace for context-capsule and s
 
 Unknown fields are rejected. A field named `enforcement`, and the value `hard`, are always rejected. A boolean is not an integer. Every number must be an integer.
 
-Observe mode records, when a run reaches a terminal status, that run's processed/new counts and the task's cumulative processed/new counts, plus the flags that would have fired (`segment_soft_exceeded`, `task_soft_exceeded`, `task_hard_exceeded`, `max_segments_exceeded`, `long_task`, `would_segment`, `capsule_candidate`). Read them with `asterun context-budget-inspect` or the `context_budget` field of task-get. This does not change dispatch, returned results, or counters. When mode is `off`, this record does not read or write the database.
+Observe and enforce both record, when a run reaches a terminal status, that run's processed/new counts and the task's cumulative processed/new counts, plus the flags that would have fired (`segment_soft_exceeded`, `task_soft_exceeded`, `task_hard_exceeded`, `max_segments_exceeded`, `long_task`, `would_segment`, `capsule_candidate`). A capsule is also written when `capsule_candidate` is true. Read them with `asterun context-budget-inspect` or the `context_budget` field of task-get. This does not change dispatch, returned results, or counters, and it does not segment. When mode is `off`, this record does not read or write the database.
 
 ## Context capsules (v1, observe only generates and does not dispatch)
 
@@ -82,9 +82,9 @@ When `capsule_candidate` is true, a continuation capsule is written after the ob
 
 The capsule schema is `asterun.capsule/v1`. It keeps the contract, a workspace summary, progress, and open items needed to continue. Mandatory text is never trimmed: `objective` is a byte-for-byte copy of the task text, and `constraints`, `acceptance`, `review_requirements`, `findings` (including id and text), and `limits` are copied the same way. Non-mandatory content has a soft limit of 16384 bytes (16 KB) and a hard limit of 24576 bytes (24 KB). Past the soft limit, lossy trimming runs in a fixed order (note text, commands, files touched). If the hard limit still does not hold, the body is not stored and the row's `error_code` is `CAPSULE_TOO_LARGE`.
 
-A capsule does not contain source text, diff text, chat, or credentials. The workspace keeps HEAD, branch, dirty paths and statuses, file sha256 values, and the file/insertion/deletion counts from `diff --shortstat`. A command keeps a redacted summary of at most 200 characters and the sha256 of the original. An unconfirmed tool call keeps the tool name and an input digest.
+A capsule does not contain source text, diff text, chat, or credentials. The workspace keeps HEAD, branch, dirty paths and statuses, file sha256 values, and the file/insertion/deletion counts from `diff --shortstat`. Each command item stores only `program` (the basename of the first token, or null when it does not match the rule), plus the `sha256` and `length` of the full command. Rendering shows only the program name and the first 12 characters of the digest. Arguments and the command body are not stored. An unconfirmed tool call keeps the tool name and an input digest.
 
-Lines marked `ASTERUN-NOTE:` become low-trust notes (`trust=low`). They do not change any task constraint. Note text is at most 4096 bytes. The rendered prompt labels them as low-trust notes that do not change task constraints.
+Lines marked `ASTERUN-NOTE:` become low-trust notes (`trust=low`). They do not change any task constraint. Note text is at most 4096 bytes. The rendered prompt labels them as low-trust notes that do not change task constraints. Whitelist filtering discards any line that cannot be confirmed safe, and counts it only in `dropped_lines`.
 
 Verification is redone on read and does not trust a previous conclusion stored in the row. An empty list means the capsule checks out. Problem codes are `schema_mismatch`, `body_sha256_mismatch`, `capsule_id_mismatch`, `mandatory_sha256_mismatch`, `mandatory_mismatch`, `finding_missing:<id>`, and `finding_text_changed:<id>`. If the task contract digest no longer matches the one stored in the capsule, `contract_changed` is added.
 

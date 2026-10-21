@@ -59,7 +59,7 @@ _AB_KEYS = {"enabled", "enforce_ratio_bp"}
 _PROFILE_KEYS = {"segment_turns", "segment_soft", "residency_soft", "task_soft", "task_hard", "max_segments", "segment"}
 _PROFILE_ROLES = {"implementation", "repair", "review", "planning"}
 _SEGMENT_ROLES = {"implementation", "repair"}
-_CONTEXT_MODES = {"off", "observe"}
+_CONTEXT_MODES = {"off", "observe", "enforce"}
 _TOKEN_MAX = 1_000_000_000
 _RESIDENCY_MAX = 100_000_000
 _PROFILE_TOKEN_MAX = 10_000_000_000
@@ -311,20 +311,22 @@ def _normalize_profiles(raw: Any, backends: dict) -> dict[str, Any]:
 
 
 def normalize_context_budget(raw: Any, backends: dict | None = None) -> dict[str, Any]:
-    """补齐 context_budget 默认值。未实现 enforce。profiles 省略的阈值保持省略。"""
+    """补齐 context_budget 默认值。
+
+    enforce 表示预算准入（admission_only），分段尚未实现。
+    profiles 省略的阈值保持省略。mode=enforce 时至少一个 profile 须含 task_hard。
+    """
     body = mapping(raw if raw is not None else {}, "context_budget", CONTEXT_BUDGET_KEYS)
     _reject_hard_value(body, "context_budget")
     defaults = default_context_budget()
     mode = body.get("mode", defaults["mode"])
-    if mode == "enforce":
-        invalid("context_budget.mode 的 enforce 尚未实现")
     if mode not in _CONTEXT_MODES:
-        invalid("context_budget.mode 只能是 off 或 observe")
+        invalid("context_budget.mode 只能是 off、observe 或 enforce")
     basis = body.get("token_basis", defaults["token_basis"])
     if basis != "processed":
         invalid("context_budget.token_basis 只能是 processed")
     known = backends or {}
-    return {
+    normalized = {
         "mode": mode,
         "token_basis": basis,
         "capsule": _normalize_capsule(body.get("capsule", {}), defaults["capsule"]),
@@ -332,6 +334,9 @@ def normalize_context_budget(raw: Any, backends: dict | None = None) -> dict[str
         "ab_assignment": _normalize_ab(body.get("ab_assignment", {}), defaults["ab_assignment"]),
         "profiles": _normalize_profiles(body.get("profiles", {}), known),
     }
+    if mode == "enforce" and not any("task_hard" in profile for profile in normalized["profiles"].values()):
+        invalid("enforce 需要至少一个带 task_hard 的 profile")
+    return normalized
 
 
 def context_budget_settings(config) -> dict[str, Any]:

@@ -1,6 +1,7 @@
 """终态运行的上下文预算观测。失败不得影响 save_run。
 
-observe 下顺带生成的胶囊同样吞掉异常，不能回滚已经写入的观测行。
+observe 与 enforce 都写观测，并在 capsule_candidate 时生成胶囊。
+这些胶囊同样吞掉异常，不能回滚已经写入的观测行。mode=off 不访问数据库。
 """
 
 from __future__ import annotations
@@ -30,7 +31,7 @@ _FLAG_KEYS = (
 
 
 def observe_run(app, run) -> int:
-    """observe 模式下为终态 run 写一行幂等观测。关闭、非终态或任何异常都返回 0。"""
+    """observe 与 enforce 模式下为终态 run 写一行幂等观测。关闭、非终态或任何异常都返回 0。"""
     try:
         return _observe_run(app, run)
     except Exception:
@@ -100,7 +101,7 @@ def _matched_profile(app, backend: str, role: str, profiles: dict) -> tuple[str,
 
 def _observe_run(app, run) -> int:
     settings = context_budget_settings(getattr(app, "config", None))
-    if settings.get("mode") != "observe":
+    if settings.get("mode") not in {"observe", "enforce"}:
         return 0
     if getattr(run, "status", None) not in TERMINAL_RUN_STATUSES:
         return 0

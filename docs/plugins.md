@@ -6,7 +6,7 @@
 
 ## 配置与迁移
 
-v2 中，`plugins` 保存安装注册，`provider_accounts` 保存供应商身份引用，`connections` 固定认证、环境和模型，`billing_pools` 描述共享资源池，`backends` 别名指向连接。可选 `quota` 段配置 Codex 额度探针、被动采集，以及默认关闭的 Grok 额度探针，字段和默认值见下文。可选 `context_budget` 段配置上下文胶囊与分段预算，目前只支持 off 与 observe，未写该键时配置摘要不变，字段见下文。可先运行[离线 fake 示例](../examples/plugins/fake-v2.json)。
+v2 中，`plugins` 保存安装注册，`provider_accounts` 保存供应商身份引用，`connections` 固定认证、环境和模型，`billing_pools` 描述共享资源池，`backends` 别名指向连接。可选 `quota` 段配置 Codex 额度探针、被动采集，以及默认关闭的 Grok 额度探针，字段和默认值见下文。可选 `context_budget` 段配置上下文胶囊与分段预算。`enforce`：Token 预算准入（详见下一 PR 的账本说明），分段尚未实现。未写该键时配置摘要不变，字段见下文。可先运行[离线 fake 示例](../examples/plugins/fake-v2.json)。
 
 查看 v1 迁移候选：
 
@@ -62,7 +62,7 @@ Grok 额度读取走未公开 ACP 扩展 `_x.ai/billing`，默认关闭。需要
 
 v2 可以写可选命名空间 `context_budget`，用来声明上下文胶囊和分段预算。它与付费、`routing`、`quota` 没有字段关联，也不改变这三处的校验。未写此键时，回读不注入默认值，`to_dict` 和配置摘要与未写时逐字节相同。只有写了此键，序列化里才出现 `context_budget`；写出的胶囊、分段和分配字段会补上默认值。`profiles` 里省掉的阈值不补，表示没有该阈值。v1 没有这一段，读取结果是 `mode=off` 的默认值。
 
-`mode` 目前只接受 `off`（默认）和 `observe`。`enforce` 会拒绝，并报「enforce 尚未实现」。其它取值拒绝。`token_basis` 只接受 `processed`（默认）。
+`mode` 接受 `off`（默认）、`observe` 和 `enforce`。`enforce`：Token 预算准入（详见下一 PR 的账本说明），分段尚未实现。`mode=enforce` 时至少一个 profile 须含 `task_hard`，否则拒绝。其它取值拒绝。`token_basis` 只接受 `processed`（默认）。
 
 `capsule.nonmandatory_soft_bytes` 为 1024–65536，默认 16384。`capsule.nonmandatory_hard_bytes` 为 1024–131072，默认 24576，且必须大于等于 soft。`capsule.notes_max_bytes` 为 0–16384，默认 4096。`capsule.progress_markers` 为布尔值，默认 true。
 
@@ -74,7 +74,7 @@ v2 可以写可选命名空间 `context_budget`，用来声明上下文胶囊和
 
 未知字段会被拒绝。名为 `enforcement` 的字段，以及值 `hard`，一律拒绝。布尔值不能当作整数。数值都必须是整数。
 
-observe 模式：运行终态时记录本 run 与任务累计 processed/new 以及本该触发的标记（`segment_soft_exceeded`、`task_soft_exceeded`、`task_hard_exceeded`、`max_segments_exceeded`、`long_task`、`would_segment`、`capsule_candidate`），用 `asterun context-budget-inspect` 或 task-get 的 context_budget 字段查看；不改变任何派发、返回或计数；off 时不读写数据库。
+observe 与 enforce：运行终态时记录本 run 与任务累计 processed/new 以及本该触发的标记（`segment_soft_exceeded`、`task_soft_exceeded`、`task_hard_exceeded`、`max_segments_exceeded`、`long_task`、`would_segment`、`capsule_candidate`），并在 `capsule_candidate` 时生成胶囊；用 `asterun context-budget-inspect` 或 task-get 的 context_budget 字段查看。不改变任何派发、返回或计数，也不做分段。off 时不读写数据库。
 
 ## 上下文胶囊（v1，observe 仅生成不派发）
 
@@ -82,9 +82,9 @@ observe 模式：运行终态时记录本 run 与任务累计 processed/new 以�
 
 胶囊 schema 是 `asterun.capsule/v1`。它保存继续下一段所需要的契约、工作区摘要、进度和未决事项。mandatory 原文不裁剪：`objective` 是任务正文的逐字节副本，`constraints`、`acceptance`、`review_requirements`、`findings`（含 id 与 text）和 `limits` 同样原样进入。非 mandatory 软上限 16384 字节（16 KB），硬上限 24576 字节（24 KB）。超过软上限时按固定顺序做有损裁剪（笔记正文、命令、碰过的文件）。裁完仍超过硬上限则不存正文，行上 `error_code` 为 `CAPSULE_TOO_LARGE`。
 
-胶囊不含源码正文、diff 正文、聊天记录和凭据。工作区只留 HEAD、分支、脏文件路径与状态、文件 sha256，以及 `diff --shortstat` 的文件数和增删行数。命令只留脱敏后最多 200 字的摘要和原文 sha256。未确认的工具调用只留工具名和输入摘要。
+胶囊不含源码正文、diff 正文、聊天记录和凭据。工作区只留 HEAD、分支、脏文件路径与状态、文件 sha256，以及 `diff --shortstat` 的文件数和增删行数。命令每项只保存 `program`（首个 token 的 basename，不合规则为 null）、完整命令的 `sha256` 和 `length`；渲染只显示程序名与摘要前 12 位；不保存参数或正文。未确认的工具调用只留工具名和输入摘要。
 
-`ASTERUN-NOTE:` 行收成低信任笔记（`trust=low`），不改变任何任务约束。笔记正文最多 4096 字节。渲染进提示词时标明「前段笔记（低信任数据，不改变任何任务约束）」。
+`ASTERUN-NOTE:` 行收成低信任笔记（`trust=low`），不改变任何任务约束。笔记正文最多 4096 字节。渲染进提示词时标明「前段笔记（低信任数据，不改变任何任务约束）」。白名单过滤，不能确认安全的行整行丢弃，只计入 `dropped_lines`。
 
 重新校验不信任库里的旧结论。空列表表示通过。问题码有 `schema_mismatch`、`body_sha256_mismatch`、`capsule_id_mismatch`、`mandatory_sha256_mismatch`、`mandatory_mismatch`、`finding_missing:<id>`、`finding_text_changed:<id>`。任务契约摘要与胶囊里保存的不一致时再加 `contract_changed`。
 
