@@ -295,10 +295,29 @@ def _seed_context_budget_reservation(root: Path, reservation: str, action_id: st
         database.close()
 
 
+def _insert_run(root: Path, run_id: str, task_id: str) -> None:
+    """runs.payload 与 Run.to_dict 一致：task_id 为字符串。"""
+    payload = {
+        "id": run_id,
+        "task_id": task_id,
+        "backend": "codex",
+        "status": "succeeded",
+        "created_at": "2026-09-10T00:00:00Z",
+    }
+    with closing(sqlite3.connect(root / DB_NAME)) as conn:
+        conn.execute(
+            "INSERT INTO runs(id, payload) VALUES (?, ?)",
+            (run_id, json.dumps(payload, ensure_ascii=False)),
+        )
+        conn.commit()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+
 def test_context_budget_reservation_backup_accepts_run_id_and_rejects_other_ids(tmp_path):
     run_id = "run_1"
     good = tmp_path / "good"
     _seed_context_budget_reservation(good, reservation_id(run_id), run_id)
+    _insert_run(good, run_id, "tsk_1")
     assert reservation_id(run_id) == "res_cb_" + run_id
     assert _validate_snapshot(good / DB_NAME) == 6
 
@@ -306,6 +325,31 @@ def test_context_budget_reservation_backup_accepts_run_id_and_rejects_other_ids(
     _seed_context_budget_reservation(bad, "res_cb_other", run_id)
     with pytest.raises(AsterunError, match="不一致"):
         _validate_snapshot(bad / DB_NAME)
+
+
+def test_context_budget_reservation_rejects_missing_run(tmp_path):
+    root = tmp_path / "missing"
+    run_id = "run_1"
+    _seed_context_budget_reservation(root, reservation_id(run_id), run_id)
+    with pytest.raises(AsterunError, match="不一致"):
+        _validate_snapshot(root / DB_NAME)
+
+
+def test_context_budget_reservation_rejects_run_of_other_task(tmp_path):
+    root = tmp_path / "other"
+    run_id = "run_1"
+    _seed_context_budget_reservation(root, reservation_id(run_id), run_id)
+    _insert_run(root, run_id, "tsk_other")
+    with pytest.raises(AsterunError, match="不一致"):
+        _validate_snapshot(root / DB_NAME)
+
+
+def test_context_budget_reservation_accepts_same_task_run(tmp_path):
+    root = tmp_path / "same"
+    run_id = "run_1"
+    _seed_context_budget_reservation(root, reservation_id(run_id), run_id)
+    _insert_run(root, run_id, "tsk_1")
+    assert _validate_snapshot(root / DB_NAME) == 6
 
 
 @pytest.mark.parametrize(
@@ -331,6 +375,7 @@ def test_context_budget_side_ledger_rejects_malformed_entities(tmp_path, kind, d
     root = tmp_path / "ledger"
     run_id = "run_1"
     _seed_context_budget_reservation(root, reservation_id(run_id), run_id)
+    _insert_run(root, run_id, "tsk_1")
     assert _validate_snapshot(root / DB_NAME) == 6
     with closing(sqlite3.connect(root / DB_NAME)) as conn:
         payload, = conn.execute(
