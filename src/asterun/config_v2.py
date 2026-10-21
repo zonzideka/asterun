@@ -10,7 +10,7 @@ from typing import Any
 from asterun.errors import AsterunError, INVALID_CONFIG, UNKNOWN_FIELD
 from asterun.plugin_api.protocol import json_copy
 
-V2_KEYS = {"plugins", "provider_accounts", "billing_pools", "connections", "routing", "quota"}
+V2_KEYS = {"plugins", "provider_accounts", "billing_pools", "connections", "routing", "quota", "context_budget"}
 PROVIDER_KEYS = {"provider", "credential_ref", "credential_revision", "revoked"}
 POOL_KEYS = {
     "billing_mode", "remaining", "paid_overage_allowed", "overage_verified", "meter", "local_limit",
@@ -50,6 +50,19 @@ GROK_QUOTA_PROBE_KEYS = {
     "enabled", "acknowledge_undocumented", "ttl_seconds", "min_interval_seconds", "timeout_seconds",
 }
 QUOTA_PASSIVE_KEYS = {"codex_rate_limits_updated"}
+CONTEXT_BUDGET_KEYS = {"mode", "token_basis", "capsule", "segmentation", "ab_assignment", "profiles"}
+_CAPSULE_KEYS = {"nonmandatory_soft_bytes", "nonmandatory_hard_bytes", "notes_max_bytes", "progress_markers"}
+_SEGMENTATION_KEYS = {
+    "backends", "roles", "min_long_task_processed", "resume_max_residency", "observe_capsule_min_processed",
+}
+_AB_KEYS = {"enabled", "enforce_ratio_bp"}
+_PROFILE_KEYS = {"segment_turns", "segment_soft", "residency_soft", "task_soft", "task_hard", "max_segments", "segment"}
+_PROFILE_ROLES = {"implementation", "repair", "review", "planning"}
+_SEGMENT_ROLES = {"implementation", "repair"}
+_CONTEXT_MODES = {"off", "observe"}
+_TOKEN_MAX = 1_000_000_000
+_RESIDENCY_MAX = 100_000_000
+_PROFILE_TOKEN_MAX = 10_000_000_000
 
 
 def invalid(message: str) -> None:
@@ -141,6 +154,194 @@ def normalize_quota(raw: Any) -> dict[str, Any]:
         },
         "passive": {"codex_rate_limits_updated": passive_flag},
     }
+
+
+def default_context_budget() -> dict[str, Any]:
+    """未写 context_budget 时的读取默认值。mode 为 off，不执行分段。"""
+    return {
+        "mode": "off",
+        "token_basis": "processed",
+        "capsule": {
+            "nonmandatory_soft_bytes": 16384,
+            "nonmandatory_hard_bytes": 24576,
+            "notes_max_bytes": 4096,
+            "progress_markers": True,
+        },
+        "segmentation": {
+            "backends": [],
+            "roles": ["implementation", "repair"],
+            "min_long_task_processed": 600_000,
+            "resume_max_residency": 100_000,
+            "observe_capsule_min_processed": 600_000,
+        },
+        "ab_assignment": {"enabled": False, "enforce_ratio_bp": 5000},
+        "profiles": {},
+    }
+
+
+def _reject_hard_value(value: Any, where: str) -> None:
+    """允许字段上的值 hard 一律拒绝。enforcement 是未知字段，由 mapping 拒绝。"""
+    if isinstance(value, dict):
+        for key, child in value.items():
+            _reject_hard_value(child, f"{where}.{key}")
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            _reject_hard_value(child, f"{where}[{index}]")
+    elif value == "hard":
+        invalid(f"{where} 不允许值 hard")
+
+
+def _normalize_capsule(raw: Any, defaults: dict) -> dict[str, Any]:
+    body = mapping(raw, "context_budget.capsule", _CAPSULE_KEYS)
+    soft = body.get("nonmandatory_soft_bytes", defaults["nonmandatory_soft_bytes"])
+    hard = body.get("nonmandatory_hard_bytes", defaults["nonmandatory_hard_bytes"])
+    notes = body.get("notes_max_bytes", defaults["notes_max_bytes"])
+    markers = body.get("progress_markers", defaults["progress_markers"])
+    integer_between(soft, "context_budget.capsule.nonmandatory_soft_bytes", 1024, 65536)
+    integer_between(hard, "context_budget.capsule.nonmandatory_hard_bytes", 1024, 131072)
+    integer_between(notes, "context_budget.capsule.notes_max_bytes", 0, 16384)
+    flag(markers, "context_budget.capsule.progress_markers")
+    if hard < soft:
+        invalid("context_budget.capsule.nonmandatory_hard_bytes 必须大于等于 nonmandatory_soft_bytes")
+    return {
+        "nonmandatory_soft_bytes": soft,
+        "nonmandatory_hard_bytes": hard,
+        "notes_max_bytes": notes,
+        "progress_markers": markers,
+    }
+
+
+def _normalize_segmentation(raw: Any, defaults: dict, backends: dict) -> dict[str, Any]:
+    body = mapping(raw, "context_budget.segmentation", _SEGMENTATION_KEYS)
+    if "backends" in body:
+        names = body["backends"]
+        if not isinstance(names, list):
+            invalid("context_budget.segmentation.backends 必须为后端名数组")
+        for name in names:
+            text(name, "context_budget.segmentation.backends")
+            if name not in backends:
+                invalid(f"context_budget.segmentation.backends 指向未知后端：{name}")
+        if len(set(names)) != len(names):
+            invalid("context_budget.segmentation.backends 不能重复")
+        names = list(names)
+    else:
+        names = []
+    if "roles" in body:
+        roles = body["roles"]
+        if not isinstance(roles, list):
+            invalid("context_budget.segmentation.roles 必须为角色数组")
+        if any(type(item) is not str or item not in _SEGMENT_ROLES for item in roles):
+            invalid("context_budget.segmentation.roles 只能是 implementation 与 repair 的子集")
+        if len(set(roles)) != len(roles):
+            invalid("context_budget.segmentation.roles 不能重复")
+        roles = list(roles)
+    else:
+        roles = list(defaults["roles"])
+    long_task = body.get("min_long_task_processed", defaults["min_long_task_processed"])
+    residency = body.get("resume_max_residency", defaults["resume_max_residency"])
+    observe_min = body.get("observe_capsule_min_processed", defaults["observe_capsule_min_processed"])
+    integer_between(long_task, "context_budget.segmentation.min_long_task_processed", 0, _TOKEN_MAX)
+    integer_between(residency, "context_budget.segmentation.resume_max_residency", 0, _RESIDENCY_MAX)
+    integer_between(observe_min, "context_budget.segmentation.observe_capsule_min_processed", 0, _TOKEN_MAX)
+    return {
+        "backends": names,
+        "roles": roles,
+        "min_long_task_processed": long_task,
+        "resume_max_residency": residency,
+        "observe_capsule_min_processed": observe_min,
+    }
+
+
+def _normalize_ab(raw: Any, defaults: dict) -> dict[str, Any]:
+    body = mapping(raw, "context_budget.ab_assignment", _AB_KEYS)
+    enabled = body.get("enabled", defaults["enabled"])
+    ratio = body.get("enforce_ratio_bp", defaults["enforce_ratio_bp"])
+    flag(enabled, "context_budget.ab_assignment.enabled")
+    integer_between(ratio, "context_budget.ab_assignment.enforce_ratio_bp", 0, 10000)
+    return {"enabled": enabled, "enforce_ratio_bp": ratio}
+
+
+def _check_profile_order(profile: dict, where: str) -> None:
+    hard = profile.get("task_hard")
+    task = profile.get("task_soft")
+    segment = profile.get("segment_soft")
+    if hard is not None and task is not None and hard < task:
+        invalid(f"{where} 必须满足 task_hard ≥ task_soft ≥ segment_soft")
+    if task is not None and segment is not None and task < segment:
+        invalid(f"{where} 必须满足 task_hard ≥ task_soft ≥ segment_soft")
+    if hard is not None and segment is not None and hard < segment:
+        invalid(f"{where} 必须满足 task_hard ≥ task_soft ≥ segment_soft")
+
+
+def _normalize_profiles(raw: Any, backends: dict) -> dict[str, Any]:
+    body = mapping(raw, "context_budget.profiles")
+    result = {}
+    for key, value in body.items():
+        where = f"context_budget.profiles.{key}"
+        text(key, "context_budget.profiles 键")
+        if "/" not in key:
+            invalid(f"context_budget.profiles 键 {key!r} 必须是 后端/角色")
+        backend, role = key.rsplit("/", 1)
+        if not backend or not role:
+            invalid(f"context_budget.profiles 键 {key!r} 必须是 后端/角色")
+        if role not in _PROFILE_ROLES:
+            invalid(f"{where} 的角色只能是 implementation、repair、review 或 planning")
+        if backend not in backends:
+            invalid(f"{where} 指向未知后端：{backend}")
+        profile = mapping(value, where, _PROFILE_KEYS)
+        normalized: dict[str, Any] = {}
+        if "segment_turns" in profile:
+            integer_between(profile["segment_turns"], f"{where}.segment_turns", 1, 1000)
+            normalized["segment_turns"] = profile["segment_turns"]
+        for name in ("segment_soft", "residency_soft", "task_soft", "task_hard"):
+            if name in profile:
+                integer_between(profile[name], f"{where}.{name}", 1, _PROFILE_TOKEN_MAX)
+                normalized[name] = profile[name]
+        if "max_segments" in profile:
+            integer_between(profile["max_segments"], f"{where}.max_segments", 1, 100)
+            normalized["max_segments"] = profile["max_segments"]
+        if "segment" in profile:
+            flag(profile["segment"], f"{where}.segment")
+            if role == "review" and profile["segment"] is True:
+                invalid(f"{where} 的 review 角色不允许 segment=true")
+            normalized["segment"] = profile["segment"]
+        _check_profile_order(normalized, where)
+        result[key] = normalized
+    return result
+
+
+def normalize_context_budget(raw: Any, backends: dict | None = None) -> dict[str, Any]:
+    """补齐 context_budget 默认值。未实现 enforce。profiles 省略的阈值保持省略。"""
+    body = mapping(raw if raw is not None else {}, "context_budget", CONTEXT_BUDGET_KEYS)
+    _reject_hard_value(body, "context_budget")
+    defaults = default_context_budget()
+    mode = body.get("mode", defaults["mode"])
+    if mode == "enforce":
+        invalid("context_budget.mode 的 enforce 尚未实现")
+    if mode not in _CONTEXT_MODES:
+        invalid("context_budget.mode 只能是 off 或 observe")
+    basis = body.get("token_basis", defaults["token_basis"])
+    if basis != "processed":
+        invalid("context_budget.token_basis 只能是 processed")
+    known = backends or {}
+    return {
+        "mode": mode,
+        "token_basis": basis,
+        "capsule": _normalize_capsule(body.get("capsule", {}), defaults["capsule"]),
+        "segmentation": _normalize_segmentation(body.get("segmentation", {}), defaults["segmentation"], known),
+        "ab_assignment": _normalize_ab(body.get("ab_assignment", {}), defaults["ab_assignment"]),
+        "profiles": _normalize_profiles(body.get("profiles", {}), known),
+    }
+
+
+def context_budget_settings(config) -> dict[str, Any]:
+    """规范化后的设置。v1 与未写该键时返回 mode=off 的默认值，不写回配置。"""
+    if getattr(config, "schema_version", 1) != 2:
+        return default_context_budget()
+    raw = getattr(config, "context_budget", None)
+    if not isinstance(raw, dict) or raw.get("mode") not in _CONTEXT_MODES:
+        return default_context_budget()
+    return json_copy(raw)
 
 
 def utc_timestamp(value: Any, where: str) -> datetime | None:
@@ -575,4 +776,5 @@ def parse_v2(raw: dict, source_path: Path) -> tuple[dict[str, dict], dict[str, d
             backends[alias]["quota_epoch"] = options["quota_epoch"]
     _validate_candidate_routing(routing, backends, connections, pools)
     _enforce_quota_mode_switch(routing)
+    namespaces["context_budget"] = normalize_context_budget(namespaces.get("context_budget", {}), backends)
     return backends, namespaces

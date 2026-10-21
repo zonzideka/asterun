@@ -6,7 +6,7 @@
 
 ## 配置与迁移
 
-v2 中，`plugins` 保存安装注册，`provider_accounts` 保存供应商身份引用，`connections` 固定认证、环境和模型，`billing_pools` 描述共享资源池，`backends` 别名指向连接。可选 `quota` 段配置 Codex 额度探针、被动采集，以及默认关闭的 Grok 额度探针，字段和默认值见下文。可先运行[离线 fake 示例](../examples/plugins/fake-v2.json)。
+v2 中，`plugins` 保存安装注册，`provider_accounts` 保存供应商身份引用，`connections` 固定认证、环境和模型，`billing_pools` 描述共享资源池，`backends` 别名指向连接。可选 `quota` 段配置 Codex 额度探针、被动采集，以及默认关闭的 Grok 额度探针，字段和默认值见下文。可选 `context_budget` 段配置上下文胶囊与分段预算，目前只支持 off 与 observe，未写该键时配置摘要不变，字段见下文。可先运行[离线 fake 示例](../examples/plugins/fake-v2.json)。
 
 查看 v1 迁移候选：
 
@@ -57,6 +57,22 @@ CLI 与 MCP 共用请求定义，MCP 工具名使用下划线。`usage-inspect` 
 Grok 额度读取走未公开 ACP 扩展 `_x.ai/billing`，默认关闭。需要在 v2 的 `quota.probes.grok_acp_billing` 同时设置 `enabled` 与 `acknowledge_undocumented`（二者默认都是 false）。探针只调用 `initialize` 和 `_x.ai/billing`，不建会话、不发提示。可信度最高为 medium。只记录已用比例、账期结束时间，以及是否开启按需付费，不保存金额。按需付费只读取布尔字段 `onDemandEnabled`，不读取金额、上限、已用量或未知字段；该字段为 false 时，即使上限大于 0 也不记为开启。`billingPeriodEnd` 可以缺省；一旦给出，过期或非法则整次解析失败，不产生观测。`ttl_seconds` 默认 900（60–3600），`min_interval_seconds` 默认 300（60–3600），`timeout_seconds` 默认 10（1–30）。v1 配置不能启用该探针。探针错误码只有三种：`AUTH_REQUIRED`（认证或登录失败）、`PROBE_TIMEOUT`（调用超时）、`SCHEMA_MISMATCH`（二进制缺失、连接关闭、进程失败，或响应无法按账单结构解析，含账期结束时间过期或非法）。不返回 `LIVE_DISABLED` 或 `PROBE_FAILED`。未设置 `ASTERUN_RUN_GROK=1` 时，服务层记 `skipped=disabled` 且不调用探针；两个开关未同时打开时，服务层记 `PROBE_DISABLED`。这两种禁用都不是探针错误码。
 
 持久的额度闩锁来自已保存的原生失败分类，不保留错误原文。Grok 的 HTTP 402 额度耗尽会停止同一计费池的后续派发。Antigravity 只在严格匹配的 429 额度耗尽时闩锁：文本含独立 token `429`（`\b429\b`）或 `RESOURCE_EXHAUSTED`，并且含 quota（不分大小写）；单纯限流不闩锁。Antigravity 按额度桶隔离，Gemini 为一组，Claude 与 GPT 为一组。解除闩锁时，v1 修改该后端的 `quota_epoch`，v2 更新计费窗口。`quota-inspect` 在对应 scope 的窗口最前显示 freshness 为 `latched` 的窗口；该窗口只展示，不写入额度缓存。
+
+## 上下文预算（context_budget）
+
+v2 可以写可选命名空间 `context_budget`，用来声明上下文胶囊和分段预算。它与付费、`routing`、`quota` 没有字段关联，也不改变这三处的校验。未写此键时，回读不注入默认值，`to_dict` 和配置摘要与未写时逐字节相同。只有写了此键，序列化里才出现 `context_budget`；写出的胶囊、分段和分配字段会补上默认值。`profiles` 里省掉的阈值不补，表示没有该阈值。v1 没有这一段，读取结果是 `mode=off` 的默认值。
+
+`mode` 目前只接受 `off`（默认）和 `observe`。`enforce` 会拒绝，并报「enforce 尚未实现」。其它取值拒绝。`token_basis` 只接受 `processed`（默认）。
+
+`capsule.nonmandatory_soft_bytes` 为 1024–65536，默认 16384。`capsule.nonmandatory_hard_bytes` 为 1024–131072，默认 24576，且必须大于等于 soft。`capsule.notes_max_bytes` 为 0–16384，默认 4096。`capsule.progress_markers` 为布尔值，默认 true。
+
+`segmentation.backends` 是已配置后端名的列表，默认 `[]`。`segmentation.roles` 是 `implementation` 与 `repair` 的子集，默认两者都在。`segmentation.min_long_task_processed` 为 0–1000000000，默认 600000。`segmentation.resume_max_residency` 为 0–100000000，默认 100000。`segmentation.observe_capsule_min_processed` 为 0–1000000000，默认 600000。
+
+`ab_assignment.enabled` 为布尔值，默认 false。`ab_assignment.enforce_ratio_bp` 为 0–10000，默认 5000。本版不执行 enforce，这个比例只是配置。
+
+`profiles` 的键格式是 `后端/角色`。后端必须已经写在 `backends` 里。角色只能是 `implementation`、`repair`、`review` 或 `planning`。可写字段都可省略：`segment_turns` 1–1000，`segment_soft`、`residency_soft`、`task_soft`、`task_hard` 各为 1–10000000000，`max_segments` 1–100，`segment` 为布尔值。给出的阈值必须满足 `task_hard ≥ task_soft ≥ segment_soft`。`review` 不允许 `segment=true`。
+
+未知字段会被拒绝。名为 `enforcement` 的字段，以及值 `hard`，一律拒绝。布尔值不能当作整数。数值都必须是整数。
 
 ## 候选组与选路解释
 

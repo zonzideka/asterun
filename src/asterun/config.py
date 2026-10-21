@@ -186,6 +186,8 @@ class AsterunConfig:
     routing: dict[str, Any] = field(default_factory=dict)
     quota: dict[str, Any] | None = field(default_factory=dict)
     quota_explicit: bool = False
+    context_budget: dict[str, Any] | None = field(default_factory=dict)
+    context_budget_explicit: bool = False
 
     def get_workspace(self, alias: str) -> WorkspaceBinding:
         try:
@@ -235,6 +237,8 @@ class AsterunConfig:
                           billing_pools=self.billing_pools, connections=self.connections, routing=self.routing)
             if self.quota_explicit:
                 result["quota"] = self.quota
+            if self.context_budget_explicit:
+                result["context_budget"] = self.context_budget
         return result
 
 
@@ -429,6 +433,7 @@ def load_config(path: Path) -> AsterunConfig:
         entries=entries,
         approval_policy=approval_policy,
         quota_explicit=schema_version == 2 and "quota" in raw,
+        context_budget_explicit=schema_version == 2 and "context_budget" in raw,
         **v2_namespaces,
     )
 
