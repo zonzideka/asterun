@@ -117,6 +117,23 @@ def guard_dispatch(app, run) -> dict | None:
     task_id = run.task_id.value
     with store.transaction():
         try:
+            existing = store.get("Reservation", reservation_id(run_id), NAMESPACE)
+        except AsterunError as exc:
+            if exc.code != "NOT_FOUND":
+                raise
+            existing = None
+        if existing is not None:
+            if (
+                existing.get("budget_id") != budget_id(task_id)
+                or existing.get("action_id") != run_id
+                or existing.get("task_id") != task_id
+            ):
+                raise AsterunError(
+                    "IDEMPOTENCY_CONFLICT",
+                    "该运行的预算预留已绑定不同任务或预算",
+                )
+            return existing
+        try:
             bud = store.get("Budget", budget_id(task_id), NAMESPACE)
         except AsterunError as exc:
             if exc.code != "NOT_FOUND":
@@ -173,13 +190,20 @@ def guard_dispatch(app, run) -> dict | None:
 
 def settle_run(app, run) -> None:
     try:
-        settings = context_budget_settings(app.config)
-        if not isinstance(settings, dict) or settings.get("mode") != "enforce":
-            return
         if run.status not in TERMINAL_RUN_STATUSES:
             return
-        store = ControlStore(app.store._conn, initialize=False)
+        conn = app.store._conn
+        store = ControlStore(conn, initialize=False)
         rid = reservation_id(run.id.value)
+        try:
+            found = conn.execute(
+                "SELECT 1 FROM control_reservations WHERE namespace_id=? AND id=?",
+                (NAMESPACE, rid),
+            ).fetchone()
+        except Exception:
+            return
+        if found is None:
+            return
         try:
             current = store.get("Reservation", rid, NAMESPACE)
         except AsterunError as exc:

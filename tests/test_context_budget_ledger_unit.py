@@ -425,3 +425,51 @@ def test_settle_ignores_non_terminal_and_swallows_errors(monkeypatch, conn):
     )
     ledger.settle_run(app, run)
     assert _load_reservation(conn, "run_1")["status"] == "HELD"
+
+
+@pytest.mark.parametrize("mode", ["observe", "off"])
+def test_terminal_settle_after_mode_switch(monkeypatch, conn, mode):
+    app = _app(conn)
+    holder = {"settings": _settings(task_hard=100, segment_soft=60)}
+    monkeypatch.setattr(
+        "asterun.context_budget.ledger.context_budget_settings",
+        lambda config: holder["settings"],
+    )
+    monkeypatch.setattr(
+        "asterun.context_budget.ledger._matched_profile",
+        lambda app, backend, role, profiles: (_PROFILE_KEY, "implementation"),
+    )
+    monkeypatch.setattr(
+        "asterun.context_budget.ledger.normalize_breakdown",
+        lambda native: {"processed": 40, "attributable": True},
+    )
+    run = _run(native={"usage": {"processed": 40}})
+
+    ledger.guard_dispatch(app, run)
+    holder["settings"] = _settings(mode=mode, task_hard=100, segment_soft=60)
+    ledger.settle_run(app, run)
+
+    assert _load_reservation(conn, "run_1")["status"] == "SETTLED"
+    view = ledger.budget_view(conn, "tsk_1")
+    assert view["settled"] == 40
+    assert view["held"] == 0
+
+
+def test_repeat_guard_without_segment_soft_returns_same_reservation(monkeypatch, conn):
+    app = _app(conn)
+    _install(monkeypatch, _settings(task_hard=100, segment_soft=None))
+    run = _run()
+
+    first = ledger.guard_dispatch(app, run)
+    second = ledger.guard_dispatch(app, run)
+
+    assert first["id"] == second["id"] == ledger.reservation_id("run_1")
+    assert first["status"] == second["status"] == "HELD"
+    assert first["action_id"] == second["action_id"] == "run_1"
+    assert first["task_id"] == second["task_id"]
+    assert first["budget_id"] == second["budget_id"] == ledger.budget_id("tsk_1")
+    assert first["reserved"] == second["reserved"]
+    assert first["reserved"][0]["amount"] == 100
+    view = ledger.budget_view(conn, "tsk_1")
+    assert view["held"] == 100
+    assert view["settled"] == 0
