@@ -469,3 +469,25 @@ def test_cli_and_mcp_whitelist_capsule_inspect():
     }
     assert REQUEST_SCHEMAS["capsule.inspect"]["properties"]["render"] == {"type": "boolean"}
     assert '"capsule-inspect"' in inspect.getsource(cli_module._app)
+
+
+def test_segment_index_follows_terminal_run_when_later_run_is_queued(managed):
+    _enable(managed)
+    task = _task()
+    managed.store.save_task(task)
+    first = _run("run-first")
+    first.created_at = "2026-10-21T00:00:01Z"
+    second = _run("run-second")
+    second.created_at = "2026-10-21T00:00:02Z"
+    queued = _run("run-queued")
+    queued.created_at = "2026-10-21T00:00:03Z"
+    queued.status = RunStatus.QUEUED
+    queued.terminated = False
+    managed.store.save_run(first)
+    managed.store.save_run(second)
+    managed.store.save_run(queued)
+    stored = managed.store.get_task(task.id)
+    first_row = record_capsule(managed, stored, managed.store.get_run(first.id), trigger="manual")
+    second_row = record_capsule(managed, stored, managed.store.get_run(second.id), trigger="manual")
+    assert first_row["segment_index"] == 0
+    assert second_row["segment_index"] == 1

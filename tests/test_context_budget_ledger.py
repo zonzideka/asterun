@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import json
 
-from asterun.application import _record_budget_capsule
+from asterun.application import Application, _record_budget_capsule
+from asterun.config_migration import migrate_v1_to_v2
 from asterun.backends.fake import FakeBackend
 from asterun.context_budget import ledger
 from asterun.context_budget.ledger import NAMESPACE, budget_id, budget_view, reservation_id
@@ -101,7 +102,7 @@ def test_terminal_settle_then_budget_soft_capsule(managed):
         assert _token_amount(reservation["actual"]) == processed
 
     task = managed.store.get_task(TaskId(task_id))
-    _record_budget_capsule(managed, task)
+    _record_budget_capsule(managed, task, type("Rejected", (), {"id": RunId("run-rejected")})())
     conn = managed.store._conn
     try:
         rows = conn.execute("SELECT trigger FROM context_capsules").fetchall()
@@ -179,3 +180,17 @@ def test_observe_task_get_omits_historical_budget(managed):
         assert "budget" not in context
     else:
         assert context is None
+
+
+def test_enforce_memory_store_submit_returns_budget_unknown(config_path):
+    raw = migrate_v1_to_v2(config_path)["config"]
+    config_path.write_text(json.dumps(raw))
+    app = Application.from_paths(config_path)
+    try:
+        assert not hasattr(app.store, "_conn")
+        _enforce(app)
+        result = _submit(app)
+        assert not result.ok
+        assert result.error["code"] == "BUDGET_UNKNOWN"
+    finally:
+        app.close()

@@ -118,9 +118,10 @@ def workspace_for(root) -> dict:
 
 
 def progress_for(app, task, run) -> tuple[dict, dict, list[str]]:
-    """段列表覆盖该任务的全部运行；文件、命令和笔记只取当前运行的事件。"""
+    """段列表只含 created_at 不晚于源运行的记录；文件、命令和笔记只取当前运行的事件。"""
     segments = []
-    for index, item in enumerate(_runs(app, task)):
+    history = [item for item in _runs(app, task) if item.created_at <= run.created_at]
+    for index, item in enumerate(history):
         native = item.native if isinstance(item.native, dict) else {}
         num_turns = native.get("num_turns", 0)
         if isinstance(num_turns, bool) or not isinstance(num_turns, int):
@@ -210,7 +211,7 @@ def progress_for(app, task, run) -> tuple[dict, dict, list[str]]:
 def assemble_capsule(app, task, run, *, trigger, segment_index=None) -> dict:
     """把权威记录装进胶囊。created_at 用源运行时间，避免墙钟破坏确定性。"""
     if segment_index is None:
-        segment_index = len(app.store.list_runs(task.id)) - 1
+        segment_index = segment_index_for(app, task, run)
     progress, open_items, texts = progress_for(app, task, run)
     notes_text, dropped_lines = _redacted_notes(texts)
     authority = {
@@ -278,6 +279,11 @@ def _runs(app, task):
     runs = list(app.store.list_runs(task.id))
     runs.sort(key=lambda item: (item.created_at, item.id.value))
     return runs
+
+
+def segment_index_for(app, task, run) -> int:
+    ids = [r.id for r in _runs(app, task)]
+    return ids.index(run.id) if run.id in ids else len(ids) - 1
 
 
 def _events(store, run_id):
