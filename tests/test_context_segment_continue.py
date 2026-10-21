@@ -448,6 +448,16 @@ def test_guard_continuation_rejects_control_owned(monkeypatch):
     assert caught.value.message == "runner-control 任务本版不分段，未派发"
 
 
+def test_guard_continuation_rejects_external_require_review():
+    app, task, run = _control_app()
+    run.native = {"segment_source_run_id": "run_source", "segment": {"index": 1}}
+    task.external_require_review = True
+    with pytest.raises(AsterunError) as caught:
+        guard_continuation(app, task, run)
+    assert caught.value.code == "CAPABILITY_UNSUPPORTED"
+    assert caught.value.message == "要求外部审查的任务本版不分段，未派发"
+
+
 def test_segmentation_disabled_persists_and_blocks_later_continue(managed, monkeypatch):
     _enforce(managed)
     _patch_dispatch(monkeypatch, k=1)
@@ -514,5 +524,7 @@ def test_handoff_resume_continues_unjudged_terminal_segment(managed, monkeypatch
     assert task.run_count == 2
     assert len(runs) == 2
     successor = _by_index(runs)[1]
+    assert resumed.ids["run_id"] == successor.id.value
+    assert resumed.data["task"]["current_run_id"] == successor.id.value
     assert successor.native["segment"]["index"] == 1
     assert source.native["segment_end"]["continued_by"] == successor.id.value

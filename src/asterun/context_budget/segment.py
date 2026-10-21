@@ -1,4 +1,4 @@
-"""把一次派发计划成有限回合的段，并在回合上限处续段。
+"""把一次派发计划成一段，并在回合上限或回复标记处续段。
 
 plan 未启用时返回 None，不访问数据库。续段只在段末分类成立时写意图。
 """
@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 
 from asterun.backends.grok import DEFAULT_CODE_MAX_TURNS
 from asterun.grok_profile import CODE_PROFILE
-from asterun.capsule.assemble import verify_capsule
+from asterun.capsule.assemble import _events, verify_capsule
 from asterun.capsule.model import render_prompt
 from asterun.capsule.store import _NAMESPACE, _TABLE, latest_with_blob, load_capsule, record_capsule
 from asterun.config_v2 import context_budget_settings
@@ -21,9 +21,14 @@ from asterun.contracts import TERMINAL_RUN_STATUSES, EventType, Operation, Opera
 from asterun.errors import AsterunError
 from asterun.ids import RunId, new_operation_id, new_run_id
 from asterun.quality import bounded_prompt, digest
-from asterun.usage.breakdown import normalize_breakdown
+from asterun.usage.breakdown import grok_residency_curve, normalize_breakdown
 
-SEGMENT_KINDS = frozenset({"grok", "fake"})  # 本 PR 只实现 grok；fake 用于离线测试
+SEGMENT_KINDS = frozenset({"grok", "fake", "codex", "antigravity"})
+MARKER = "ASTERUN-SEGMENT: CONTINUE"
+MARKER_KINDS = frozenset({"codex", "antigravity"})
+# v2 用 manifest_path 注册外部插件时，backend.kind 是 plugin_id 而不是兼容短名。
+_KIND_ALIASES = {"google.antigravity-cli": "antigravity"}
+_ANTIGRAVITY_DISPATCH_KEY = "asterun.antigravity_dispatch_v1"
 
 
 def _segmentation_blocked(task, run) -> bool:
@@ -79,9 +84,12 @@ def _grok_execution_profile(app, run, configured):
 
 
 def plan(app, task, run) -> dict | None:
-    """enforce 且后端在 segmentation.backends 白名单、角色在 segmentation.roles、kind 属于 SEGMENT_KINDS、
-    grok 的 execution_profile 为 workspace-code-v1、匹配 profile 有 segment_turns 且 profile.get("segment") 不是 False、
-    且任务不由 runner-control 持有时，返回段计划。
+    """enforce 且后端在白名单、角色在白名单、kind 属于 SEGMENT_KINDS 时返回段计划。
+
+    grok 还要求 execution_profile 为 workspace-code-v1。grok/fake 的 profile 必须有 segment_turns，
+    计划 trigger 为 turn_limit。codex 只允许 implementation。antigravity 仅当 profile 的 segment 为 True。
+    codex/antigravity 不看 segment_turns，要求正整数 segment_soft；计划 trigger 为 marker，max_turns 为 None。
+    审查角色、external_require_review、profile segment 为 False 时不分段。
     mode 不是 enforce 或白名单为空时直接返回 None，不访问数据库。
     质量流程、修复目标绑定、read_scope、capability、dependencies、runner-control 持有的任务不分段。
     text-only 的 grok 不分段。无法确认控制层归属时也不分段。"""
@@ -105,21 +113,44 @@ def plan(app, task, run) -> dict | None:
     if not isinstance(backend_name, str) or backend_name not in backends:
         return None
     backend = app.config.get_backend(backend_name)
-    kind = backend.kind
+    kind = _KIND_ALIASES.get(backend.kind, backend.kind)
     if kind not in SEGMENT_KINDS:
         return None
     if kind == "grok" and _grok_execution_profile(app, run, backend) != CODE_PROFILE:
         return None
+    if kind == "codex" and role != "implementation":
+        return None
+    if getattr(task, "external_require_review", False):
+        return None
     profiles = settings.get("profiles") if isinstance(settings.get("profiles"), dict) else {}
     profile_key, _role = _matched_profile(app, backend_name, role, profiles)
     profile = profiles.get(profile_key)
-    if not isinstance(profile, dict) or "segment_turns" not in profile or profile.get("segment") is False:
+    if not isinstance(profile, dict):
+        return None
+    if kind == "antigravity":
+        if profile.get("segment") is not True:
+            return None
+    elif profile.get("segment") is False:
+        return None
+    if kind in MARKER_KINDS:
+        if not _positive_int(profile.get("segment_soft")):
+            return None
+    elif "segment_turns" not in profile:
         return None
     if _control_owned(app, task, run):
         return None
     native = getattr(run, "native", None)
     if isinstance(native, dict) and native.get("segment") is not None:
         return native["segment"]
+    if kind in MARKER_KINDS:
+        return {
+            "index": 0,
+            "max_turns": None,
+            "profile_key": profile_key,
+            "max_segments": profile.get("max_segments"),
+            "trigger": "marker",
+            "segment_soft": profile["segment_soft"],
+        }
     segment_turns = profile["segment_turns"]
     if kind == "fake":
         max_turns = segment_turns
@@ -130,6 +161,7 @@ def plan(app, task, run) -> dict | None:
         "max_turns": max_turns,
         "profile_key": profile_key,
         "max_segments": profile.get("max_segments"),
+        "trigger": "turn_limit",
     }
 
 
@@ -146,6 +178,8 @@ def guard_continuation(app, task, run) -> None:
         return
     if _control_owned(app, task, run):
         raise AsterunError("CAPABILITY_UNSUPPORTED", "runner-control 任务本版不分段，未派发")
+    if getattr(task, "external_require_review", False):
+        raise AsterunError("CAPABILITY_UNSUPPORTED", "要求外部审查的任务本版不分段，未派发")
     if plan(app, task, run) is None:
         raise AsterunError("CAPABILITY_UNSUPPORTED", "续段排队期间分段已停用，未派发")
     if task.run_count > app.config.scheduler.max_runs_per_task:
@@ -197,12 +231,56 @@ def _below(value, limit) -> bool:
     return type(value) is int and value >= 0 and type(limit) is int and value < limit
 
 
+def _is_antigravity_native(native: dict) -> bool:
+    """内置回执带派发键。外部 worker 只留下 plugin_id，不保留 subagent_count。"""
+    if not isinstance(native, dict):
+        return False
+    plugin_id = native.get("plugin_id")
+    if plugin_id in _KIND_ALIASES and _KIND_ALIASES[plugin_id] == "antigravity":
+        return True
+    return _ANTIGRAVITY_DISPATCH_KEY in native
+
+
+def run_processed(native) -> int | None:
+    """本 run 可归属的 processed；codex 线程累计仅在本段新开线程时计入。未知返回 None。"""
+    if not isinstance(native, dict):
+        return None
+    picture = normalize_breakdown(native)
+    processed = picture.get("processed")
+    if not (type(processed) is int and processed >= 0):
+        return None
+    if picture.get("attributable"):
+        return processed
+    if (picture.get("convention") == "codex_app_server" and picture.get("scope") == "thread_cumulative"
+            and native.get("segment_fresh_thread") is True):
+        return processed
+    return None
+
+
 def segment_end(run) -> bool:
-    """属于分段派发且以原生回合上限自然结束（不是拒绝、不是其他失败）。"""
+    """回合上限自然结束，或成功回复以 MARKER 收尾且本段处理量达到 segment_soft。"""
     seg = run.native.get("segment") if isinstance(run.native, dict) else None
-    failure = run.native.get("provider_failure") if isinstance(run.native, dict) else None
-    return (isinstance(seg, dict) and run.status == RunStatus.FAILED
-            and isinstance(failure, dict) and failure.get("kind") == "turn_limit")
+    if not isinstance(seg, dict):
+        return False
+    if seg.get("trigger", "turn_limit") == "turn_limit":
+        failure = run.native.get("provider_failure")
+        return run.status == RunStatus.FAILED and isinstance(failure, dict) and failure.get("kind") == "turn_limit"
+    # marker：只认成功结束且摘要最后一个非空行恰为 MARKER，且本段 processed ≥ seg["segment_soft"]。
+    if run.status != RunStatus.SUCCEEDED:
+        return False
+    lines = [line.strip() for line in (run.summary or "").splitlines() if line.strip()]
+    if not lines or lines[-1] != MARKER:
+        return False
+    # 外部插件结果不保留 subagent_count。键缺失就无法确认没有委派，不续段。
+    if _is_antigravity_native(run.native) and "subagent_count" not in run.native:
+        return False
+    if run.native.get("subagent_count"):
+        return False   # agy 委派一律不续段
+    processed = run_processed(run.native)
+    if processed is None:
+        return False
+    soft = seg.get("segment_soft")
+    return type(processed) is int and type(soft) is int and processed >= soft
 
 
 def _settings(app) -> dict:
@@ -239,16 +317,49 @@ def _has_native_session(native: dict) -> bool:
     return False
 
 
+def _curve_event(event) -> dict:
+    """摊成 grok_residency_curve 要的字典。用量在 Event.payload，不在 to_dict 顶层。"""
+    if isinstance(event, dict):
+        payload = event.get("payload")
+        if isinstance(payload, dict) and any(key in payload for key in ("kind", "usage", "message_id")):
+            record = dict(payload)
+            if "type" not in record and event.get("type") is not None:
+                event_type = event["type"]
+                record["type"] = event_type if isinstance(event_type, str) else str(event_type)
+            return record
+        return event
+    payload = getattr(event, "payload", None)
+    if isinstance(payload, dict):
+        record = dict(payload)
+        if "type" not in record:
+            event_type = getattr(event, "type", None)
+            if event_type is not None:
+                record["type"] = event_type if isinstance(event_type, str) else str(event_type)
+        return record
+    to_dict = getattr(event, "to_dict", None)
+    if callable(to_dict):
+        data = to_dict()
+        if isinstance(data, dict):
+            return _curve_event(data)
+    return {}
+
+
 def resume_decision(app, task, run, profile) -> str:
-    """处理量与驻留量都已知且低于阈值、且 run 有原生会话时返回 resume；未知一律新会话。"""
+    """处理量与驻留量都已知且低于阈值、且 run 有原生会话时返回 resume；非 grok 或未知一律新会话。"""
     del task, profile
     try:
+        kind = app.config.get_backend(run.backend.value).kind
+        if kind != "grok":
+            return "new_session"
         segmentation = _segmentation(_settings(app))
         native = run.native if isinstance(run.native, dict) else {}
         processed = normalize_breakdown(native)["processed"]
         if not _below(processed, segmentation.get("min_long_task_processed", 600_000)):
             return "new_session"
-        if not _below(native.get("peak_residency"), segmentation.get("resume_max_residency", 100_000)):
+        curve = grok_residency_curve(_curve_event(event) for event in _events(app.store, run.id))
+        if curve["count"] == 0 or curve["partial"]:
+            return "new_session"
+        if not _below(curve["peak"], segmentation.get("resume_max_residency", 100_000)):
             return "new_session"
         if not _has_native_session(native):
             return "new_session"
@@ -406,7 +517,8 @@ def _continue_segment(app, task, run) -> dict | None:
         capsule = load_capsule(app, blob_sha)
     except Exception:
         return _capsule_not_ready(app, task, run)
-    kind = app.config.get_backend(run.backend.value).kind
+    raw_kind = app.config.get_backend(run.backend.value).kind
+    kind = _KIND_ALIASES.get(raw_kind, raw_kind)
     try:
         prompt = bounded_prompt(render_prompt(capsule, backend_kind=kind) + CONTINUE_NOTE)
     except AsterunError:

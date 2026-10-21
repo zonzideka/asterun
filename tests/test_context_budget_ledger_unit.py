@@ -80,7 +80,7 @@ def _install(monkeypatch, settings, breakdown=None, *, seen=None):
     monkeypatch.setattr("asterun.context_budget.ledger._matched_profile", _match)
     if breakdown is not None:
         monkeypatch.setattr(
-            "asterun.context_budget.ledger.normalize_breakdown",
+            "asterun.context_budget.segment.normalize_breakdown",
             lambda native: breakdown,
         )
 
@@ -303,7 +303,7 @@ def test_repair_after_settle_stays_on_first_limit(monkeypatch, conn):
         lambda config: holder["settings"],
     )
     monkeypatch.setattr(
-        "asterun.context_budget.ledger.normalize_breakdown",
+        "asterun.context_budget.segment.normalize_breakdown",
         lambda native: {"processed": 70, "attributable": True},
     )
     run = _run("run_1", role="implementation", native={"usage": {"processed": 70}})
@@ -362,7 +362,7 @@ def test_missing_segment_soft_reserves_remaining(monkeypatch, conn):
         lambda app, backend, role, profiles: (_PROFILE_KEY, "implementation"),
     )
     monkeypatch.setattr(
-        "asterun.context_budget.ledger.normalize_breakdown",
+        "asterun.context_budget.segment.normalize_breakdown",
         lambda native: {"processed": 40, "attributable": True},
     )
     ledger.guard_dispatch(app, _run("run_1"))
@@ -440,7 +440,7 @@ def test_terminal_settle_after_mode_switch(monkeypatch, conn, mode):
         lambda app, backend, role, profiles: (_PROFILE_KEY, "implementation"),
     )
     monkeypatch.setattr(
-        "asterun.context_budget.ledger.normalize_breakdown",
+        "asterun.context_budget.segment.normalize_breakdown",
         lambda native: {"processed": 40, "attributable": True},
     )
     run = _run(native={"usage": {"processed": 40}})

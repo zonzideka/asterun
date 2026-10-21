@@ -189,6 +189,25 @@ def _public_run(run: Run) -> dict[str, Any]:
     return data
 
 
+def _segment_session_native(store, run) -> dict:
+    """续段 resume 时取出源 run 的会话 id。取不到则按新会话，两个字段都是 None。"""
+    blank = {"backend_session_id": None, "turn_id": None}
+    try:
+        native = run.native if isinstance(getattr(run, "native", None), dict) else {}
+        source_id = native.get("segment_source_run_id")
+        if not isinstance(source_id, str) or not source_id.strip():
+            return blank
+        source = store.get_run(RunId(source_id))
+        source_native = source.native if isinstance(getattr(source, "native", None), dict) else {}
+        for key in ("backend_session_id", "session_id"):
+            value = source_native.get(key)
+            if isinstance(value, str) and value.strip():
+                return {"backend_session_id": value, "turn_id": None}
+        return blank
+    except Exception:
+        return blank
+
+
 def ok(data: dict[str, Any], ids: dict[str, str] | None = None) -> Envelope:
     return Envelope(ok=True, data=data, ids=ids or {})
 
@@ -1281,7 +1300,8 @@ class Application:
                 except Exception:
                     pass
         self._drain_queue()
-        run = self.store.get_run(run.id) if run is not None else None
+        task = self.store.get_task(task.id)
+        run = self.store.get_run(task.current_run_id) if task.current_run_id else None
         return ok(
             {
                 "task": task.to_dict(),
@@ -1910,6 +1930,10 @@ class Application:
         from asterun.context_budget.segment import guard_continuation
         guard_continuation(self, task, run)
         dispatch_text = build_dispatch(self, task, run)
+        segment_plan = run.native.get("segment")
+        if isinstance(segment_plan, dict) and segment_plan.get("trigger") == "marker":
+            from asterun.context_budget.segment import MARKER
+            dispatch_text += "\n分段约定：如果任务尚未完成且上下文已经很长，请在回复最后单独一行输出 " + MARKER + "；任务完成时不要输出该行。agy 不得使用子代理。"
         if run.native.get("external_repair_target"):
             from asterun.quality import snapshot
             bound = run.native["external_repair_target"]
@@ -1970,15 +1994,51 @@ class Application:
                   "turn_id": session.latest_turn_id if session else None,
                   "asterun_identity": {"account": self.account_ref.value, "runtime": self.runtime_ref.value}}
         if run.native.get("segment"):
-            native["segment_max_turns"] = run.native["segment"]["max_turns"]
+            segment_max_turns = run.native["segment"]["max_turns"]
+            if type(segment_max_turns) is int:
+                native["segment_max_turns"] = segment_max_turns
         if run.native.get("segment_resume") == "new_session":
             native["backend_session_id"] = None
             native["turn_id"] = None
+            native.pop("thread_id", None)
+        elif run.native.get("segment_resume") == "resume":
+            native.update(_segment_session_native(self.store, run))
         if run.native.get("context_transition"):
             transition = run.native["context_transition"]
             native.update(transition["source_native"])
             native["context_transition"] = transition
-        if self.executor is not None and backend.config.kind != "fake":
+        from asterun.context_budget.segment import _KIND_ALIASES
+        from asterun.grok_profile import CODE_PROFILE
+        segment_kind = _KIND_ALIASES.get(backend.config.kind, backend.config.kind)
+        # 与下面选择派发方式的条件相同。同步路径不把 native 交给 dispatch 时，
+        # CodexBackend.dispatch 不接收 native，总会新建线程。
+        background_dispatch = self.executor is not None and backend.config.kind != "fake"
+        sync_grok_code_stream = (
+            not background_dispatch
+            and run.role != "review"
+            and not task.capability
+            and hasattr(backend, "dispatch_stream")
+            and backend.config.kind == "grok"
+            and getattr(backend, "execution_profile", None) == CODE_PROFILE
+        )
+        sync_plain_dispatch = not background_dispatch and not task.capability and not sync_grok_code_stream
+        sync_dispatch_omits_native = sync_plain_dispatch and not (
+            getattr(backend, "accepts_native_context", False) and run.role != "review"
+        )
+        executor_plain_dispatch = (
+            background_dispatch
+            and reader is None
+            and not task.capability
+            and run.role != "review"
+            and not hasattr(backend, "dispatch_stream")
+        )
+        dispatch_omits_native = sync_dispatch_omits_native or executor_plain_dispatch
+        if (run.native.get("segment") and segment_kind == "codex"
+                and (native.get("backend_session_id") is None or dispatch_omits_native)):
+            # 新开线程时 thread_cumulative 才等于本段用量。派发前落盘，结果合并不得覆盖。
+            run.native = {**run.native, "segment_fresh_thread": True}
+            self.store.save_run(run)
+        if background_dispatch:
             if reader is not None:
                 native["read_scope_binding"] = task.read_scope
             cwd = self.config.get_workspace(task.workspace).root
@@ -1992,7 +2052,7 @@ class Application:
                                                               cwd=cwd, publish=publish, stopping=stopping)
                 if run.role == "review":
                     return backend.dispatch_review(task.id, run.id, task.script, run.prompt, cwd=cwd)
-                if hasattr(backend, "dispatch_stream"):
+                if not executor_plain_dispatch:
                     return backend.dispatch_stream(task.id, run.id, task.script, dispatch_text, cwd=cwd,
                                                    native=native, publish=publish, stopping=stopping)
                 return backend.dispatch(task.id, run.id, task.script, dispatch_text, cwd=cwd)
@@ -2002,14 +2062,11 @@ class Application:
                       "operation": operation.to_dict(), "session": self._session_for_task(task)}),
                       ids={"task_id": task.id.value, "run_id": run.id.value,
                            "operation_id": operation.id.value, **_conversation_ids(task)})
-        from asterun.grok_profile import CODE_PROFILE
         try:
             if task.capability:
                 result = backend.dispatch_capability(task.id, run.id, task.capability, task.capability_input,
                                                       cwd=self.config.get_workspace(task.workspace).root)
-            elif (run.role != "review" and not task.capability and hasattr(backend, "dispatch_stream")
-                  and backend.config.kind == "grok"
-                  and getattr(backend, "execution_profile", None) == CODE_PROFILE):
+            elif sync_grok_code_stream:
                 from threading import Event
 
                 def persist(snapshot):
@@ -2021,11 +2078,11 @@ class Application:
                     task.id, run.id, task.script, dispatch_text,
                     cwd=self.config.get_workspace(task.workspace).root,
                     native=native, publish=persist, stopping=Event())
-            else:
+            elif sync_plain_dispatch:
                 dispatch = backend.dispatch_review if run.role == "review" else backend.dispatch
                 result = dispatch(task.id, run.id, task.script, dispatch_text,
                                           cwd=self.config.get_workspace(task.workspace).root,
-                                          **({"native": native} if getattr(backend, "accepts_native_context", False) and run.role != "review" else {}))
+                                          **({} if sync_dispatch_omits_native else {"native": native}))
         except Exception as error:
             # 调用已经发生：即使是本地抛出的异常，也不能推断远端没有执行。
             with self._state_transaction():
@@ -2441,8 +2498,9 @@ class Application:
                     key: value for key, value in native.items()
                     if key not in {
                         "checkpoint", "local_checks", "stage_attestations", "dependency_bindings",
-                        "payload_manifests", "desktop_project", UNAPPLIED_RESULT_NATIVE_KEY,
-                        UNAPPLIED_APPROVAL_NATIVE_KEY, SLOT_RELEASED_NATIVE_KEY, SLOT_HELD_NATIVE_KEY,
+                        "payload_manifests", "desktop_project", "segment_fresh_thread",
+                        UNAPPLIED_RESULT_NATIVE_KEY, UNAPPLIED_APPROVAL_NATIVE_KEY,
+                        SLOT_RELEASED_NATIVE_KEY, SLOT_HELD_NATIVE_KEY,
                     }
                 })
             for raw in result.get("events") or []:
@@ -2934,6 +2992,7 @@ class Application:
         if result.get("native"):
             run.native.update({k: v for k, v in result["native"].items() if k not in {
                 "checkpoint", "local_checks", "stage_attestations", "dependency_bindings", "payload_manifests",
+                "segment_fresh_thread",
                 * _NATIVE_SLOT_KEYS, UNAPPLIED_RESULT_NATIVE_KEY, UNAPPLIED_APPROVAL_NATIVE_KEY,
             }})
         for raw in result.get("events") or []:

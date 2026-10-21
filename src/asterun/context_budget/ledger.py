@@ -12,7 +12,6 @@ from asterun.context_budget.observe import _matched_profile
 from asterun.contracts import TERMINAL_RUN_STATUSES
 from asterun.control_store import ControlStore
 from asterun.errors import AsterunError
-from asterun.usage.breakdown import normalize_breakdown
 
 NAMESPACE = "asterun.context_budget.v1"
 
@@ -213,13 +212,10 @@ def settle_run(app, run) -> None:
         if current.get("status") != "HELD":
             return
         native = run.native if isinstance(run.native, dict) else {}
-        breakdown = normalize_breakdown(native)
-        processed = breakdown.get("processed")
-        if (
-            breakdown.get("attributable")
-            and isinstance(processed, int)
-            and processed >= 0
-        ):
+        # segment 模块顶层导入本模块，这里局部导入以免循环。
+        from asterun.context_budget.segment import run_processed
+        processed = run_processed(native)
+        if processed is not None:
             store.settle(
                 NAMESPACE,
                 rid,
