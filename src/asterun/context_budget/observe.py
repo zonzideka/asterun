@@ -1,4 +1,7 @@
-"""终态运行的上下文预算观测。失败不得影响 save_run。"""
+"""终态运行的上下文预算观测。失败不得影响 save_run。
+
+observe 下顺带生成的胶囊同样吞掉异常，不能回滚已经写入的观测行。
+"""
 
 from __future__ import annotations
 
@@ -149,7 +152,25 @@ def _observe_run(app, run) -> int:
             ),
         )
         _prune(store._conn)
+    # 观测行已经写入。胶囊失败不能回滚这一行，也不能冒泡到 save_run。
+    _record_observe_capsule(app, run, flags, settings)
     return 1
+
+
+def _record_observe_capsule(app, run, flags, settings) -> None:
+    """capsule_candidate 时生成 observe_only 胶囊。progress_markers 的取值不参与判断。"""
+    try:
+        if flags.get("capsule_candidate") is not True:
+            return
+        # settings["capsule"]["progress_markers"] 可以为任意布尔值，这里不拿它做门闩。
+        capsule_settings = settings.get("capsule") if isinstance(settings.get("capsule"), dict) else {}
+        capsule_settings.get("progress_markers")
+        task = app.store.get_task(run.task_id)
+        from asterun.capsule.store import record_capsule
+
+        record_capsule(app, task, run, trigger="observe_only")
+    except Exception:
+        return
 
 
 def _task_totals(app, run, current: dict) -> tuple[int, int, int, int]:

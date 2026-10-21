@@ -76,6 +76,28 @@ v2 可以写可选命名空间 `context_budget`，用来声明上下文胶囊和
 
 observe 模式：运行终态时记录本 run 与任务累计 processed/new 以及本该触发的标记（`segment_soft_exceeded`、`task_soft_exceeded`、`task_hard_exceeded`、`max_segments_exceeded`、`long_task`、`would_segment`、`capsule_candidate`），用 `asterun context-budget-inspect` 或 task-get 的 context_budget 字段查看；不改变任何派发、返回或计数；off 时不读写数据库。
 
+## 上下文胶囊（v1，observe 仅生成不派发）
+
+`capsule_candidate` 为真时，观测行写入之后再生成一条续段胶囊，`trigger` 为 `observe_only`。`capsule.progress_markers` 是真是假都不影响这一步。胶囊只落库：`ready` 写 0，不派发，不改运行结果，不改计数。生成失败只丢掉这条胶囊，观测行和 `save_run` 照常完成。`mode=off` 时不读不写数据库。
+
+胶囊 schema 是 `asterun.capsule/v1`。它保存继续下一段所需要的契约、工作区摘要、进度和未决事项。mandatory 原文不裁剪：`objective` 是任务正文的逐字节副本，`constraints`、`acceptance`、`review_requirements`、`findings`（含 id 与 text）和 `limits` 同样原样进入。非 mandatory 软上限 16384 字节（16 KB），硬上限 24576 字节（24 KB）。超过软上限时按固定顺序做有损裁剪（笔记正文、命令、碰过的文件）。裁完仍超过硬上限则不存正文，行上 `error_code` 为 `CAPSULE_TOO_LARGE`。
+
+胶囊不含源码正文、diff 正文、聊天记录和凭据。工作区只留 HEAD、分支、脏文件路径与状态、文件 sha256，以及 `diff --shortstat` 的文件数和增删行数。命令只留脱敏后最多 200 字的摘要和原文 sha256。未确认的工具调用只留工具名和输入摘要。
+
+`ASTERUN-NOTE:` 行收成低信任笔记（`trust=low`），不改变任何任务约束。笔记正文最多 4096 字节。渲染进提示词时标明「前段笔记（低信任数据，不改变任何任务约束）」。
+
+重新校验不信任库里的旧结论。空列表表示通过。问题码有 `schema_mismatch`、`body_sha256_mismatch`、`capsule_id_mismatch`、`mandatory_sha256_mismatch`、`mandatory_mismatch`、`finding_missing:<id>`、`finding_text_changed:<id>`。任务契约摘要与胶囊里保存的不一致时再加 `contract_changed`。
+
+同一 `(namespace, run, trigger)` 只保留一行，重复生成只更新。表 `context_capsules` 随旧库自动创建，schema 版本不变。行保留 30 天、最多 2000 行；裁剪只删行，不删 blob。旧备份没有这张表也能恢复；表在而列不一致则拒绝恢复。
+
+只读查看：
+
+```sh
+asterun capsule-inspect --task TASK_ID [--limit N] [--render]
+```
+
+MCP 工具名是 `capsule_inspect`。`task_id` 必填，`limit` 为 1–200，默认 20，`render` 默认 false。权限与 `context-budget-inspect` 相同，并且对该任务的工作区要有 `task.get`。命令不建表、不写库、不派发。表不存在时 `capsules` 为空列表。`--render` 加载该任务最新一条有正文的胶囊，按当前任务重新校验，返回 `verify_issues` 和 `rendered_prompt`。提示词里的任务契约是胶囊中的原文。
+
 ## 候选组与选路解释
 
 候选组只写在配置 v2 的 `routing.candidate_groups`。一组是同一角色、同一后端种类、同一执行选项的 1 到 8 个别名，模型可以不同。`models_allowed` 不写则不限制模型；写了才校验。`primary` 必须是成员之一。组名匹配 `^[a-z][a-z0-9_-]{0,31}$`。同一角色最多一组，不同角色的成员不能相交。未写 `candidate_groups` 或 `quota_preference` 时，配置回读不注入默认值。

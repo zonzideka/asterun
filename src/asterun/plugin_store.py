@@ -73,6 +73,14 @@ _SCHEMA = (
         PRIMARY KEY(namespace_id, run_id))""",
     """CREATE INDEX IF NOT EXISTS idx_context_budget_observations_key
         ON context_budget_observations(namespace_id, task_id, observed_at)""",
+    """CREATE TABLE IF NOT EXISTS context_capsules (
+        namespace_id TEXT NOT NULL, capsule_id TEXT, task_id TEXT NOT NULL,
+        run_id TEXT NOT NULL, segment_index INTEGER, trigger TEXT NOT NULL,
+        body_sha256 TEXT, blob_sha256 TEXT, size_bytes INTEGER, truncated INTEGER,
+        ready INTEGER NOT NULL, issues TEXT, error_code TEXT, created_at TEXT NOT NULL,
+        PRIMARY KEY(namespace_id, run_id, trigger))""",
+    """CREATE INDEX IF NOT EXISTS idx_context_capsules_key
+        ON context_capsules(namespace_id, task_id, created_at)""",
 )
 SCHEMA = ";\n".join(_SCHEMA) + ";\n"
 TABLE_COLUMNS = {
@@ -107,6 +115,14 @@ CONTEXT_BUDGET_TABLE_COLUMNS = {
         "namespace_id", "run_id", "task_id", "profile_key", "backend", "role",
         "run_processed", "run_new", "task_processed", "task_new", "unknown_runs",
         "flags", "policy_sha256", "observed_at",
+    },
+}
+# 上下文胶囊随 PR3-B3 补上，不升 schema。旧备份可以没有；出现时列必须完全一致。
+CAPSULE_TABLE_COLUMNS = {
+    "context_capsules": {
+        "namespace_id", "capsule_id", "task_id", "run_id", "segment_index", "trigger",
+        "body_sha256", "blob_sha256", "size_bytes", "truncated", "ready", "issues",
+        "error_code", "created_at",
     },
 }
 QUOTA_SNAPSHOT_LIMIT = 500
