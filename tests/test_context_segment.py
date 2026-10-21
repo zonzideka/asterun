@@ -451,8 +451,7 @@ def test_plan_external_require_review_returns_none_for_grok_and_fake(monkeypatch
     assert plan(app, reviewed, run) is None
 
 
-def test_segment_end_marker_rejects_unattributable_codex_thread_cumulative():
-    """total 是线程累计且很大，last 很小；不可归属时即使回复带 MARKER 也不续段。"""
+def _codex_thread_cumulative_native(*, fresh=False):
     native = {
         "token_usage": {
             "tokenUsage": {
@@ -479,9 +478,32 @@ def test_segment_end_marker_rejects_unattributable_codex_thread_cumulative():
             "segment_soft": 80,
         },
     }
+    if fresh:
+        native["segment_fresh_thread"] = True
+    return native
+
+
+def test_segment_end_marker_rejects_unattributable_codex_thread_cumulative():
+    """total 是线程累计且很大，last 很小；没有新开线程标记时即使回复带 MARKER 也不续段。"""
+    native = _codex_thread_cumulative_native()
     picture = normalize_breakdown(native)
+    assert picture["convention"] == "codex_app_server"
     assert picture["scope"] == "thread_cumulative"
     assert picture["attributable"] is False
     assert picture["processed"] >= 80
+    assert "segment_fresh_thread" not in native
     run = SimpleNamespace(status=RunStatus.SUCCEEDED, summary="本段到此。\n" + MARKER, native=native)
     assert segment_end(run) is False
+
+
+def test_segment_end_marker_accepts_fresh_codex_thread_cumulative():
+    """本 run 新开线程时 thread_cumulative 等于本段用量，MARKER 且 processed≥soft 则续段。"""
+    native = _codex_thread_cumulative_native(fresh=True)
+    picture = normalize_breakdown(native)
+    assert picture["convention"] == "codex_app_server"
+    assert picture["scope"] == "thread_cumulative"
+    assert picture["attributable"] is False
+    assert picture["processed"] >= 80
+    assert native["segment_fresh_thread"] is True
+    run = SimpleNamespace(status=RunStatus.SUCCEEDED, summary="本段到此。\n" + MARKER, native=native)
+    assert segment_end(run) is True

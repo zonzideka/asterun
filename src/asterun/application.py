@@ -2007,6 +2007,11 @@ class Application:
             transition = run.native["context_transition"]
             native.update(transition["source_native"])
             native["context_transition"] = transition
+        if (run.native.get("segment") and native.get("backend_session_id") is None
+                and backend.config.kind == "codex"):
+            # 新开线程时 thread_cumulative 才等于本段用量。派发前落盘，结果合并不得覆盖。
+            run.native = {**run.native, "segment_fresh_thread": True}
+            self.store.save_run(run)
         if self.executor is not None and backend.config.kind != "fake":
             if reader is not None:
                 native["read_scope_binding"] = task.read_scope
@@ -2470,8 +2475,9 @@ class Application:
                     key: value for key, value in native.items()
                     if key not in {
                         "checkpoint", "local_checks", "stage_attestations", "dependency_bindings",
-                        "payload_manifests", "desktop_project", UNAPPLIED_RESULT_NATIVE_KEY,
-                        UNAPPLIED_APPROVAL_NATIVE_KEY, SLOT_RELEASED_NATIVE_KEY, SLOT_HELD_NATIVE_KEY,
+                        "payload_manifests", "desktop_project", "segment_fresh_thread",
+                        UNAPPLIED_RESULT_NATIVE_KEY, UNAPPLIED_APPROVAL_NATIVE_KEY,
+                        SLOT_RELEASED_NATIVE_KEY, SLOT_HELD_NATIVE_KEY,
                     }
                 })
             for raw in result.get("events") or []:
@@ -2963,6 +2969,7 @@ class Application:
         if result.get("native"):
             run.native.update({k: v for k, v in result["native"].items() if k not in {
                 "checkpoint", "local_checks", "stage_attestations", "dependency_bindings", "payload_manifests",
+                "segment_fresh_thread",
                 * _NATIVE_SLOT_KEYS, UNAPPLIED_RESULT_NATIVE_KEY, UNAPPLIED_APPROVAL_NATIVE_KEY,
             }})
         for raw in result.get("events") or []:

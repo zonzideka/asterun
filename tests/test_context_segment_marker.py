@@ -135,6 +135,36 @@ def test_subagent_does_not_continue(managed, monkeypatch):
     assert source.native.get("subagent_count") == 1
 
 
+def test_segment_fresh_thread_recorded_before_dispatch_only_for_codex(managed, monkeypatch):
+    """派发前把 segment_fresh_thread 写入 run.native，且只在 codex 新线程时写入。结果合并不能覆盖。"""
+    _enforce(managed)
+
+    def dispatch(self, task_id, run_id, script, text, *, cwd=None):
+        stored = managed.store.get_run(run_id)
+        dispatch.seen.append((self.config.kind, stored.native.get("segment_fresh_thread", "absent")))
+        result = _REAL_DISPATCH(self, task_id, run_id, script, text, cwd=cwd)
+        if self.config.kind == "codex":
+            result = {**result, "native": {"segment_fresh_thread": False, "marker_probe": 1}}
+        return result
+
+    dispatch.seen = []
+    monkeypatch.setattr(FakeBackend, "dispatch", dispatch)
+    _finish(managed)
+    assert dispatch.seen == [("fake", "absent")]
+
+    backend = managed.config.get_backend("fake")
+    backend.kind = "codex"
+    try:
+        _task, source, runs = _finish(managed)
+    finally:
+        backend.kind = "fake"
+    assert dispatch.seen[-1] == ("codex", True)
+    assert len(runs) == 1
+    assert source.native.get("segment_fresh_thread") is True
+    assert source.native.get("marker_probe") == 1
+    assert source.native["segment"]["trigger"] == "marker"
+
+
 def test_marker_dispatch_includes_convention_turn_limit_does_not(managed, monkeypatch):
     _enforce(managed)
     plain = _record_dispatch(monkeypatch)

@@ -246,7 +246,10 @@ def segment_end(run) -> bool:
         return False   # agy 委派一律不续段
     picture = normalize_breakdown(run.native)
     if not picture.get("attributable"):
-        return False   # 线程累计等不可归属用量按未知处理
+        fresh = (picture.get("convention") == "codex_app_server" and picture.get("scope") == "thread_cumulative"
+                 and run.native.get("segment_fresh_thread") is True)
+        if not fresh:
+            return False
     processed = picture["processed"]
     soft = seg.get("segment_soft")
     return type(processed) is int and type(soft) is int and processed >= soft
