@@ -92,7 +92,7 @@
     },
     {
       "path": "src/asterun/application.py",
-      "sha256": "d26c4d0aec0c57c63b623e1f4a5a9d70c7a28581f8ddd7781bed9336cacae4b6"
+      "sha256": "adeaf495212f3ab950b30cfd1885c0d8258d564cd415b70c3f4bf53d55375c45"
     },
     {
       "path": "src/asterun/approval_digest.py",
@@ -152,7 +152,7 @@
     },
     {
       "path": "src/asterun/backends/grok.py",
-      "sha256": "7fe127a9783bd068131843a7b17d7c0af4ee6144d747e7236cc2558b55d04b42"
+      "sha256": "229e3353af7d89d9497b0eadff531c1a6d77b0cf090a3637139418eb6c25d6f6"
     },
     {
       "path": "src/asterun/backends/grok_code.py",
@@ -160,7 +160,7 @@
     },
     {
       "path": "src/asterun/backup.py",
-      "sha256": "f2120979b3c2b5c745ee3ab5a63cbf83f3a87a5ebfb4e534c5892c96ee475f36"
+      "sha256": "51a06950c36eadec1b6dc1fcb554ef715d73c465270931128e26e9ad7adeb19c"
     },
     {
       "path": "src/asterun/binding.py",

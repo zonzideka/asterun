@@ -169,6 +169,16 @@ def _validate_control_snapshot(conn: sqlite3.Connection) -> None:
         if namespace == "asterun.context_budget.v1":
             require(budget is not None and id == "res_cb_" + action_id)
             require(item["task_id"] == budget["task_id"])
+            # save_run 写入的 task_id 是字符串；兼容历史 {"value": ...}。
+            try:
+                row = conn.execute("SELECT payload FROM runs WHERE id=?", (action_id,)).fetchone()
+            except sqlite3.OperationalError:
+                require(False)
+            require(row is not None)
+            run_task_id = json.loads(row[0]).get("task_id")
+            if isinstance(run_task_id, dict):
+                run_task_id = run_task_id.get("value")
+            require(run_task_id == item["task_id"])
         else:
             action = entities.get((namespace, "Action", action_id))
             require(budget is not None and action is not None)

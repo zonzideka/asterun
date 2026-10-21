@@ -62,6 +62,14 @@ DEFAULT_CODE_MAX_TURNS = 40
 DEFAULT_CODE_TIMEOUT_SECONDS = 900
 
 
+def _segment_turns(native, limit: int) -> int:
+    """分段派发时用段回合数，但永远不超过后端 max_turns（唯一硬上界）。"""
+    value = (native or {}).get("segment_max_turns")
+    if type(value) is int and 1 <= value:
+        return min(value, limit)
+    return limit
+
+
 # dontAsk plus the allow list stays fail-closed. Switching to always-approve would
 # let the model run any command (network, git push with the profile's credentials,
 # writes the Landlock workspace sandbox still allows such as /tmp) with no
@@ -502,7 +510,7 @@ class GrokBackend:
                     handle.write(text)
                 command = build_grok_code_command(str(binary), cwd=cwd, prompt_file=prompt_file,
                     session_id=session_id, model=self.config.model,
-                    max_turns=self.config.max_turns or DEFAULT_CODE_MAX_TURNS, resume=resumed)
+                    max_turns=_segment_turns(native, self.config.max_turns or DEFAULT_CODE_MAX_TURNS), resume=resumed)
                 with self._code_lock:
                     if self._closing:
                         raise AsterunError(BACKEND_UNAVAILABLE, "Grok 后端正在关闭，未启动编码进程")

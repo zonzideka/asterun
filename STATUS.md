@@ -2,7 +2,7 @@
 
 [中文](STATUS.md) | [English](STATUS.en.md)
 
-未发布（main）：`context_budget.mode` 新增 `enforce`，仅 Token 预算准入（`admission_only`），不分段。任务首次在 enforce 下派发建立 Budget，上限按首次快照。超限 `BUDGET_EXHAUSTED` 并生成 `budget_soft` 胶囊。终态按 processed 结算，未知转 `UNCERTAIN` 占用。默认 `off`，线上未启用。
+未发布（main）：`context_budget.mode` 新增 `enforce`，仅 Token 预算准入（`admission_only`），不分段。任务首次在 enforce 下派发建立 Budget，上限按首次快照。超限 `BUDGET_EXHAUSTED` 并生成 `budget_soft` 胶囊。终态按 processed 结算，未知转 `UNCERTAIN` 占用。默认 `off`，线上未启用。grok 分段（enforce + 白名单，默认关闭，线上未启用）。
 
 2026-10-21 把核心源码标为 `0.1.0a26`。a25 已于 2026-10-20 发布（[`v0.1.0a25`](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a25)）。本版是上下文胶囊与 Token 预算第一阶段（纯观测，默认关闭）。usage-report 每行与汇总新增 `breakdown`：统一未缓存输入、缓存读、缓存写、输出四分量，processed（含缓存读）与 new（不含缓存读）两种口径；缺失记 null 不记 0；用 total 做包含关系自检，不符判 unknown；Codex 线程累计不归属到运行；Codex cacheWrite 不计入（partial）；新增 Grok 逐请求驻留曲线（按 message_id 去重）。v2 新命名空间 `context_budget` 只接受 off（默认）/observe，enforce 尚未实现会被拒绝；未写此键的既有配置序列化与摘要不变。observe 模式在运行终态把本 run 与任务累计 processed/new 及本该触发的标记（`segment_soft_exceeded`、`task_soft_exceeded`、`task_hard_exceeded`、`max_segments_exceeded`、`long_task`、`would_segment`、`capsule_candidate`）写入新表 `context_budget_observations`；task-get 在有记录时显示 `context_budget`；新只读命令 `context-budget-inspect`（MCP `context_budget_inspect`）。不改变任何派发、返回或计数。SQLite 新增观测表（旧库自动创建，旧备份仍可恢复），schema 版本仍为 6。插件版本不变（Antigravity `1.0.7`、Cursor `1.0.1`、Jules `1.0.0`）；协议与标准 skill 最低接口 `0.1.0a14` 不变。尚未打 `v0.1.0a26`。
 

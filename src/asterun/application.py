@@ -1272,6 +1272,14 @@ class Application:
             self._event(run.id, EventType.HANDOFF_RESUMED, "core", {"orchestration_owner": "core"})
             run = self.store.get_run(run.id)
         self.store.save_task(task)
+        if action == "resume" and run is not None and run.status in TERMINAL_RUN_STATUSES:
+            native = run.native if isinstance(run.native, dict) else {}
+            if native.get("segment") and not native.get("segment_end"):
+                try:
+                    from asterun.context_budget.segment import continue_segment
+                    continue_segment(self, self.store.get_task(task.id), self.store.get_run(run.id))
+                except Exception:
+                    pass
         self._drain_queue()
         run = self.store.get_run(run.id) if run is not None else None
         return ok(
@@ -1895,6 +1903,12 @@ class Application:
             raise AsterunError(CAPABILITY_UNSUPPORTED, "v2 固定执行计划尚未绑定变换后投递，不能启用实验投递变换")
         from asterun.context_transition import guard as guard_context
         guard_context(self, task, run)
+        from asterun.context_budget.segment import plan as plan_segment
+        segment = plan_segment(self, task, run)
+        if segment is not None:
+            run.native["segment"] = segment
+        from asterun.context_budget.segment import guard_continuation
+        guard_continuation(self, task, run)
         dispatch_text = build_dispatch(self, task, run)
         if run.native.get("external_repair_target"):
             from asterun.quality import snapshot
@@ -1955,6 +1969,11 @@ class Application:
         native = {"backend_session_id": session.backend_session_id.value if session and session.backend_session_id else None,
                   "turn_id": session.latest_turn_id if session else None,
                   "asterun_identity": {"account": self.account_ref.value, "runtime": self.runtime_ref.value}}
+        if run.native.get("segment"):
+            native["segment_max_turns"] = run.native["segment"]["max_turns"]
+        if run.native.get("segment_resume") == "new_session":
+            native["backend_session_id"] = None
+            native["turn_id"] = None
         if run.native.get("context_transition"):
             transition = run.native["context_transition"]
             native.update(transition["source_native"])
@@ -2321,6 +2340,12 @@ class Application:
         run = outcome["run"]
         self._project_slot(run)
         if run.status in TERMINAL_RUN_STATUSES:
+            if isinstance(run.native, dict) and run.native.get("segment"):
+                try:
+                    from asterun.context_budget.segment import continue_segment
+                    continue_segment(self, self.store.get_task(run.task_id), self.store.get_run(run.id))
+                except Exception:
+                    pass
             self._drain_queue()
         if outcome["has_presentation"]:
             self._persist_native_presentation(run, outcome["presentation"])
@@ -2530,7 +2555,16 @@ class Application:
             for task_id in self.store.list_task_ids():
                 task = self.store.get_task(task_id)
                 run = self.store.get_run(task.current_run_id) if task.current_run_id else None
-                if run is None or run.status in TERMINAL_RUN_STATUSES:
+                if run is None:
+                    continue
+                if run.status in TERMINAL_RUN_STATUSES:
+                    if (isinstance(run.native, dict) and run.native.get("segment")
+                            and not run.native.get("segment_end")):
+                        try:
+                            from asterun.context_budget.segment import continue_segment
+                            continue_segment(self, task, run)
+                        except Exception:
+                            pass
                     continue
                 self._apply_retained_result_if_any(run)
                 run = self.store.get_run(run.id)
