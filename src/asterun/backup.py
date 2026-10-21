@@ -38,6 +38,75 @@ def _snapshot_json(payload: str) -> Any:
     return json.loads(payload, object_pairs_hook=unique)
 
 
+def _validate_context_budget_entity(item: dict, kind: str, id: str) -> bool:
+    """侧账本形状与 context_budget.ledger 的 _entity / ensure_budget / guard_dispatch 一致。"""
+
+    def safe_int(value: object, minimum: int) -> bool:
+        return type(value) is int and minimum <= value <= 2**53 - 1
+
+    def nonempty_str(value: object) -> bool:
+        return isinstance(value, str) and value != ""
+
+    def token_amount(value: object, minimum: int) -> bool:
+        if not isinstance(value, list) or len(value) != 1 or not isinstance(value[0], dict):
+            return False
+        entry = value[0]
+        if set(entry) != {"meter", "amount", "billing_pool_ref"}:
+            return False
+        return (
+            entry["meter"] == "tokens"
+            and entry["billing_pool_ref"] is None
+            and safe_int(entry["amount"], minimum)
+        )
+
+    public = (
+        "schema_version", "kind", "id", "namespace_id", "revision",
+        "created_at", "updated_at", "extensions",
+    )
+    if any(name not in item for name in public):
+        return False
+    revision = item["revision"]
+    if item["kind"] != kind or item["id"] != id or item["namespace_id"] != "asterun.context_budget.v1":
+        return False
+    if type(revision) is not int or revision < 1:
+        return False
+    if not nonempty_str(item["created_at"]) or not nonempty_str(item["updated_at"]):
+        return False
+    if not isinstance(item["extensions"], dict) or not nonempty_str(item.get("task_id")):
+        return False
+    if kind == "Budget":
+        limits = item.get("limits")
+        if not isinstance(limits, list) or len(limits) != 1 or not isinstance(limits[0], dict):
+            return False
+        entry = limits[0]
+        if set(entry) != {"meter", "limit", "enforcement", "billing_pool_ref"}:
+            return False
+        digest = hashlib.sha256(item["task_id"].encode()).hexdigest()[:24]
+        return (
+            entry["meter"] == "tokens"
+            and entry["enforcement"] == "admission_only"
+            and entry["billing_pool_ref"] is None
+            and safe_int(entry["limit"], 1)
+            and id == "bud_cb_" + digest
+        )
+    if kind != "Reservation":
+        return False
+    if not id.startswith("res_cb_"):
+        return False
+    if not nonempty_str(item.get("budget_id")) or not nonempty_str(item.get("action_id")):
+        return False
+    status = item.get("status")
+    if status not in {"HELD", "SETTLED", "RELEASED", "UNCERTAIN"}:
+        return False
+    if not token_amount(item.get("reserved"), 1) or not isinstance(item.get("receipt_evidence_ids"), list):
+        return False
+    if "actual" not in item:
+        return False
+    if status == "SETTLED":
+        return token_amount(item["actual"], 0)
+    return item["actual"] is None
+
+
 def _validate_control_snapshot(conn: sqlite3.Connection) -> None:
     from asterun.control_protocol import digest, validate
 
@@ -71,7 +140,7 @@ def _validate_control_snapshot(conn: sqlite3.Connection) -> None:
             # 与 context_budget.ledger.NAMESPACE 相同。侧账本的 namespace 不是协议 Id，
             # Budget 也不带协议超额字段；写字面量以避免循环导入。交叉引用见下方预留循环。
             if namespace == "asterun.context_budget.v1":
-                require(kind in {"Budget", "Reservation"})
+                require(kind in {"Budget", "Reservation"} and _validate_context_budget_entity(item, kind, id))
             else:
                 validate(item, kind)
         if kind in {"Upload", "Artifact"}:

@@ -306,3 +306,60 @@ def test_context_budget_reservation_backup_accepts_run_id_and_rejects_other_ids(
     _seed_context_budget_reservation(bad, "res_cb_other", run_id)
     with pytest.raises(AsterunError, match="不一致"):
         _validate_snapshot(bad / DB_NAME)
+
+
+@pytest.mark.parametrize(
+    ("kind", "damage"),
+    [
+        ("Budget", "limit_negative"),
+        ("Budget", "limit_string"),
+        ("Budget", "missing:schema_version"),
+        ("Budget", "missing:kind"),
+        ("Budget", "missing:id"),
+        ("Budget", "missing:namespace_id"),
+        ("Budget", "missing:revision"),
+        ("Budget", "missing:created_at"),
+        ("Budget", "missing:updated_at"),
+        ("Budget", "missing:extensions"),
+        ("Budget", "enforcement"),
+        ("Reservation", "amount_negative"),
+        ("Reservation", "status"),
+        ("Reservation", "settled_actual_none"),
+    ],
+)
+def test_context_budget_side_ledger_rejects_malformed_entities(tmp_path, kind, damage):
+    root = tmp_path / "ledger"
+    run_id = "run_1"
+    _seed_context_budget_reservation(root, reservation_id(run_id), run_id)
+    assert _validate_snapshot(root / DB_NAME) == 6
+    with closing(sqlite3.connect(root / DB_NAME)) as conn:
+        payload, = conn.execute(
+            "SELECT payload FROM control_entities WHERE namespace_id=? AND kind=?",
+            ("asterun.context_budget.v1", kind),
+        ).fetchone()
+        item = json.loads(payload)
+        if damage == "limit_negative":
+            item["limits"][0]["limit"] = -1
+        elif damage == "limit_string":
+            item["limits"][0]["limit"] = "100"
+        elif damage.startswith("missing:"):
+            del item[damage.split(":", 1)[1]]
+        elif damage == "enforcement":
+            item["limits"][0]["enforcement"] = "hard_stop"
+        elif damage == "amount_negative":
+            item["reserved"][0]["amount"] = -1
+        elif damage == "status":
+            item["status"] = "CLOSED"
+        elif damage == "settled_actual_none":
+            item["status"] = "SETTLED"
+            item["actual"] = None
+        else:
+            raise AssertionError(damage)
+        conn.execute(
+            "UPDATE control_entities SET payload=? WHERE namespace_id=? AND kind=?",
+            (json.dumps(item, ensure_ascii=False), "asterun.context_budget.v1", kind),
+        )
+        conn.commit()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    with pytest.raises(AsterunError, match="不一致"):
+        _validate_snapshot(root / DB_NAME)
