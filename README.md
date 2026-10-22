@@ -90,17 +90,17 @@ Validation status per backend and platform is listed in the [release notes](docs
 - The core listens on a same-user Unix socket. Callers authenticate through their own channel; cross-host transport is the caller's responsibility.
 - Operating-system isolation is configured separately and is not implied by the permission settings above.
 
-See the [design](docs/en/design.md) for the full model.
+See the [design](https://github.com/zonzideka/asterun/blob/main/docs/en/design.md) for the full model.
 
 ## Documentation
 
 - [User manual](docs/en/user-manual.md)
 - [Installation and configuration](docs/en/install.md)
 - [Plugins and v2 configuration](docs/en/plugins.md)
-- [Design](docs/en/design.md)
+- [Design](https://github.com/zonzideka/asterun/blob/main/docs/en/design.md)
 - [runner-control/v1 protocol](docs/en/protocol/IMPLEMENTATION.md) and [capability profile](docs/en/capability-profile.md)
 - [Standard skill](docs/en/standard-skill.md)
-- [Release notes](docs/en/release-v0.1.md) and [status](STATUS.en.md)
+- [Release notes](docs/en/release-v0.1.md) and [status](https://github.com/zonzideka/asterun/blob/main/STATUS.en.md)
 
 ## License
 

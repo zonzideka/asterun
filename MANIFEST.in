@@ -18,7 +18,6 @@ include docs/plugins.md
 include docs/capability-profile.md
 include docs/review-consumer.md
 include docs/caller-orchestration.md
-include docs/design.md
 include docs/standard-skill.md
 include docs/release-v0.1.md
 include docs/en/user-manual.md
@@ -28,7 +27,6 @@ include docs/en/approval-policy.md
 include docs/en/pr-review.md
 include docs/en/fixed-read-scope.md
 include docs/en/codex-projects.md
-include docs/en/design.md
 include docs/en/plugins.md
 include docs/en/capability-profile.md
 include docs/en/review-consumer.md
