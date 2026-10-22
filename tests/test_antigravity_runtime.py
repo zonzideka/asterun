@@ -467,19 +467,56 @@ def test_go_unquote_decodes_simple_escapes_and_the_heredoc():
 @pytest.mark.parametrize("body,expected", [
     (r"\x41\u0042\U00000043", "ABC"),
     (r"\101\040", "A "),
-    (r"\0", "\x00"),
-    (r"\08", "\x008"),
+    (r"\000", "\x00"),
+    (r"\377", "\xff"),
+    (r"\1234", "S4"),
+    (r"\x00", "\x00"),
+    (r"\uD7FF", "\uD7FF"),
+    (r"\uE000", "\uE000"),
+    (r"\U0010FFFF", "\U0010FFFF"),
+    (r"\0", None),
+    (r"\00", None),
+    (r"\7", None),
+    (r"\08", None),
+    (r"\12", None),
+    (r"\78", None),
+    (r"\128", None),
+    (r"\008", None),
+    (r"\777", None),
+    (r"\8", None),
+    (r"\9", None),
     (r"\q", None),
     ("\n", None),
     ("\r", None),
     ('"', None),
     ("\\", None),
+    ("\\\n", None),
+    (r"\x", None),
     (r"\x4", None),
+    (r"\xGG", None),
+    (r"\x-1", None),
+    (r"\x+1", None),
+    (r"\x0_", None),
+    (r"\x_1", None),
+    (r"\u041", None),
+    (r"\u+041", None),
+    (r"\u0_41", None),
+    (r"\u00_1", None),
+    (r"\u-041", None),
+    (r"\U0010FFF", None),
+    (r"\U+0000041", None),
+    (r"\U-0000041", None),
     (r"\uD800", None),
+    (r"\ud800", None),
+    (r"\uDFFF", None),
+    (r"\U0000D800", None),
+    (r"\U0000DFFF", None),
     (r"\U00110000", None),
+    (r"\UFFFFFFFF", None),
     (r"\400", None),
     ("a" * 16384, "a" * 16384),
     ("a" * 16385, None),
+    (None, None),
 ])
 def test_go_unquote_decodes_percent_q_body(body, expected):
     assert module._go_unquote(body) == expected
@@ -606,4 +643,71 @@ def test_review_denial_plus_unrelated_tool_error_counts_the_other_error(tmp_path
     assert "另有 1 个" in result["summary"]
     assert result["native"]["unexplained_error_count"] == 1
     assert result["native"]["review_denied_count"] == 1
+    assert "private diagnostic" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("quoted,raw", [
+    (r"\0", "\x00"),
+    (r"\08", "\x008"),
+    (r"\12", "\n"),
+    (r"\00", "\x00"),
+    (r"\7", "\x07"),
+    (r"\400", r"\400"),
+    (r"\777", r"\777"),
+    (r"\x-1", r"\x-1"),
+    (r"\x+1", "\x01"),
+    (r"\x4", "\x04"),
+    (r"\u+041", "A"),
+    (r"\u0_41", "A"),
+    (r"\u00_1", "\x01"),
+    (r"\u041", "A"),
+    (r"\u-041", "\ud800"),
+    (r"\U+0000041", "A"),
+    (r"\U-0000041", r"\U-0000041"),
+    (r"\U0010FFF", "\U00010fff"),
+    (r"\uD800", "\ud800"),
+    (r"\uDFFF", "\udfff"),
+    (r"\U0000D800", "\ud800"),
+    (r"\U00110000", r"\U00110000"),
+    (r"\UFFFFFFFF", r"\UFFFFFFFF"),
+])
+def test_invalid_escapes_are_not_policy_or_review_denials(quoted, raw):
+    policy = {"type": "TOOL_ERROR", "message": _policy_message("unsandboxed", quoted, raw)}
+    review = {"type": "TOOL_ERROR", "message": _review_sentence("read_file", quoted, raw)}
+    assert module._is_policy_denial(policy) is False
+    assert module._is_review_denial(review) is None
+
+
+@pytest.mark.parametrize("mode", ["policy_denied_bad_escape", "review_denied_bad_escape"])
+def test_invalid_escape_denial_is_an_ordinary_tool_error(tmp_path, mode):
+    result, _ = execute(tmp_path, mode)
+    assert result["status"] == "failed" and result["terminated"] is True
+    assert result["error_code"] == "ANTIGRAVITY_RUN_INCOMPLETE"
+    native = result["native"]
+    assert native["policy_denied_count"] == 0
+    assert native["review_denied_count"] == 0
+    assert native["soft_denied"] is False
+    assert native["soft_denied_tools"] == []
+    assert native["unexplained_error_count"] == 1
+    assert "需要人工审批" not in result["summary"]
+    if mode == "policy_denied_bad_escape":
+        assert result["summary"] == "final plan"
+    assert "private diagnostic" not in json.dumps(result)
+
+
+def test_soft_deny_and_hard_deny_in_one_run(tmp_path):
+    result, _ = execute(tmp_path, "soft_and_hard_deny")
+    assert result["status"] == "failed" and result["terminated"] is True
+    assert result["error_code"] == "ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED"
+    native = result["native"]
+    assert native["soft_denied"] is True
+    assert native["soft_denied_tools"] == ["read_file"]
+    assert native["review_denied_count"] == 1
+    assert native["policy_denied_count"] == 1
+    assert native["policy_denied_tools"] == ["run_command"]
+    assert native["unexplained_error_count"] == 0
+    assert native[DISPATCH_RECEIPT_KEY]["failure_type"] == "soft_denied_review"
+    assert "另有" not in result["summary"]
+    assert "read_file" in result["summary"]
+    assert "final plan" in result["summary"]
     assert "private diagnostic" not in json.dumps(result)

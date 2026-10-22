@@ -342,6 +342,34 @@ elif MODE == "review_plus_tool_error":
     step(1, "tool", "ERROR", tool_info={"name": "read_file", "error": {
         "type": "TOOL_ERROR", "message": "private diagnostic"}})
     result(response="partial")
+elif MODE == "policy_denied_bad_escape":
+    # \0 is not three octal digits. Accepting it would mark this hard denial
+    # and, with a final answer, report success.
+    step(0, "tool", "ACTIVE", tool_info={"name": "run_command"})
+    step(0, "tool", "ERROR", tool_info={"name": "run_command", "error": {
+        "type": "TOOL_ERROR", "message": (
+            'permission check failed for unsandboxed "\\0": '
+            "Permission denied for unsandboxed(\x00). "
+            "Matches user-configured deny rule."
+        )}})
+    step(1, "agent_response", "DONE", text_delta="final plan")
+    result(response="final plan")
+elif MODE == "review_denied_bad_escape":
+    # \x-1 is not two hex digits. Decoding it used to raise and leave the run pending.
+    step(0, "tool", "ACTIVE", tool_name="read_file", tool_info={"name": "read_file"})
+    step(0, "tool", "ERROR", tool_name="read_file", tool_info={
+        "name": "read_file",
+        "error": {"type": "TOOL_ERROR", "message": review_deny_message(
+            "read_file", "ls\\x-1", "ls\\x-1")}})
+    result(response="partial")
+elif MODE == "soft_and_hard_deny":
+    policy_denied_command()
+    step(1, "tool", "ACTIVE", tool_name="read_file", tool_info={"name": "read_file"})
+    step(1, "tool", "ERROR", tool_name="read_file", tool_info={
+        "name": "read_file",
+        "error": {"type": "TOOL_ERROR", "message": _REVIEW_STREAM_MESSAGE}})
+    step(2, "agent_response", "DONE", text_delta="final plan")
+    result(response="final plan")
 else:
     step(0, "user_input", text_delta=message["message"]["content"])
     step(1, "thinking", text_delta="private reasoning")

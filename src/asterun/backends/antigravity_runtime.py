@@ -55,6 +55,9 @@ _GO_SIMPLE_ESCAPES = {
     "\\": "\\", '"': '"', "n": "\n", "t": "\t", "r": "\r",
     "a": "\a", "b": "\b", "f": "\f", "v": "\v",
 }
+# strconv.Unquote accepts only ASCII hex. int(text, 16) also accepts signs
+# and underscores, which are not hex digits and must be rejected first.
+_ASCII_HEX = frozenset("0123456789abcdefABCDEF")
 # Q stops at an unescaped quote. Raw text is sliced up to the fixed suffix so
 # a newline inside the command is kept and an earlier copy of the suffix is not
 # treated as the end of the sentence.
@@ -136,14 +139,17 @@ def _public_tool_name(value: Any) -> str:
 
 
 def _go_unquote(body: str) -> str | None:
-    """Decode one Go %q body with the surrounding quotes already removed.
+    """Decode one Go strconv.Unquote body with the surrounding quotes removed.
 
-    Supports backslash, quote, the letters a, b, f, n, r, t and v, two-digit
-    hex, 4- and 8-digit unicode, and octal of 1 to 3 digits (value at most
-    255). Any other backslash sequence, a bare quote, a raw newline or CR, an
-    invalid code point, or a body longer than 16384 characters yields None.
+    Double-quoted Go literals allow backslash, quote, the letters a, b, f, n,
+    r, t and v, exactly two ASCII hex digits (\\x), exactly four (\\u), exactly
+    eight (\\U), and exactly three octal digits whose value is at most 255.
+    \\u and \\U reject surrogates and code points above U+10FFFF. A sign,
+    underscore, or other non-hex digit is invalid. Any invalid escape, bare
+    quote, raw newline or CR, or body longer than 16384 characters yields
+    None. This function does not raise.
     """
-    if len(body) > _MAX_GO_QUOTE_BODY:
+    if not isinstance(body, str) or len(body) > _MAX_GO_QUOTE_BODY:
         return None
     out: list[str] = []
     index = 0
@@ -166,26 +172,29 @@ def _go_unquote(body: str) -> str | None:
             continue
         if escaped in {"x", "u", "U"}:
             width = {"x": 2, "u": 4, "U": 8}[escaped]
-            if index + width > limit:
+            end = index + width
+            if end > limit:
                 return None
-            hex_digits = body[index:index + width]
-            try:
-                code = int(hex_digits, 16)
-            except ValueError:
+            hex_digits = body[index:end]
+            if any(digit not in _ASCII_HEX for digit in hex_digits):
                 return None
-            index += width
-            if escaped != "x" and (code > 0x10FFFF or 0xD800 <= code <= 0xDFFF):
+            # Digits were checked, so int() cannot see a sign or underscore.
+            code = int(hex_digits, 16)
+            index = end
+            if code < 0 or code > 0x10FFFF or (escaped != "x" and 0xD800 <= code <= 0xDFFF):
                 return None
             out.append(chr(code))
             continue
         if "0" <= escaped <= "7":
-            # Go Unquote accepts one to three octal digits.
-            value = ord(escaped) - 48
-            for _ in range(2):
-                if index >= limit or not ("0" <= body[index] <= "7"):
-                    break
-                value = (value << 3) | (ord(body[index]) - 48)
-                index += 1
+            # strconv.Unquote requires exactly three octal digits, not one or two.
+            end = index + 2
+            if end > limit:
+                return None
+            second, third = body[index], body[index + 1]
+            if not ("0" <= second <= "7" and "0" <= third <= "7"):
+                return None
+            value = ((ord(escaped) - 48) << 6) | ((ord(second) - 48) << 3) | (ord(third) - 48)
+            index = end
             if value > 255:
                 return None
             out.append(chr(value))
