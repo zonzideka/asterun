@@ -32,7 +32,7 @@
     },
     {
       "path": "packages/asterun-plugin-antigravity/src/asterun_plugin_antigravity/vendor-source.json",
-      "sha256": "b6070a2bd2c66f7e9c0bd8a23457c0934e2b99319863adfe0771a3cfc3841047"
+      "sha256": "fdc22a32ae20e9ff1ed2e95276255e97b4e0a8ac91079b6fc3561d461a0c9a6d"
     },
     {
       "path": "packages/asterun-plugin-antigravity/src/asterun_plugin_antigravity/worker.py",
