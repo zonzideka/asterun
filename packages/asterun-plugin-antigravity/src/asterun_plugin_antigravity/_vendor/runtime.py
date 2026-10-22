@@ -46,11 +46,40 @@ _DENIED = re.compile(
 _REVIEW_EVIDENCE = re.compile(r"soft[- ]den(?:ied|ying)|requires? approval", re.IGNORECASE)
 # Profile deny rules are a hard refusal only for agy's whole native sentence.
 # A substring, an extra field, or a non-string value is an ordinary tool error.
-# Never copy the tool error text into a public result.
-_POLICY_DENIED = re.compile(
-    r'permission check failed for (unsandboxed|command|read_file|write_file|read_url|execute_url|mcp) "(?:[^"\\\r\n]|\\[^\r\n]){0,4096}": Permission denied for \1\([^\r\n]{0,4096}\)\. Matches user-configured deny rule\.'
+# Never copy the tool error text into a public result. The quoted argument is
+# Go %q and must unquote to the parenthesized text, which may contain newlines.
+_MAX_DENIAL_MESSAGE = 40000
+_MAX_GO_QUOTE_BODY = 16384
+_GO_SIMPLE_ESCAPES = {
+    "\\": "\\", '"': '"', "n": "\n", "t": "\t", "r": "\r",
+    "a": "\a", "b": "\b", "f": "\f", "v": "\v",
+}
+# Q stops at an unescaped quote. Raw text is sliced up to the fixed suffix so
+# a newline inside the command is kept and an earlier copy of the suffix is not
+# treated as the end of the sentence.
+_QUOTED_BODY = r'((?:[^"\\\r\n]|\\.)*)'
+_POLICY_TOOLS = "unsandboxed|command|read_file|write_file|read_url|execute_url|mcp"
+_REVIEW_TOOLS = "read_file|write_file|command|unsandboxed|read_url|execute_url|mcp"
+_POLICY_PREFIX = re.compile(
+    "^permission check failed for (" + _POLICY_TOOLS + ') "' + _QUOTED_BODY
+    + '": Permission denied for \\1\\('
 )
+_POLICY_SUFFIX = "). Matches user-configured deny rule."
 _POLICY_DENIED_KEYS = frozenset({"type", "message"})
+# Second line of agy's unattended request-review denial. The message must end
+# with this sentence verbatim: no prefix, suffix, or extra line. agy writes
+# "soft-denying tool confirmation" only to its own log; stderr may carry a
+# generic "permission denied" that is not this denial.
+_REVIEW_DENIAL_SECOND_LINE = (
+    "Do not attempt to circumvent this denial by rephrasing the command, "
+    "using alternative tools/scripts (e.g. python, sh, curl), or accessing "
+    "the same target resource. Proceed without performing this action."
+)
+_REVIEW_PREFIX = re.compile(
+    "^permission check failed for (" + _REVIEW_TOOLS + ') "' + _QUOTED_BODY
+    + '": user denied permission for \\1\\('
+)
+_REVIEW_SUFFIX = ")\n" + _REVIEW_DENIAL_SECOND_LINE
 _KNOWN_TOOLS = frozenset({
     "run_command", "read_file", "write_file", "view_file", "list_dir", "grep_search",
     "find_by_name", "codebase_search", "read_url_content", "view_content_chunk",
@@ -105,16 +134,123 @@ def _public_tool_name(value: Any) -> str:
     return "other"
 
 
+def _go_unquote(body: str) -> str | None:
+    """Decode one Go %q body with the surrounding quotes already removed.
+
+    Supports backslash, quote, the letters a, b, f, n, r, t and v, two-digit
+    hex, 4- and 8-digit unicode, and octal of 1 to 3 digits (value at most
+    255). Any other backslash sequence, a bare quote, a raw newline or CR, an
+    invalid code point, or a body longer than 16384 characters yields None.
+    """
+    if len(body) > _MAX_GO_QUOTE_BODY:
+        return None
+    out: list[str] = []
+    index = 0
+    limit = len(body)
+    while index < limit:
+        char = body[index]
+        if char in {'"', "\n", "\r"}:
+            return None
+        if char != "\\":
+            out.append(char)
+            index += 1
+            continue
+        if index + 1 >= limit:
+            return None
+        escaped = body[index + 1]
+        index += 2
+        simple = _GO_SIMPLE_ESCAPES.get(escaped)
+        if simple is not None:
+            out.append(simple)
+            continue
+        if escaped in {"x", "u", "U"}:
+            width = {"x": 2, "u": 4, "U": 8}[escaped]
+            if index + width > limit:
+                return None
+            hex_digits = body[index:index + width]
+            try:
+                code = int(hex_digits, 16)
+            except ValueError:
+                return None
+            index += width
+            if escaped != "x" and (code > 0x10FFFF or 0xD800 <= code <= 0xDFFF):
+                return None
+            out.append(chr(code))
+            continue
+        if "0" <= escaped <= "7":
+            # Go Unquote accepts one to three octal digits.
+            value = ord(escaped) - 48
+            for _ in range(2):
+                if index >= limit or not ("0" <= body[index] <= "7"):
+                    break
+                value = (value << 3) | (ord(body[index]) - 48)
+                index += 1
+            if value > 255:
+                return None
+            out.append(chr(value))
+            continue
+        return None
+    return "".join(out)
+
+
+def _denial_parts(message: str, prefix: re.Pattern[str], suffix: str) -> tuple[str, str, str] | None:
+    """Return tool, quoted body, and raw text for a sentence that ends with suffix.
+
+    Raw text is the slice before that final suffix, so it may contain newlines.
+    Anchoring on the suffix keeps an earlier copy inside the command inside the
+    raw text, where the Go-unquote check rejects it.
+    """
+    if len(message) > _MAX_DENIAL_MESSAGE or not message.endswith(suffix):
+        return None
+    match = prefix.match(message)
+    if match is None:
+        return None
+    raw_end = len(message) - len(suffix)
+    if match.end() > raw_end:
+        return None
+    return match.group(1), match.group(2), message[match.end():raw_end]
+
+
 def _is_policy_denial(error_info: Any) -> bool:
-    """True only for agy's native deny sentence in a {type?, message} object."""
+    """True only for agy's native deny sentence in a {type?, message} object.
+
+    The quoted argument must be a Go %q body that unquotes to the parenthesized
+    text. A command that only contains the deny sentence fails that check.
+    """
     if not isinstance(error_info, dict) or not set(error_info).issubset(_POLICY_DENIED_KEYS):
         return False
     message = error_info.get("message")
-    if not isinstance(message, str) or _POLICY_DENIED.fullmatch(message) is None:
+    if not isinstance(message, str):
         return False
     if "type" in error_info and not isinstance(error_info["type"], str):
         return False
-    return True
+    parts = _denial_parts(message, _POLICY_PREFIX, _POLICY_SUFFIX)
+    if parts is None:
+        return False
+    _tool, quoted, raw = parts
+    return _go_unquote(quoted) == raw
+
+
+def _is_review_denial(error_info: Any) -> str | None:
+    """Tool token from agy's exact unattended review denial, else None.
+
+    The quoted argument must be a Go %q body that unquotes to the parenthesized
+    argument. A path or command that only embeds the sentence cannot pass.
+    """
+    if not isinstance(error_info, dict) or not set(error_info).issubset(_POLICY_DENIED_KEYS):
+        return None
+    message = error_info.get("message")
+    if not isinstance(message, str):
+        return None
+    if "type" in error_info and not isinstance(error_info["type"], str):
+        return None
+    parts = _denial_parts(message, _REVIEW_PREFIX, _REVIEW_SUFFIX)
+    if parts is None:
+        return None
+    tool, quoted, raw = parts
+    if _go_unquote(quoted) != raw:
+        return None
+    return tool
 
 
 def _bounded_text(value: str) -> str:
@@ -160,6 +296,7 @@ class _Run:
     soft_denied: bool = False
     review_evidence: bool = False
     policy_denials: set[int] = field(default_factory=set)
+    review_denials: set[int] = field(default_factory=set)
     policy_denied_tools: set[str] = field(default_factory=set)
     soft_denied_tools: set[str] = field(default_factory=set)
     text: str = ""
@@ -182,10 +319,12 @@ class _Run:
                 "events_seen": self.events_seen,
             },
             "tool_error_count": len(self.tool_errors), "step_error_count": len(self.step_errors),
-            "unexplained_error_count": len((self.tool_errors | self.step_errors) - self.policy_denials),
+            "unexplained_error_count": len(
+                (self.tool_errors | self.step_errors) - self.policy_denials - self.review_denials),
             "soft_denied": self.soft_denied, "subagent_count": len(self.subagents),
             "summary_truncated": self.text_truncated,
             "policy_denied_count": len(self.policy_denials),
+            "review_denied_count": len(self.review_denials),
             "policy_denied_tools": sorted(self.policy_denied_tools),
             "soft_denied_tools": sorted(self.soft_denied_tools),
         }
@@ -356,6 +495,14 @@ class AntigravityRuntime:
                         state.policy_denials.add(index)
                         named = state.step_tools[index] if index in state.step_tools else info.get("name")
                         state.policy_denied_tools.add(_public_tool_name(named))
+                    if _is_review_denial(error_info) is not None:
+                        # Record the step's own tool name. The message token
+                        # (read_file, command, ...) is only the recognition key.
+                        state.review_denials.add(index)
+                        state.soft_denied = True
+                        state.review_evidence = True
+                        named = state.step_tools[index] if index in state.step_tools else info.get("name")
+                        state.soft_denied_tools.add(_public_tool_name(named))
             if kind == "tool" and (state.step_tools.get(index) == "invoke_subagent"
                                    or (isinstance(step.get("tool_info"), dict)
                                        and step["tool_info"].get("name") == "invoke_subagent")):
@@ -467,8 +614,9 @@ class AntigravityRuntime:
                         f"Antigravity 遇到需要人工审批的工具调用（{names}），无人值守模式下被软拒绝，"
                         "原生 CLI 随即结束本轮，未产出完整结果。请把所需文件放进已授权的读取目录，或调整提示避免该调用后重试。"
                     )
-                    # 软拒绝直接结束本轮，是提前终止的原因；其它错误只计数，错误码仍为 REVIEW_REQUIRED。
-                    other = (state.tool_errors | state.step_errors) - state.policy_denials
+                    # A soft denial ends the turn. Other errors are only counted;
+                    # the error code stays REVIEW_REQUIRED.
+                    other = (state.tool_errors | state.step_errors) - state.policy_denials - state.review_denials
                     if other:
                         summary += f"另有 {len(other)} 个与权限无关的工具或步骤错误，修正授权后仍可能失败。"
                     if state.text:
@@ -476,7 +624,7 @@ class AntigravityRuntime:
                     state.failure_type = "soft_denied_review"
                     return self._snapshot(state, status="failed", terminated=True,
                                           error_code=ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED, summary=summary)
-                if state.soft_denied or state.result.get("has_error") or (state.tool_errors | state.step_errors) - state.policy_denials:
+                if state.soft_denied or state.result.get("has_error") or (state.tool_errors | state.step_errors) - state.policy_denials - state.review_denials:
                     return self._snapshot(state, status="failed", terminated=True,
                                           error_code=ANTIGRAVITY_RUN_INCOMPLETE,
                                           summary=state.text or "Antigravity 步骤执行失败或权限被拒绝")
