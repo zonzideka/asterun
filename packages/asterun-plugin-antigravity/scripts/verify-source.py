@@ -7,7 +7,7 @@ import subprocess
 import sys
 
 SOURCE_COMMIT = "119c28d3b3af84b0fc6f1312af7ad36ede5d6966"
-PROOF_SHA256 = "fdc22a32ae20e9ff1ed2e95276255e97b4e0a8ac91079b6fc3561d461a0c9a6d"
+PROOF_SHA256 = "b6070a2bd2c66f7e9c0bd8a23457c0934e2b99319863adfe0771a3cfc3841047"
 
 
 def fail(message: str) -> None:
