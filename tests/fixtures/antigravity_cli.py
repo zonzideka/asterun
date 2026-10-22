@@ -178,6 +178,9 @@ elif MODE in {"soft_deny", "split_soft_deny", "benign_stderr"}:
     else:
         os.write(2, b"private diagnostic\n" if MODE == "benign_stderr" else b"tool run_command requires approval: private diagnostic\n")
     result()
+elif MODE == "stderr_eacces":
+    os.write(2, b"open /x: permission denied\n")
+    result()
 elif MODE == "subagent":
     step(0, "tool", "ACTIVE", tool_name="invoke_subagent", tool_info={"name": "invoke_subagent"})
     step(0, "subagent", "DONE", tool_name="invoke_subagent")

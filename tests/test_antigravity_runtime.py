@@ -71,6 +71,14 @@ def test_errors_and_soft_denial_cannot_report_success(tmp_path, mode):
         assert result["error_code"] == "ANTIGRAVITY_RUN_INCOMPLETE"
 
 
+def test_os_permission_denied_without_review_evidence_is_incomplete(tmp_path):
+    result, _ = execute(tmp_path, "stderr_eacces")
+    assert result["status"] == "failed" and result["terminated"] is True
+    assert result["error_code"] == "ANTIGRAVITY_RUN_INCOMPLETE"
+    assert result["native"]["soft_denied"] is True
+    assert result["summary"] == "fixture response"
+
+
 def test_pre_session_native_error_can_be_confirmed(tmp_path):
     result, _ = execute(tmp_path, "error_no_id")
     assert result["status"] == "failed"
