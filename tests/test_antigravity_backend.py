@@ -12,7 +12,10 @@ import pytest
 
 from asterun.antigravity_profile import prepare_home
 from asterun.application import Application
-from asterun.backends.antigravity import AntigravityBackend, DISPATCH_RECEIPT_KEY, discover_antigravity_bin
+from asterun.application import _input_hash
+from asterun.backends.antigravity import (
+    READ_ONLY_PREAMBLE, AntigravityBackend, DISPATCH_RECEIPT_KEY, discover_antigravity_bin,
+)
 from asterun.config import BackendConfig
 from asterun.contracts import RunStatus
 from asterun.ids import BackendId, RunId, TaskId
@@ -243,6 +246,38 @@ def test_binary_replaced_during_probe_is_probed_again(agy_config, isolated_env, 
         final = wait(app, first.ids["task_id"], "succeeded")
         assert calls.count("dispatch_stream") == 2
         assert "cli_updated_during_run" not in final["run"]["native"]
+    finally:
+        app.close()
+
+
+def test_cli_receives_read_only_preamble_and_stored_text_stays_original(agy_config, isolated_env, workspace_root):
+    binary = Path(json.loads(agy_config.read_text())["backends"]["agy"]["bin"])
+    log = isolated_env / "cli-prompt.json"
+    source = binary.read_text()
+    needle = "prompt = sys.stdin.read()\n"
+    assert needle in source
+    binary.write_text(source.replace(
+        needle, needle + f"open({str(log)!r}, 'w', encoding='utf-8').write(prompt)\n", 1))
+    original = "reply with the plan only"
+    app = Application.from_paths(agy_config, isolated_env / "state", background=True)
+    try:
+        payload = {"workspace": "demo", "backend": "agy", "text": original, "idempotency_key": "preamble"}
+        first = app.handle("task.submit", payload)
+        assert first.ok, first.error
+        final = wait(app, first.ids["task_id"], "succeeded")
+        assert final["run"]["summary"] == "fixture response"
+        received = json.loads(log.read_text())
+        workspace = str(workspace_root.resolve())
+        assert received["event"] == "user"
+        assert received["message"]["content"] == READ_ONLY_PREAMBLE.replace("{workspace}", workspace, 1) + original
+        stored = call(app, "task.get", {"task_id": first.ids["task_id"]})
+        assert stored["task"]["text"] == original
+        assert stored["run"]["prompt"] in ("", original)
+        assert "[Asterun]" not in stored["task"]["text"]
+        assert stored["task"]["input_hash"] == _input_hash("demo", original, "success", "agy", None, "")
+        repeat = app.handle("task.submit", payload)
+        assert repeat.ok and repeat.ids["run_id"] == first.ids["run_id"]
+        assert app.backends["agy"].dispatch_count == 1
     finally:
         app.close()
 

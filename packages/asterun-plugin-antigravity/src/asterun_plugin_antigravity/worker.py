@@ -18,7 +18,7 @@ import time
 from ._vendor.command import build_command
 from ._vendor.compat import AsterunError, RunId
 from ._vendor.profile import PINS_ENV, build_environment, validate_home, validate_workspace_binding
-from ._vendor.runtime import AntigravityRuntime
+from ._vendor.runtime import READ_ONLY_PREAMBLE, AntigravityRuntime
 
 PROTOCOL = "asterun-worker/v1"
 MIN_VERSION = (1, 2, 0)
@@ -310,7 +310,9 @@ def handle(method, input, context):
                     "support": dict(_UNSUPPORTED)}
         command, env, cwd, model, timeout = _preflight(context)
         runtime = AntigravityRuntime(timeout=timeout)
-        result = runtime.run(RunId(context["run_id"]), text, command=command, env=env, cwd=cwd,
+        # Prefix only the CLI prompt. The host stores and hashes the original text.
+        cli_text = READ_ONLY_PREAMBLE.replace("{workspace}", str(cwd), 1) + text
+        result = runtime.run(RunId(context["run_id"]), cli_text, command=command, env=env, cwd=cwd,
                              publish=lambda item: None, stopping=Event(), expected_model=model)
         return _mapped(result, context)
     except Rejected as error:

@@ -39,6 +39,7 @@ def test_native_success_after_input_and_stdin_eof(tmp_path, mode):
     assert native["num_turns"] == 1
     assert native[DISPATCH_RECEIPT_KEY]["process_exit_code"] == 0
     assert native["policy_denied_count"] == 0
+    assert native["review_denied_count"] == 0
     assert native["policy_denied_tools"] == []
     assert native["soft_denied_tools"] == []
     assert native[DISPATCH_RECEIPT_KEY]["process_started"] is True
@@ -326,6 +327,14 @@ def test_policy_hard_denial_with_final_answer_succeeds(tmp_path):
     assert "private diagnostic" not in json.dumps(result)
 
 
+def test_multiline_policy_denial_with_final_answer_succeeds(tmp_path):
+    result, _ = execute(tmp_path, "policy_denied_multiline")
+    assert result["status"] == "succeeded" and result["terminated"] is True
+    assert result["summary"] == "final plan"
+    assert result["native"]["policy_denied_count"] == 1
+    assert result["native"]["policy_denied_tools"] == ["run_command"]
+
+
 def test_policy_hard_denial_without_answer_is_incomplete(tmp_path):
     result, _ = execute(tmp_path, "policy_denied_no_answer")
     assert result["status"] == "failed" and result["terminated"] is True
@@ -429,6 +438,114 @@ def test_unknown_tool_names_publish_only_other(tmp_path):
     assert secret not in soft["summary"]
 
 
+def _policy_message(tool, quoted, raw):
+    return (
+        f'permission check failed for {tool} "{quoted}": '
+        f"Permission denied for {tool}({raw}). "
+        "Matches user-configured deny rule."
+    )
+
+
+# Real agy deny for a heredoc: the quoted side is Go %q, the parenthesised side
+# is the original command with real newlines.
+_MULTILINE_QUOTED = "cd /tmp && python3 - <<'EOF'\\nimport json\\nprint(\\\"x\\\")\\nEOF"
+_MULTILINE_RAW = "cd /tmp && python3 - <<'EOF'\nimport json\nprint(\"x\")\nEOF"
+_REAL_POLICY = (
+    'permission check failed for unsandboxed "cd /tmp && python3 - <<\'EOF\'\\nimport json\\nprint(\\"x\\")\\nEOF": '
+    'Permission denied for unsandboxed(cd /tmp && python3 - <<\'EOF\'\nimport json\nprint("x")\nEOF). '
+    "Matches user-configured deny rule."
+)
+
+
+def test_go_unquote_decodes_simple_escapes_and_the_heredoc():
+    body = r"\n\t\r\a\b\f\v\\" + r'\"'
+    assert module._go_unquote(body) == "\n\t\r\a\b\f\v\\" + '"'
+    assert _policy_message("unsandboxed", _MULTILINE_QUOTED, _MULTILINE_RAW) == _REAL_POLICY
+    assert module._go_unquote(_MULTILINE_QUOTED) == _MULTILINE_RAW
+
+
+def test_hex_and_octal_escapes_are_utf8_bytes_not_code_points():
+    # \xc3\xa9 is the UTF-8 of é. Reading those escapes as code points yields U+00C3 U+00A9.
+    assert module._go_unquote(r"\xc3\xa9") == "é"
+    assert module._go_unquote(r"\xc3\xa9") != "\u00c3\u00a9"
+    assert module._go_unquote(r"\303\251") == "é"
+    assert module._go_unquote(r"\377") is None
+    assert module._go_unquote(r"\xff") is None
+    matched = {"type": "TOOL_ERROR", "message": _policy_message("unsandboxed", r"\xc3\xa9", "é")}
+    mojibake = {"type": "TOOL_ERROR", "message": _policy_message("unsandboxed", r"\xc3\xa9", "\u00c3\u00a9")}
+    assert module._is_policy_denial(matched) is True
+    assert module._is_policy_denial(mojibake) is False
+    assert module._is_review_denial(
+        {"type": "TOOL_ERROR", "message": _review_sentence("read_file", r"\xc3\xa9", "é")}) == "read_file"
+    assert module._is_review_denial(
+        {"type": "TOOL_ERROR", "message": _review_sentence("read_file", r"\xc3\xa9", "\u00c3\u00a9")}) is None
+
+
+@pytest.mark.parametrize("body,expected", [
+    (r"\x41\u0042\U00000043", "ABC"),
+    (r"\101\040", "A "),
+    (r"\000", "\x00"),
+    (r"\377", None),
+    (r"\xff", None),
+    (r"\xc3\xa9", "é"),
+    (r"\303\251", "é"),
+    (r"\xc3\xbf", "\u00ff"),
+    (r"\u00e9", "é"),
+    (r"\xc3\x28", None),
+    ("é", "é"),
+    (r"\1234", "S4"),
+    (r"\x00", "\x00"),
+    (r"\uD7FF", "\uD7FF"),
+    (r"\uE000", "\uE000"),
+    (r"\U0010FFFF", "\U0010FFFF"),
+    (r"\0", None),
+    (r"\00", None),
+    (r"\7", None),
+    (r"\08", None),
+    (r"\12", None),
+    (r"\78", None),
+    (r"\128", None),
+    (r"\008", None),
+    (r"\777", None),
+    (r"\8", None),
+    (r"\9", None),
+    (r"\q", None),
+    ("\n", None),
+    ("\r", None),
+    ('"', None),
+    ("\\", None),
+    ("\\\n", None),
+    (r"\x", None),
+    (r"\x4", None),
+    (r"\xGG", None),
+    (r"\x-1", None),
+    (r"\x+1", None),
+    (r"\x0_", None),
+    (r"\x_1", None),
+    (r"\u041", None),
+    (r"\u+041", None),
+    (r"\u0_41", None),
+    (r"\u00_1", None),
+    (r"\u-041", None),
+    (r"\U0010FFF", None),
+    (r"\U+0000041", None),
+    (r"\U-0000041", None),
+    (r"\uD800", None),
+    (r"\ud800", None),
+    (r"\uDFFF", None),
+    (r"\U0000D800", None),
+    (r"\U0000DFFF", None),
+    (r"\U00110000", None),
+    (r"\UFFFFFFFF", None),
+    (r"\400", None),
+    ("a" * 16384, "a" * 16384),
+    ("a" * 16385, None),
+    (None, None),
+])
+def test_go_unquote_decodes_percent_q_body(body, expected):
+    assert module._go_unquote(body) == expected
+
+
 @pytest.mark.parametrize("message,expected", [
     (
         'permission check failed for unsandboxed "grep -n -A30 -i \\"T59\\" /workspace/x.md | head -80": '
@@ -436,6 +553,18 @@ def test_unknown_tool_names_publish_only_other(tmp_path):
         "Matches user-configured deny rule.",
         True,
     ),
+    (_REAL_POLICY, True),
+    (_policy_message("unsandboxed", _MULTILINE_QUOTED, _MULTILINE_RAW.replace('print("x")', 'print("y")', 1)), False),
+    (_policy_message("unsandboxed", _MULTILINE_QUOTED, _MULTILINE_RAW + "\nextra"), False),
+    (
+        _policy_message(
+            "unsandboxed",
+            _MULTILINE_QUOTED,
+            _MULTILINE_RAW + "). Matches user-configured deny rule. more",
+        ),
+        False,
+    ),
+    (_policy_message("unsandboxed", "ls\\q", "ls\\q"), False),
     (
         'permission check failed for unsandboxed "ls": Permission denied for unsandboxed(ls). '
         "Matches user-configured deny rule.",
@@ -466,3 +595,186 @@ def test_unknown_tool_names_publish_only_other(tmp_path):
 ])
 def test_is_policy_denial_requires_escaped_quotes_inside_the_command(message, expected):
     assert module._is_policy_denial({"type": "TOOL_ERROR", "message": message}) is expected
+
+
+_REVIEW_SECOND = (
+    "Do not attempt to circumvent this denial by rephrasing the command, "
+    "using alternative tools/scripts (e.g. python, sh, curl), or accessing "
+    "the same target resource. Proceed without performing this action."
+)
+
+
+def _review_sentence(tool, quoted, raw):
+    return (
+        f'permission check failed for {tool} "{quoted}": '
+        f"user denied permission for {tool}({raw})\n{_REVIEW_SECOND}"
+    )
+
+
+_REVIEW_REAL = _review_sentence(
+    "read_file", "/outside/private diagnostic.md", "/outside/private diagnostic.md",
+)
+_REVIEW_ESCAPED = _review_sentence(
+    "command",
+    'grep -n -A30 -i \\"T59\\" /workspace/x.md | head -80',
+    'grep -n -A30 -i "T59" /workspace/x.md | head -80',
+)
+
+
+@pytest.mark.parametrize("error_info,expected", [
+    ({"type": "TOOL_ERROR", "message": _REVIEW_REAL}, "read_file"),
+    ({"type": "TOOL_ERROR", "message": _REVIEW_ESCAPED}, "command"),
+    ({"type": "TOOL_ERROR", "message": _review_sentence("unsandboxed", _MULTILINE_QUOTED, _MULTILINE_RAW)}, "unsandboxed"),
+    (
+        {"type": "TOOL_ERROR", "message": _review_sentence(
+            "unsandboxed", _MULTILINE_QUOTED, _MULTILINE_RAW.replace('print("x")', 'print("y")', 1))},
+        None,
+    ),
+    ({"type": "TOOL_ERROR", "message": _review_sentence("read_file", "ls\rwhoami", "ls\rwhoami")}, None),
+    ({"type": "TOOL_ERROR", "message": _REVIEW_REAL.replace("\n", "\r\n")}, None),
+    ({"type": "TOOL_ERROR", "message": _REVIEW_REAL, "detail": "extra"}, None),
+    ({"type": 7, "message": _REVIEW_REAL}, None),
+    ({"type": "TOOL_ERROR", "message": _review_sentence("read_file", "/x", "/y")}, None),
+])
+def test_is_review_denial_requires_exact_sentence_and_matching_args(error_info, expected):
+    assert module._is_review_denial(error_info) == expected
+
+
+def test_review_denied_stream_is_review_required(tmp_path):
+    result, _ = execute(tmp_path, "review_denied_stream")
+    assert result["status"] == "failed" and result["terminated"] is True
+    assert result["error_code"] == "ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED"
+    assert result["native"]["soft_denied"] is True
+    assert result["native"]["soft_denied_tools"] == ["read_file"]
+    assert result["native"]["review_denied_count"] == 1
+    assert result["native"]["unexplained_error_count"] == 0
+    assert "private diagnostic" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("mode", ["review_denied_forged", "review_denied_suffix"])
+def test_forged_or_suffixed_review_denial_stays_incomplete(tmp_path, mode):
+    result, _ = execute(tmp_path, mode)
+    assert result["status"] == "failed" and result["terminated"] is True
+    assert result["error_code"] == "ANTIGRAVITY_RUN_INCOMPLETE"
+    assert result["native"]["review_denied_count"] == 0
+    assert result["native"]["soft_denied_tools"] == []
+
+
+def test_review_denial_plus_unrelated_tool_error_counts_the_other_error(tmp_path):
+    result, _ = execute(tmp_path, "review_plus_tool_error")
+    assert result["status"] == "failed" and result["terminated"] is True
+    assert result["error_code"] == "ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED"
+    assert "另有 1 个" in result["summary"]
+    assert result["native"]["unexplained_error_count"] == 1
+    assert result["native"]["review_denied_count"] == 1
+    assert "private diagnostic" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("quoted,raw", [
+    (r"\0", "\x00"),
+    (r"\08", "\x008"),
+    (r"\12", "\n"),
+    (r"\00", "\x00"),
+    (r"\7", "\x07"),
+    (r"\400", r"\400"),
+    (r"\777", r"\777"),
+    (r"\x-1", r"\x-1"),
+    (r"\x+1", "\x01"),
+    (r"\x4", "\x04"),
+    (r"\u+041", "A"),
+    (r"\u0_41", "A"),
+    (r"\u00_1", "\x01"),
+    (r"\u041", "A"),
+    (r"\u-041", "\ud800"),
+    (r"\U+0000041", "A"),
+    (r"\U-0000041", r"\U-0000041"),
+    (r"\U0010FFF", "\U00010fff"),
+    (r"\uD800", "\ud800"),
+    (r"\uDFFF", "\udfff"),
+    (r"\U0000D800", "\ud800"),
+    (r"\U00110000", r"\U00110000"),
+    (r"\UFFFFFFFF", r"\UFFFFFFFF"),
+])
+def test_invalid_escapes_are_not_policy_or_review_denials(quoted, raw):
+    policy = {"type": "TOOL_ERROR", "message": _policy_message("unsandboxed", quoted, raw)}
+    review = {"type": "TOOL_ERROR", "message": _review_sentence("read_file", quoted, raw)}
+    assert module._is_policy_denial(policy) is False
+    assert module._is_review_denial(review) is None
+
+
+@pytest.mark.parametrize("mode", ["policy_denied_bad_escape", "review_denied_bad_escape"])
+def test_invalid_escape_denial_is_an_ordinary_tool_error(tmp_path, mode):
+    result, _ = execute(tmp_path, mode)
+    assert result["status"] == "failed" and result["terminated"] is True
+    assert result["error_code"] == "ANTIGRAVITY_RUN_INCOMPLETE"
+    native = result["native"]
+    assert native["policy_denied_count"] == 0
+    assert native["review_denied_count"] == 0
+    assert native["soft_denied"] is False
+    assert native["soft_denied_tools"] == []
+    assert native["unexplained_error_count"] == 1
+    assert "需要人工审批" not in result["summary"]
+    if mode == "policy_denied_bad_escape":
+        assert result["summary"] == "final plan"
+    assert "private diagnostic" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("mode,status,code,count_key", [
+    ("policy_utf8_match", "succeeded", None, "policy_denied_count"),
+    ("policy_utf8_mojibake", "failed", "ANTIGRAVITY_RUN_INCOMPLETE", "policy_denied_count"),
+    ("review_utf8_match", "failed", "ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED", "review_denied_count"),
+    ("review_utf8_mojibake", "failed", "ANTIGRAVITY_RUN_INCOMPLETE", "review_denied_count"),
+])
+def test_utf8_byte_escapes_match_the_character_not_its_code_points(tmp_path, mode, status, code, count_key):
+    result, _ = execute(tmp_path, mode)
+    assert result["status"] == status and result["terminated"] is True
+    native = result["native"]
+    if code is None:
+        assert "error_code" not in result
+        assert native[count_key] == 1
+        assert native["unexplained_error_count"] == 0
+    elif code == "ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED":
+        assert result["error_code"] == code
+        assert native[count_key] == 1
+        assert native["unexplained_error_count"] == 0
+    else:
+        assert result["error_code"] == code
+        assert native["policy_denied_count"] == 0
+        assert native["review_denied_count"] == 0
+        assert native["unexplained_error_count"] == 1
+        assert native["soft_denied"] is False
+    assert "private diagnostic" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("mode", ["policy_active_deny_then_error", "review_active_deny_then_error"])
+def test_nonterminal_deny_does_not_explain_a_later_ordinary_error(tmp_path, mode):
+    result, _ = execute(tmp_path, mode)
+    assert result["status"] == "failed" and result["terminated"] is True
+    assert result["error_code"] == "ANTIGRAVITY_RUN_INCOMPLETE"
+    native = result["native"]
+    assert native["unexplained_error_count"] == 1
+    assert native["policy_denied_count"] == 0
+    assert native["review_denied_count"] == 0
+    assert native["soft_denied"] is False
+    assert native["policy_denied_tools"] == []
+    assert native["soft_denied_tools"] == []
+    assert "需要人工审批" not in result["summary"]
+    assert "private diagnostic" not in json.dumps(result)
+
+
+def test_soft_deny_and_hard_deny_in_one_run(tmp_path):
+    result, _ = execute(tmp_path, "soft_and_hard_deny")
+    assert result["status"] == "failed" and result["terminated"] is True
+    assert result["error_code"] == "ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED"
+    native = result["native"]
+    assert native["soft_denied"] is True
+    assert native["soft_denied_tools"] == ["read_file"]
+    assert native["review_denied_count"] == 1
+    assert native["policy_denied_count"] == 1
+    assert native["policy_denied_tools"] == ["run_command"]
+    assert native["unexplained_error_count"] == 0
+    assert native[DISPATCH_RECEIPT_KEY]["failure_type"] == "soft_denied_review"
+    assert "另有" not in result["summary"]
+    assert "read_file" in result["summary"]
+    assert "final plan" in result["summary"]
+    assert "private diagnostic" not in json.dumps(result)

@@ -62,6 +62,13 @@ _POLICY_DENY_MESSAGE = (
     "Permission denied for unsandboxed(private diagnostic). "
     "Matches user-configured deny rule."
 )
+# Go %q puts newlines in the quoted argument as the two characters \n, and the
+# parenthesised argument keeps the real newlines.
+_POLICY_DENY_MULTILINE = (
+    'permission check failed for unsandboxed "cd /tmp && python3 - <<\'EOF\'\\nimport json\\nprint(\\"x\\")\\nEOF": '
+    'Permission denied for unsandboxed(cd /tmp && python3 - <<\'EOF\'\nimport json\nprint("x")\nEOF). '
+    "Matches user-configured deny rule."
+)
 
 
 def policy_denied_command():
@@ -70,12 +77,52 @@ def policy_denied_command():
         "type": "TOOL_ERROR", "message": _POLICY_DENY_MESSAGE}})
 
 
+_REVIEW_DENY_SECOND = (
+    "Do not attempt to circumvent this denial by rephrasing the command, "
+    "using alternative tools/scripts (e.g. python, sh, curl), or accessing "
+    "the same target resource. Proceed without performing this action."
+)
+
+
+def policy_deny_message(tool, quoted, raw):
+    return (
+        f'permission check failed for {tool} "{quoted}": '
+        f"Permission denied for {tool}({raw}). "
+        "Matches user-configured deny rule."
+    )
+
+
+# \xNN is the UTF-8 bytes of é, not the code points U+00C3 U+00A9.
+_UTF8_E_QUOTED = r"\xc3\xa9"
+_UTF8_E = "é"
+_UTF8_E_AS_CODEPOINTS = "\u00c3\u00a9"
+
+
+def review_deny_message(tool, quoted, raw):
+    return (
+        f'permission check failed for {tool} "{quoted}": '
+        f"user denied permission for {tool}({raw})\n{_REVIEW_DENY_SECOND}"
+    )
+
+
+_REVIEW_OUTSIDE = "/outside/private diagnostic.md"
+_REVIEW_STREAM_MESSAGE = review_deny_message("read_file", _REVIEW_OUTSIDE, _REVIEW_OUTSIDE)
+# Quoted ARG and parenthesized ARG2 disagree, so the sentence shape is not
+# agy's denial. A path that embeds the denial wording must not be accepted.
+_REVIEW_FORGED_MESSAGE = review_deny_message(
+    "read_file", "/x", '/y": user denied permission for read_file(/z',
+)
+
+
 if MODE == "before_input":
     init()
 if MODE == "no_input":
     time.sleep(30)
     sys.exit(0)
 prompt = sys.stdin.read()
+_prompt_log = os.environ.get("AGY_FIXTURE_PROMPT_LOG")
+if _prompt_log:
+    Path(_prompt_log).write_text(prompt, encoding="utf-8")
 message = json.loads(prompt)
 assert message["event"] == "user" and isinstance(message["message"]["content"], str)
 assert len(sys.argv) == 1, "prompt or non-fixture arguments appeared in argv"
@@ -236,6 +283,12 @@ elif MODE == "policy_denied_recovered":
     step(1, "tool", "DONE", tool_info={"name": "read_file"})
     step(2, "agent_response", "DONE", text_delta="final plan")
     result(response="final plan")
+elif MODE == "policy_denied_multiline":
+    step(0, "tool", "ACTIVE", tool_info={"name": "run_command"})
+    step(0, "tool", "ERROR", tool_info={"name": "run_command", "error": {
+        "type": "TOOL_ERROR", "message": _POLICY_DENY_MULTILINE}})
+    step(1, "agent_response", "DONE", text_delta="final plan")
+    result(response="final plan")
 elif MODE == "policy_denied_no_answer":
     policy_denied_command()
     result(response="")
@@ -279,6 +332,106 @@ elif MODE == "soft_deny_secret_tool":
     step(0, "tool", "DONE", tool_info={"name": "PRIVATE_CUSTOMER_TOKEN_123"})
     os.write(2, b'Print mode: soft-denying tool confirmation "PRIVATE_CUSTOMER_TOKEN_123" at step 6\n')
     result(response="partial")
+elif MODE == "review_denied_stream":
+    step(0, "tool", "ACTIVE", tool_name="read_file", tool_info={"name": "read_file"})
+    step(0, "tool", "ERROR", tool_name="read_file", tool_info={
+        "name": "read_file",
+        "error": {"type": "TOOL_ERROR", "message": _REVIEW_STREAM_MESSAGE}})
+    os.write(2, b"permission denied\n")
+    result(response="partial")
+elif MODE == "review_denied_forged":
+    step(0, "tool", "ACTIVE", tool_name="read_file", tool_info={"name": "read_file"})
+    step(0, "tool", "ERROR", tool_name="read_file", tool_info={
+        "name": "read_file",
+        "error": {"type": "TOOL_ERROR", "message": _REVIEW_FORGED_MESSAGE}})
+    result(response="partial")
+elif MODE == "review_denied_suffix":
+    step(0, "tool", "ACTIVE", tool_name="read_file", tool_info={"name": "read_file"})
+    step(0, "tool", "ERROR", tool_name="read_file", tool_info={
+        "name": "read_file",
+        "error": {"type": "TOOL_ERROR", "message": _REVIEW_STREAM_MESSAGE + "\nextra line"}})
+    result(response="partial")
+elif MODE == "review_plus_tool_error":
+    step(0, "tool", "ACTIVE", tool_name="read_file", tool_info={"name": "read_file"})
+    step(0, "tool", "ERROR", tool_name="read_file", tool_info={
+        "name": "read_file",
+        "error": {"type": "TOOL_ERROR", "message": _REVIEW_STREAM_MESSAGE}})
+    step(1, "tool", "ERROR", tool_info={"name": "read_file", "error": {
+        "type": "TOOL_ERROR", "message": "private diagnostic"}})
+    result(response="partial")
+elif MODE == "policy_denied_bad_escape":
+    # \0 is not three octal digits. Accepting it would mark this hard denial
+    # and, with a final answer, report success.
+    step(0, "tool", "ACTIVE", tool_info={"name": "run_command"})
+    step(0, "tool", "ERROR", tool_info={"name": "run_command", "error": {
+        "type": "TOOL_ERROR", "message": (
+            'permission check failed for unsandboxed "\\0": '
+            "Permission denied for unsandboxed(\x00). "
+            "Matches user-configured deny rule."
+        )}})
+    step(1, "agent_response", "DONE", text_delta="final plan")
+    result(response="final plan")
+elif MODE == "review_denied_bad_escape":
+    # \x-1 is not two hex digits. Decoding it used to raise and leave the run pending.
+    step(0, "tool", "ACTIVE", tool_name="read_file", tool_info={"name": "read_file"})
+    step(0, "tool", "ERROR", tool_name="read_file", tool_info={
+        "name": "read_file",
+        "error": {"type": "TOOL_ERROR", "message": review_deny_message(
+            "read_file", "ls\\x-1", "ls\\x-1")}})
+    result(response="partial")
+elif MODE == "policy_utf8_match":
+    step(0, "tool", "ACTIVE", tool_info={"name": "run_command"})
+    step(0, "tool", "ERROR", tool_info={"name": "run_command", "error": {
+        "type": "TOOL_ERROR", "message": policy_deny_message(
+            "unsandboxed", _UTF8_E_QUOTED, _UTF8_E)}})
+    step(1, "agent_response", "DONE", text_delta="final plan")
+    result(response="final plan")
+elif MODE == "policy_utf8_mojibake":
+    step(0, "tool", "ACTIVE", tool_info={"name": "run_command"})
+    step(0, "tool", "ERROR", tool_info={"name": "run_command", "error": {
+        "type": "TOOL_ERROR", "message": policy_deny_message(
+            "unsandboxed", _UTF8_E_QUOTED, _UTF8_E_AS_CODEPOINTS)}})
+    step(1, "agent_response", "DONE", text_delta="final plan")
+    result(response="final plan")
+elif MODE == "review_utf8_match":
+    step(0, "tool", "ACTIVE", tool_name="read_file", tool_info={"name": "read_file"})
+    step(0, "tool", "ERROR", tool_name="read_file", tool_info={
+        "name": "read_file",
+        "error": {"type": "TOOL_ERROR", "message": review_deny_message(
+            "read_file", _UTF8_E_QUOTED, _UTF8_E)}})
+    result(response="partial")
+elif MODE == "review_utf8_mojibake":
+    step(0, "tool", "ACTIVE", tool_name="read_file", tool_info={"name": "read_file"})
+    step(0, "tool", "ERROR", tool_name="read_file", tool_info={
+        "name": "read_file",
+        "error": {"type": "TOOL_ERROR", "message": review_deny_message(
+            "read_file", _UTF8_E_QUOTED, _UTF8_E_AS_CODEPOINTS)}})
+    result(response="partial")
+elif MODE == "policy_active_deny_then_error":
+    # The deny sentence arrives on ACTIVE. The terminal ERROR is ordinary.
+    step(0, "tool", "ACTIVE", tool_info={"name": "run_command", "error": {
+        "type": "TOOL_ERROR", "message": _POLICY_DENY_MESSAGE}})
+    step(0, "tool", "ERROR", tool_info={"name": "run_command", "error": {
+        "type": "TOOL_ERROR", "message": "private diagnostic"}})
+    step(1, "agent_response", "DONE", text_delta="final plan")
+    result(response="final plan")
+elif MODE == "review_active_deny_then_error":
+    step(0, "tool", "ACTIVE", tool_name="read_file", tool_info={
+        "name": "read_file",
+        "error": {"type": "TOOL_ERROR", "message": _REVIEW_STREAM_MESSAGE}})
+    step(0, "tool", "ERROR", tool_name="read_file", tool_info={
+        "name": "read_file",
+        "error": {"type": "TOOL_ERROR", "message": "private diagnostic"}})
+    step(1, "agent_response", "DONE", text_delta="final plan")
+    result(response="final plan")
+elif MODE == "soft_and_hard_deny":
+    policy_denied_command()
+    step(1, "tool", "ACTIVE", tool_name="read_file", tool_info={"name": "read_file"})
+    step(1, "tool", "ERROR", tool_name="read_file", tool_info={
+        "name": "read_file",
+        "error": {"type": "TOOL_ERROR", "message": _REVIEW_STREAM_MESSAGE}})
+    step(2, "agent_response", "DONE", text_delta="final plan")
+    result(response="final plan")
 else:
     step(0, "user_input", text_delta=message["message"]["content"])
     step(1, "thinking", text_delta="private reasoning")
