@@ -279,13 +279,40 @@ def test_release_manual_relative_links_resolve_inside_sdist(tmp_path: Path) -> N
 def test_release_requires_english_documents_even_without_navigation_link(package: str) -> None:
     files = {f"{package}/PKG-INFO": f"Name: {package}\n".encode(), f"{package}/README.md": b"# Asterun\n"}
     problems = _release_checker().inspect_bilingual_documents(files)
-    assert any("README.en.md" in problem for problem in problems)
+    missing_readme = "README.zh-CN.md" if package == "asterun" else "README.en.md"
+    assert any(missing_readme in problem for problem in problems)
     if package == "asterun":
+        assert any(problem.endswith("：README.zh-CN.md") for problem in problems)
+        assert not any(problem.endswith("：README.en.md") for problem in problems)
         assert any("docs/en/user-manual.md" in problem for problem in problems)
         assert any("docs/en/protocol/IMPLEMENTATION.md" in problem for problem in problems)
     else:
         files[f"{package}/README.en.md"] = b"# Asterun\n"
         assert _release_checker().inspect_bilingual_documents(files) == []
+
+
+def test_core_sdist_with_required_readmes_has_no_readme_problem() -> None:
+    checker = _release_checker()
+    package = "asterun"
+    required = [
+        "README.md",
+        "README.zh-CN.md",
+        "examples/non-code/README.md",
+        "examples/non-code/README.en.md",
+        "docs/protocol/IMPLEMENTATION.md",
+        "docs/en/protocol/IMPLEMENTATION.md",
+    ]
+    required.extend(f"docs/{prefix}{guide}.md" for guide in checker.PUBLIC_GUIDES for prefix in ("", "en/"))
+    required.extend(
+        f"packages/asterun-plugin-{plugin}/{readme}"
+        for plugin in checker.PLUGIN_NAMES
+        for readme in ("README.md", "README.en.md")
+    )
+    files = {f"{package}/PKG-INFO": f"Name: {package}\n".encode()}
+    files.update({f"{package}/{path}": b"# Asterun\n" for path in required})
+    problems = checker.inspect_bilingual_documents(files)
+    assert problems == []
+    assert not any("README" in problem for problem in problems)
 
 
 def test_release_rejects_english_status_record(tmp_path: Path) -> None:

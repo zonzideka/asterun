@@ -1,7 +1,7 @@
 recursive-include src/asterun *.py
 recursive-include src/asterun/schemas *.json
 include README.md
-include README.en.md
+include README.zh-CN.md
 include LICENSE
 include pyproject.toml
 include requirements-lock.txt

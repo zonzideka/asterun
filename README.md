@@ -1,62 +1,107 @@
-[中文](README.md) | [English](README.en.md)
+English | [中文（待更新）](README.zh-CN.md)
 
 # Asterun
 
-Asterun 在你选择的电脑或服务器上执行 Agent 任务。通过 CLI、MCP 或其他应用提交后，核心负责后台运行、会话关联、审批、结果记录和故障恢复。后端使用执行主机上已授权的账户。
+Asterun is a self-hosted task runner for coding agents, exposed through one CLI, an MCP server, and a local socket. Codex, Grok, Claude, and Antigravity are local CLI backends. The Cursor plugin runs the local Cursor SDK and uses `CURSOR_API_KEY`. The Jules plugin calls remote REST and uses `JULES_API_KEY`. Auth is native login or an explicit API-key reference.
 
-当前版本为 `0.1.0a28`，采用 [Apache-2.0 许可证](LICENSE)。首版范围已冻结，已实现能力和验证情况见[发行说明](docs/release-v0.1.md)。本次预发布的核心 wheel、源码包、标准 skill ZIP 与 `SHA256SUMS` 见[对应版本发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a28)。
+Status: alpha (`0.1.0aN` prereleases). The first-release scope is frozen; see [release notes](docs/en/release-v0.1.md) for what is validated. Licensed under [Apache-2.0](LICENSE).
 
-## 开始使用
+## What it solves
 
-准备 Python 3.11 或更新版本，在虚拟环境中安装下载的 wheel：
+Agent CLIs each have their own sessions, approval prompts, and failure modes. Running an agent directly from a terminal can tie task observation and lifecycle management to that terminal. Asterun puts a resident core in front of them:
+
+- Tasks keep running after the caller disconnects. Each task, run, and native session reference is stored in SQLite, so a caller can come back later, watch, or reconcile.
+- Submissions are idempotent. Retrying the same request with the same key in the same idempotency scope returns the existing task. Different input returns `IDEMPOTENCY_CONFLICT`.
+- Unknown outcomes are kept as `pending_reconcile` instead of being reported as success or failure.
+- The core checks permissions and quota admission before dispatch, and mediates supported native approval requests during execution.
+
+## Core concepts
+
+| Concept | What it is |
+|---|---|
+| Workspace | A named directory a task may run in. The core only accepts configured workspaces as task working directories; the actual file-access boundary depends on backend permissions and separately configured OS isolation. |
+| Backend | A named, configured agent interface. Built-in kinds: `codex`, `grok`, `claude`, `antigravity`, and `fake` (offline testing). Plugins add more. |
+| Task / Run | A task is the unit of work; each execution attempt is a run with its own `run_id`. `conversation_id` links follow-up tasks. |
+| Candidate groups | Named backend groups per role (`implementation`, `review`, `planning`). Submit to `@group` and the core picks a member; `routing-explain` shows why. Review and implementation groups may not share members. |
+| Approvals | When a backend that supports a native approval bridge asks for permission, the task enters `waiting_input`; answer with `approval-respond`. Claude and Antigravity return `CAPABILITY_UNSUPPORTED` for approvals. Jules plan approval uses `capability.invoke` (`remote.plan.approve`). See the [approval guide](docs/en/approval-policy.md). |
+| Quota and billing pools | Backends sharing an account share a billing pool with concurrency limits. A local quota cache (`quota-inspect`) and strict quota-exhaustion latches stop dispatch to an exhausted pool. Quota-based preference inside a group is off by default. |
+| Context capsules and budgets | Optional `context_budget` config: `off` (default), `observe` (records token usage and capsules), or `enforce` (per-task token budget admission, plus opt-in segmentation for listed backends). See [plugins and configuration](docs/en/plugins.md#context-budget-context_budget). |
+| Workflows | Optional checks, independent reviews, bounded repairs, and PR review recipes against a fixed revision. See the [PR review guide](docs/en/pr-review.md). |
+
+## Install
+
+Requires Python 3.11 or later. Download the wheel and `SHA256SUMS` from the [releases page](https://github.com/zonzideka/asterun/releases), verify, and install into a virtual environment:
 
 ```sh
+# Linux
+sha256sum -c SHA256SUMS --ignore-missing
+# macOS
+shasum -a 256 -c SHA256SUMS --ignore-missing
 python3 -m venv .venv
 .venv/bin/python -m pip install ./asterun-*.whl
 .venv/bin/asterun version
-source .venv/bin/activate
 ```
 
-先运行[非代码样例](examples/non-code/README.md)，确认离线提交和验收流程；然后按[安装说明](docs/install.md)配置工作区、后端和账户。长期任务交给常驻核心执行：
+Optional backend plugins (Antigravity, Cursor, Jules) are separate wheels on the same release page; see the [plugin guide](docs/en/plugins.md).
+
+## Quick start
+
+Try the offline [non-code example](examples/non-code/README.en.md) first; it uses the `fake` backend and needs no accounts.
+
+For real work, write a configuration (see [installation and configuration](docs/en/install.md)), then start the core:
 
 ```sh
 asterun --config /path/to/config.json --state-dir /path/to/state serve
 ```
 
-在另一终端连接同一实例。将工作区和后端名换成配置中的值，再提交任务：
+From another terminal, submit and watch a task:
 
 ```sh
 asterun --state-dir /path/to/state --connect task-submit \
   --workspace demo --backend BACKEND --input - \
-  --idempotency-key first-task < /path/to/prompt.txt
+  --idempotency-key first-task < prompt.txt
 asterun --state-dir /path/to/state --connect task-watch TASK_ID --timeout 60
 ```
 
-MCP 客户端使用 `asterun --state-dir /path/to/state --connect mcp`。观察到期或客户端关闭后，核心继续执行；保存返回的任务 ID，后续用它查询进度和结果。
+Use `task-get` to read the result and `task-reconcile` after a timeout or disconnect. For MCP clients, run `asterun --state-dir /path/to/state --connect mcp`.
 
-## Agent 能力
+## Configuration
 
-| Agent | 当前支持的能力 |
+Configuration is a JSON file with a monotonically increasing `revision`. Validate it with `asterun --config FILE config-validate`. After changing configuration, restart the core to load it, then apply the loaded revision with `config-apply --expected-applied-revision N`. Schema v2 adds plugin registrations, provider accounts, connections, billing pools, candidate groups, `quota`, and `context_budget`; v1 files remain valid. Start from the examples in [`examples/`](examples/) and the [installation guide](docs/en/install.md).
+
+## Backends
+
+| Backend | Support |
 |---|---|
-| Codex | 文件读取与编辑、命令和测试执行、原生会话续接、命令与文件变更审批、轮次中断和结果对账；可选[固定文件读取](docs/fixed-read-scope.md)和[桌面项目关联](docs/codex-projects.md) |
-| Grok | 文本任务、文件读取与编辑、命令和测试执行、多轮迭代；按[执行配置](docs/install.md#grok-自主编码配置)启用相应工具 |
-| Claude | 单次任务调用、文本处理和工作区文件读取；支持传入固定文件快照 |
-| Antigravity | 文本任务和工作区文件读取，提供[内置 CLI 适配](docs/antigravity.md)与[独立账户插件](docs/plugins.md) |
-| Cursor 插件 | 本地 Agent 任务执行、会话恢复和取消 |
-| Jules 插件 | 托管代码任务、计划读取与确认、任务反馈和状态查询 |
+| Codex (built-in) | File reads and edits, commands and tests, native thread continuation, native command and file-change approvals, interruption, reconciliation. Optional [fixed-scope reads](docs/en/fixed-read-scope.md) and [desktop project association](docs/en/codex-projects.md). |
+| Grok (built-in) | Text tasks (`text-only-v1`) and autonomous coding in a workspace (`workspace-code-v1`) with bounded turns and timeout. See [Grok autonomous coding](docs/en/install.md#grok-autonomous-coding). |
+| Claude (built-in) | One-shot tasks, text processing, and workspace file reads. |
+| Antigravity (built-in, or plugin) | Text tasks and read-only workspace file access through the `agy` CLI with a dedicated permission profile. See the [Antigravity guide](docs/en/antigravity.md). |
+| Cursor (plugin) | Local Cursor SDK agent tasks (`CURSOR_API_KEY`), session recovery, cancellation. |
+| Jules (plugin) | Remote REST coding tasks (`JULES_API_KEY`), plan retrieval and approval, feedback, status. |
 
-用户按任务选择 Agent、工具权限和协作流程。各后端的配置条件与验证状态见[发行说明](docs/release-v0.1.md)，可选后端按[插件说明](docs/plugins.md)独立安装。
+Validation status per backend and platform is listed in the [release notes](docs/en/release-v0.1.md).
 
-## 使用与集成
+## Security model
 
-[用户手册](docs/user-manual.md)说明提交、观察、审批和恢复。[PR 审查](docs/pr-review.md)提供一套可选工作流示例，包括固定代码版本、读取结构化结论、关联复审和交付结果。
+- Asterun stores account references. Auth is native login or an explicit API-key reference: local CLI backends use native login, Cursor uses `CURSOR_API_KEY`, and Jules uses `JULES_API_KEY`. Child processes get a filtered environment.
+- The core only accepts configured workspaces as task working directories. Codex defaults to native approval mode `untrusted` with a `workspace-write` sandbox. Grok coding uses the native workspace sandbox, a fixed tool allowlist, and `dontAsk` permission mode. The Antigravity profile allows reading only the bound workspace and denies writes, commands, URLs, and MCP tools. The file-access boundary depends on those backend permissions and on separately configured OS isolation.
+- Permission prompts are never auto-approved by default. Unattended approval-required denials return explicit errors. Antigravity policy hard denials may still yield a successful run when a final answer is produced; denial metadata is retained.
+- The core listens on a same-user Unix socket. Callers authenticate through their own channel; cross-host transport is the caller's responsibility.
+- Operating-system isolation is configured separately and is not implied by the permission settings above.
 
-[外部主控工作流](docs/caller-orchestration.md)提供 `task-get --compact`、`task-watch --compact --no-events`、只读 `usage-report`，以及固定目标上的外部验收报告与同任务有限修复。外部报告不证明独立审查，同任务修复也不代表原生会话续接。既有调用默认行为保持不变。
+See the [design](https://github.com/zonzideka/asterun/blob/main/docs/en/design.md) for the full model.
 
-GrokBot 等调用方可以在云电脑中部署 Asterun，也可以通过已有授权通道调用本地进程。工作区、账户和原生会话随执行主机保存。普通任务由调用方跟踪任务和事件；[审查结果交付模块](docs/review-consumer.md)用于将审查收件箱接入宿主消息发送与定时调度。
+## Documentation
 
-[Asterun Bot 模板](https://x.ai/bot/4r3ysO1eA-6ZLI6cRoTNU)提供 GrokBot 的安装引导、任务跟踪和聊天交付，作为可选接入独立发布。[安装说明与配套代码](https://github.com/zonzideka/asterun/blob/grokbot-template-v0.1.0-rc1/integrations/grokbot/README.md)按固定版本提供。
+- [User manual](docs/en/user-manual.md)
+- [Installation and configuration](docs/en/install.md)
+- [Plugins and v2 configuration](docs/en/plugins.md)
+- [Design](https://github.com/zonzideka/asterun/blob/main/docs/en/design.md)
+- [runner-control/v1 protocol](docs/en/protocol/IMPLEMENTATION.md) and [capability profile](docs/en/capability-profile.md)
+- [Standard skill](docs/en/standard-skill.md)
+- [Release notes](docs/en/release-v0.1.md) and [status](https://github.com/zonzideka/asterun/blob/main/STATUS.en.md)
 
-[标准 skill 入口](docs/standard-skill.md)提供按需加载的通用调用说明和独立脚本，连接既有核心完成紧凑等待、版本绑定与有限修复。标准发行版要求 CLI 和常驻核心均为 `0.1.0a14` 或更新；仍报告 a13 的历史主线构建仅在双端接口探测通过后兼容。GrokBot 模板仍独立锁定公开 a13，该锁安装的实例不能使用本技能。它可以独立安装到支持 Agent Skills 的客户端，GrokBot 的聊天交付保持独立。
+## License
 
-接口集成查阅 [runner-control/v1](docs/protocol/IMPLEMENTATION.md) 和 [capability profile](docs/capability-profile.md)。
+[Apache-2.0](LICENSE)

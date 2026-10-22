@@ -127,7 +127,7 @@ def inspect_bilingual_documents(files: dict[str, bytes]) -> list[str]:
     name = BytesParser().parsebytes(files[metadata_path]).get("Name")
     required = []
     if name == "asterun":
-        required = ["README.md", "README.en.md", "examples/non-code/README.md", "examples/non-code/README.en.md",
+        required = ["README.md", "README.zh-CN.md", "examples/non-code/README.md", "examples/non-code/README.en.md",
                     "docs/protocol/IMPLEMENTATION.md", "docs/en/protocol/IMPLEMENTATION.md"]
         required.extend(f"docs/{prefix}{guide}.md" for guide in PUBLIC_GUIDES for prefix in ("", "en/"))
         required.extend(f"packages/asterun-plugin-{plugin}/{readme}"
