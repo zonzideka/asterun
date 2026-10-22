@@ -50,6 +50,8 @@ LEGACY_MODEL_ALIASES = {"grok-build": "grok-4.6"}
 DEFAULT_GROK_MODEL = "grok-4.6"
 VALID_REASONING_EFFORTS = frozenset({"low", "medium", "high"})
 GROK_ACP_METHODS = ("initialize", "session/new", "session/prompt")
+# 额度读取不进入派发白名单。方法名与 quota.grok_probe.GROK_BILLING_METHOD 保持一致。
+GROK_QUOTA_METHODS = ("initialize", "_x.ai/billing")
 DISPATCH_RECEIPT_KEY = "asterun.grok_dispatch_v1"
 PRE_PROMPT_STAGES = frozenset({"preflight", "spawn", "initialize", "session/new"})
 CODE_TOOLS = (
@@ -58,6 +60,14 @@ CODE_TOOLS = (
 )
 DEFAULT_CODE_MAX_TURNS = 40
 DEFAULT_CODE_TIMEOUT_SECONDS = 900
+
+
+def _segment_turns(native, limit: int) -> int:
+    """分段派发时用段回合数，但永远不超过后端 max_turns（唯一硬上界）。"""
+    value = (native or {}).get("segment_max_turns")
+    if type(value) is int and 1 <= value:
+        return min(value, limit)
+    return limit
 
 
 # dontAsk plus the allow list stays fail-closed. Switching to always-approve would
@@ -262,6 +272,12 @@ class GrokAcpTransport:
             build_session_prompt_params(session_id=session_id, text=text),
             timeout=timeout,
         )
+
+    def read_billing(self, timeout: float) -> dict[str, Any]:
+        """未公开额度扩展。不在 GROK_ACP_METHODS 派发白名单里。"""
+        from asterun.quota.grok_probe import GROK_BILLING_METHOD
+
+        return self.request(GROK_BILLING_METHOD, {}, timeout)
 
     def request(self, method: str, params: dict[str, Any] | None = None, timeout: float = 30.0) -> dict[str, Any]:
         return self._transport.request(method, params, timeout)
@@ -494,7 +510,7 @@ class GrokBackend:
                     handle.write(text)
                 command = build_grok_code_command(str(binary), cwd=cwd, prompt_file=prompt_file,
                     session_id=session_id, model=self.config.model,
-                    max_turns=self.config.max_turns or DEFAULT_CODE_MAX_TURNS, resume=resumed)
+                    max_turns=_segment_turns(native, self.config.max_turns or DEFAULT_CODE_MAX_TURNS), resume=resumed)
                 with self._code_lock:
                     if self._closing:
                         raise AsterunError(BACKEND_UNAVAILABLE, "Grok 后端正在关闭，未启动编码进程")

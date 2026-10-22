@@ -128,10 +128,11 @@ def test_dispatch_sends_configured_print_timeout(isolated_env, workspace_root, m
     binary = isolated_env / "agy-stub"
     prelude = (
         f"#!{sys.executable}\nimport sys,os\n"
-        "assert sys.argv[1:]==['--input-format','stream-json','--output-format','stream-json',"
+        "if sys.argv[1:] not in (['--version'], ['--help']):\n"
+        "    assert sys.argv[1:]==['--input-format','stream-json','--output-format','stream-json',"
         "'--model','fixture-model','--disable-slash-commands','--print-timeout','90s',"
         "'--add-dir',os.getcwd()]\n"
-        "sys.argv=sys.argv[:1]\n"
+        "    sys.argv=sys.argv[:1]\n"
     )
     binary.write_text(prelude + FIXTURE.read_text())
     binary.chmod(0o700)

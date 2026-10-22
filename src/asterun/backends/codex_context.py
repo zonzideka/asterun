@@ -84,6 +84,8 @@ def compact(runtime, transport, session, record, publish, stopping, cancelled, *
         if snap.get('token_usage'):
             native.update(token_usage=snap['token_usage'], usage_observation=snap.get('usage_observation', {}),
                           usage_scope='thread_cumulative', usage_source='codex_app_server')
+        if snap.get('quota_rate_limits'):
+            native['quota_rate_limits'] = deepcopy(snap['quota_rate_limits'])
         publish({'status': 'running', 'terminated': False, 'native': native})
     runtime._read(transport, record['source_native'], Path(session.cwd), check_latest=True)
     save('compaction_requested')  # 核心确认持久化后，才允许发 RPC。

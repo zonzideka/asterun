@@ -51,6 +51,46 @@ def build_parser() -> argparse.ArgumentParser:
     usage.add_argument("--pool-ref")
     usage.add_argument("--meter")
     usage.add_argument("--window-id")
+    quota_inspect = sub.add_parser("quota-inspect", help="只读本地额度缓存；不查询上游，不启动客户端")
+    quota_inspect_scope = quota_inspect.add_mutually_exclusive_group()
+    quota_inspect_scope.add_argument("--scope", dest="scope_ref")
+    quota_inspect_scope.add_argument("--backend")
+    context_budget_inspect = sub.add_parser(
+        "context-budget-inspect", help="只读上下文预算观测；不建表，不改变派发或计数",
+    )
+    context_budget_inspect.add_argument("--task", dest="task_id", help="只返回该任务的观测")
+    context_budget_inspect.add_argument("--limit", type=int, help="返回条数，1–200，默认 20")
+    capsule_inspect = sub.add_parser(
+        "capsule-inspect", help="只读上下文胶囊；不建表，不写库，不派发",
+    )
+    capsule_inspect.add_argument("--task", dest="task_id", required=True, help="任务 id")
+    capsule_inspect.add_argument("--limit", type=int, help="返回条数，1–200，默认 20")
+    capsule_inspect.add_argument("--render", action="store_true", help="渲染该任务最新一条有正文的胶囊")
+    routing_explain = sub.add_parser("routing-explain", help="只解释候选组选路；不改变派发，不写库")
+    routing_explain_scope = routing_explain.add_mutually_exclusive_group(required=True)
+    routing_explain_scope.add_argument("--group", help="候选组名")
+    routing_explain_scope.add_argument("--backend", help="候选组，格式 @NAME")
+    quota_set = sub.add_parser("quota-set", help="手动录入额度；可信度 low，有效期最多 24 小时")
+    quota_set_scope = quota_set.add_mutually_exclusive_group(required=True)
+    quota_set_scope.add_argument("--scope", dest="scope_ref")
+    quota_set_scope.add_argument("--backend")
+    quota_set.add_argument("--bucket", dest="bucket_id", required=True)
+    quota_set.add_argument("--window", dest="window_kind", required=True,
+                           choices=("5h", "weekly", "monthly", "billing_period", "other"))
+    quota_set.add_argument("--used-percent", dest="used_percent", required=True)
+    quota_set.add_argument("--resets-at", dest="resets_at")
+    quota_set.add_argument("--valid-until", dest="valid_until", required=True)
+    quota_set.add_argument("--window-duration-s", dest="window_duration_s", type=int)
+    quota_set.add_argument("--exhausted", action="store_true")
+    quota_clear = sub.add_parser("quota-clear", help="只清除手动录入的额度，保留探针与闩锁")
+    quota_clear_scope = quota_clear.add_mutually_exclusive_group(required=True)
+    quota_clear_scope.add_argument("--scope", dest="scope_ref")
+    quota_clear_scope.add_argument("--backend")
+    quota_clear.add_argument("--source", choices=("manual",))
+    quota_refresh = sub.add_parser("quota-refresh", help="只读刷新 Codex 额度；最小间隔 60 秒，不建线程、不耗额度")
+    quota_refresh_scope = quota_refresh.add_mutually_exclusive_group()
+    quota_refresh_scope.add_argument("--scope", dest="scope_ref")
+    quota_refresh_scope.add_argument("--backend")
     report = sub.add_parser("usage-report", help="汇总指定工作区、会话或任务的全部运行用量；不是账单")
     report.add_argument("--workspace")
     report.add_argument("--task-id")
@@ -246,10 +286,14 @@ def _load_request(args: argparse.Namespace) -> dict[str, Any]:
     mapping = {
         "plugin_id": "plugin_id", "connection_ref": "connection_ref", "pool_ref": "pool_ref",
         "meter": "meter", "window_id": "window_id",
+        "scope_ref": "scope_ref", "bucket_id": "bucket_id", "window_kind": "window_kind",
+        "used_percent": "used_percent", "resets_at": "resets_at", "valid_until": "valid_until",
+        "window_duration_s": "window_duration_s", "exhausted": "exhausted", "source": "source",
         "workspace": "workspace", "job_id": "job_id", "include_artifact": "include_artifact",
         "text": "text",
         "script": "script",
         "backend": "backend",
+        "group": "group",
         "task_id": "task_id",
         "cursor": "cursor",
         "page_size": "page_size",
@@ -288,6 +332,8 @@ def _load_request(args: argparse.Namespace) -> dict[str, Any]:
         payload["native"] = True
     if getattr(args, "compact", False):
         payload["compact"] = True
+    if getattr(args, "render", False):
+        payload["render"] = True
     if getattr(args, "include_runs", False):
         payload["include_runs"] = True
     if getattr(args, "include_observations", False):
@@ -327,13 +373,17 @@ def _app(args: argparse.Namespace, *, entry: str = "cli") -> Application:
         return app
     return Application.from_paths(config_path, state_dir, entry=entry,
                                   background=args.command in {"serve", "mcp"},
-                                  restore_scheduler=args.command != "usage-report")
+                                  restore_scheduler=args.command not in {
+                                      "usage-report", "quota-inspect", "routing-explain",
+                                      "context-budget-inspect", "capsule-inspect"})
 
 
 COMMAND_METHODS = {
     **{name.replace(".", "-"): name for name in (
         "plugin.list", "plugin.inspect", "plugin.register", "plugin.enable", "plugin.disable",
-        "connection.setup", "usage.inspect", "capability.invoke", "capability.discovery", "capability.prepare", "capability.submit", "capability.get")},
+        "connection.setup", "usage.inspect", "quota.inspect", "quota.set", "quota.clear", "quota.refresh",
+        "routing.explain", "context_budget.inspect", "capsule.inspect",
+        "capability.invoke", "capability.discovery", "capability.prepare", "capability.submit", "capability.get")},
     "approval-assess": "approval.assess",
     "approval-apply-policy": "approval.apply-policy",
     "approval-batch": "approval.batch",
@@ -376,6 +426,8 @@ COMMAND_METHODS = {
     "state-backup": "state.backup",
     "state-restore": "state.restore",
 }
+# 方法名里的下划线不是点，自动替换会得到 context_budget-inspect。
+COMMAND_METHODS["context-budget-inspect"] = COMMAND_METHODS.pop("context_budget-inspect")
 
 
 def emit(envelope: Envelope, stream: Any = None) -> None:

@@ -19,7 +19,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 ```
 
-For a new installation, `asterun version` should report `0.1.0a15` or later to include the Grok terminal-state and occupied-slot recovery fix. The minimum skill interface remains a14. The [standard skill](standard-skill.md) needs compact observation and `workflow-snapshot` from that version; the published `0.1.0a13` wheel is not sufficient. Obtain the core wheel and checksums from the [a20 release page](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a20). The GrokBot template still installs published a13 from its separate release lock; that instance cannot serve the standard skill. Upgrading the template lock requires separate validation and publication. Historical source builds reporting exactly a13 are accepted only after CLI and resident feature probes both pass; see the [standard skill](standard-skill.md).
+For a new installation, `asterun version` should report `0.1.0a15` or later to include the Grok terminal-state and occupied-slot recovery fix. The minimum skill interface remains a14. The [standard skill](standard-skill.md) needs compact observation and `workflow-snapshot` from that version; the published `0.1.0a13` wheel is not sufficient. Obtain the core wheel and checksums from the [a27 release page](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a27). The GrokBot template still installs published a13 from its separate release lock; that instance cannot serve the standard skill. Upgrading the template lock requires separate validation and publication. Historical source builds reporting exactly a13 are accepted only after CLI and resident feature probes both pass; see the [standard skill](standard-skill.md).
 
 Once the virtual environment is active, use `asterun` directly. For development, install `.[test]` from a full Git checkout and run `scripts/verify-offline.sh`. Default tests use temporary state and the fake backend.
 
@@ -154,7 +154,7 @@ Place this object under `backends.<name>`:
 }
 ```
 
-`model` defaults to `grok-4.6`. An explicitly selected model is passed to the CLI unchanged. `text-only-v1` runs at most one turn, with a default timeout of 180 seconds, an empty tool set, and the native read-only sandbox. Dispatch uses the dedicated HOME, removes inherited authentication and configuration overrides, and disables configuration sync, automatic updates, and extension tools.
+`model` defaults to `grok-4.6`. An explicitly selected model is passed to the CLI unchanged. `text-only-v1` runs at most one turn, with a default timeout of 180 seconds, an empty tool set, and the native read-only sandbox. Dispatch uses the dedicated HOME, removes inherited authentication and configuration overrides, and disables configuration sync and extension tools. Automatic updates are not disabled, so the CLI follows the latest release by default (`[cli] auto_update` in `config.toml` is the operator's choice; new homes get `true`).
 
 The dedicated configuration, extensions, and additional `.grok` sources in workspace ancestor directories must match the profile. Native sandbox isolation varies by platform. Use a separate OS user or execution host for untrusted material. Automatic native continuation, cancellation, and approval bridging are pending integration.
 

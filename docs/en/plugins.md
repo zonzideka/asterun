@@ -6,7 +6,7 @@ Install a plugin in a separate environment, then register it with Asterun. Built
 
 ## Configuration and migration
 
-In v2, `plugins` stores installation registrations, `provider_accounts` holds provider identity references, `connections` pins authentication, environment, and model, `billing_pools` describes shared resource pools, and `backends` aliases point to connections. Start with the [offline fake example](../../examples/plugins/fake-v2.json).
+In v2, `plugins` stores installation registrations, `provider_accounts` holds provider identity references, `connections` pins authentication, environment, and model, `billing_pools` describes shared resource pools, and `backends` aliases point to connections. The optional `quota` section configures the Codex quota probe, passive collection, and the Grok quota probe, which is off by default; fields and defaults are below. The optional `context_budget` section configures context-capsule and segmentation budgets. `enforce` is token-budget admission (see the ledger notes in the next PR). Grok / Codex / agy segmentation is described below under "Grok segmentation" and "Codex / agy segmentation (marker-triggered)". Omitting the key leaves the configuration digest unchanged. Fields are below. Start with the [offline fake example](../../examples/plugins/fake-v2.json).
 
 Inspect a migration candidate for a v1 configuration:
 
@@ -52,7 +52,114 @@ Agents use `task-submit`. Structured tool capabilities use `capability-invoke --
 
 Inputs and outputs are validated against the manifest Schema and stored in `Task.capability_input` and `Run.output`. For a reviewable fixed plan or a code-quality workflow, use the [capability profile](capability-profile.md).
 
-CLI and MCP share request definitions; MCP tool names use underscores. `usage-inspect` shows the local budget ledger and provider observations already received. After disabling a plugin, the original principal can still read, cancel, or reconcile existing tasks under their original bindings, subject to the plugin's capabilities.
+CLI and MCP share request definitions; MCP tool names use underscores. `usage-inspect` shows the local budget ledger and provider observations already received. `quota-inspect` (MCP `quota_inspect`) reads the local quota cache and does not query upstream. `quota-set` records a manual entry at low confidence for at most 24 hours. `quota-clear` removes only manual entries. `quota-refresh` (MCP `quota_refresh`) only reads the Codex app-server method `account/rateLimits/read`, keeps a default minimum interval of 60 seconds, does not start a thread or consume quota, and does not store balances or email addresses. When a Codex run receives `account/rateLimits/updated`, the run writes that snapshot into the quota cache at completion with source `passive_codex`, and does not store balance, email, or plan. The v2 `quota` section controls the probe and this passive collection: `probes.codex_app_server.enabled` defaults to true, `ttl_seconds` defaults to 600 (60–3600), `min_interval_seconds` defaults to 60 (60–3600), and `timeout_seconds` defaults to 10 (1–30); `passive.codex_rate_limits_updated` defaults to true. Unknown fields are rejected. `routing-explain` (MCP `routing_explain`) only explains candidate-group selection and does not change dispatch; see below. After disabling a plugin, the original principal can still read, cancel, or reconcile existing tasks under their original bindings, subject to the plugin's capabilities.
+
+Grok quota reads use the undocumented ACP extension `_x.ai/billing` and are off by default. Enable them in v2 by setting both `enabled` and `acknowledge_undocumented` on `quota.probes.grok_acp_billing` (both default to false). The probe only calls `initialize` and `_x.ai/billing`. It does not create a session or send a prompt. Confidence is at most medium. It records the used ratio, the billing-period end, and whether on-demand billing is enabled, and it does not store amounts. On-demand state is read only from the boolean field `onDemandEnabled`. Amounts, caps, used values, and unknown fields are ignored. `onDemandEnabled` set to false stays off even when a cap is greater than zero. `billingPeriodEnd` may be absent; if it is present but expired or invalid, parsing fails and produces no observation. `ttl_seconds` defaults to 900 (60–3600), `min_interval_seconds` defaults to 300 (60–3600), and `timeout_seconds` defaults to 10 (1–30). v1 configuration cannot enable this probe. The probe returns only three error codes: `AUTH_REQUIRED` (authentication or login failure), `PROBE_TIMEOUT` (call timeout), and `SCHEMA_MISMATCH` (missing binary, closed connection, process failure, or a response that does not match the billing shape, including an expired or invalid billing-period end). It does not return `LIVE_DISABLED` or `PROBE_FAILED`. When `ASTERUN_RUN_GROK=1` is unset, the service records `skipped=disabled` and does not call the probe. When the two switches are not both on, the service records `PROBE_DISABLED`. Neither disabled state is a probe error code.
+
+A persistent quota latch comes from a saved native failure classification and does not keep the raw error text. A Grok HTTP 402 quota exhaustion stops later dispatches in the same billing pool. Antigravity latches only on a strict 429 quota exhaustion: the text contains an independent `429` token (`\b429\b`) or `RESOURCE_EXHAUSTED`, and it contains quota (case-insensitive). A plain rate limit does not latch. Antigravity isolates quota buckets, with Gemini in one group and Claude and GPT in the other. Clear a latch by changing that backend's `quota_epoch` on v1, or by updating the billing window on v2. `quota-inspect` shows a window with freshness `latched` at the front of the matching scope. That window is display-only and is not written into the quota cache.
+
+## Context budget (`context_budget`)
+
+v2 may include the optional `context_budget` namespace for context-capsule and segmentation budgets. It shares no fields with billing, `routing`, or `quota`, and it does not change validation of those three. When the key is omitted, read-back does not fill defaults, and `to_dict` and the configuration digest stay byte-for-byte the same. The key appears in serialization only when it was written. Capsule, segmentation, and assignment fields that were written are filled with the defaults below. A threshold omitted inside `profiles` stays omitted, which means that threshold is unset. v1 has no such section; readers get the `mode=off` defaults.
+
+`mode` accepts `off` (the default), `observe`, and `enforce`. `enforce`: token-budget admission (`admission_only`; see "Token budget ledger" below) and allowlisted Grok / Codex / agy segmentation (see "Grok segmentation" and "Codex / agy segmentation (marker-triggered)" below). When `mode` is `enforce`, at least one profile must include `task_hard`, or the configuration is rejected. Any other value is rejected. `token_basis` accepts only `processed` (the default).
+
+`capsule.nonmandatory_soft_bytes` is 1024–65536, default 16384. `capsule.nonmandatory_hard_bytes` is 1024–131072, default 24576, and must be greater than or equal to soft. `capsule.notes_max_bytes` is 0–16384, default 4096. `capsule.progress_markers` is a boolean, default true.
+
+`segmentation.backends` is a list of configured backend names, default `[]`. `segmentation.roles` is a subset of `implementation` and `repair`, and the default is both. `segmentation.min_long_task_processed` is 0–1000000000, default 600000. `segmentation.resume_max_residency` is 0–100000000, default 100000. `segmentation.observe_capsule_min_processed` is 0–1000000000, default 600000.
+
+`ab_assignment.enabled` is a boolean, default false. `ab_assignment.enforce_ratio_bp` is 0–10000, default 5000. This release does not enforce; the ratio is stored only.
+
+`profiles` keys use the form `backend/role`. The backend must already appear in `backends`. The role must be `implementation`, `repair`, `review`, or `planning`. Every field may be omitted: `segment_turns` is 1–1000; `segment_soft`, `residency_soft`, `task_soft`, and `task_hard` are each 1–10000000000; `max_segments` is 1–100; `segment` is a boolean. Thresholds that are present must satisfy `task_hard ≥ task_soft ≥ segment_soft`. A `review` profile cannot set `segment=true`.
+
+Unknown fields are rejected. A field named `enforcement`, and the value `hard`, are always rejected. A boolean is not an integer. Every number must be an integer.
+
+Observe does not change dispatch, returned results, or counters. Enforce records the same observations and also performs budget admission.
+
+### Token budget ledger (enforce)
+
+A task Budget is created the first time that task is dispatched under `enforce` and the matched profile has `task_hard`. The limit is the snapshot from that first dispatch; later configuration changes do not change an existing limit. Every later run of that task is constrained by it. Each dispatch, after local checks, reserves `segment_soft` (or the remaining allowance when `segment_soft` is absent: at least 1, and not above the limit). When settled plus in-flight plus this reservation would exceed the limit, dispatch is rejected with error code `BUDGET_EXHAUSTED`, and a `budget_soft` capsule is written for the previous terminal run. Raising the limit requires an explicit top-up; this release has no top-up command. A terminal run settles on `processed`. When usage cannot be attributed, the reservation becomes `UNCERTAIN` and continues to occupy its reserved amount. This does not use paid quota and does not switch backend or role. `task-get` and `context-budget-inspect --task` show `budget` (`task_hard` / `settled` / `held` / `uncertain_reservations`) when mode is `enforce`. Settlement is determined by whether the run already has a reservation, and does not depend on the mode at the terminal state (under off, the terminal path does one read-only query).
+
+### Grok segmentation (enforce, allowlist)
+
+Segmentation takes effect only when `mode` is `enforce`, the backend is listed in `segmentation.backends`, the role is listed in `segmentation.roles`, the matched profile has `segment_turns`, and `segment` is not false. This release segments only grok whose `execution_profile` is `workspace-code-v1` (`fake` is only for offline tests). Text-only grok is not segmented. The review role is never segmented. Quality workflows, repair-target bindings, tasks with `read_scope`, `capability`, or `dependencies`, and tasks held by runner-control are not segmented. Each segment dispatches a native `--max-turns` of `min(segment_turns, the backend max_turns)`.
+
+When a segment ends at the native turn limit (the source run is still recorded as failed / `GROK_RUN_INCOMPLETE`), a successor is committed only if `max_segments` is not reached, `scheduler.max_runs_per_task` is not reached, budget remains, and the capsule is ready. The idempotency key is `seg:{task}:{source_run}:{index}`. The successor uses the capsule plus a continuation note, and defaults to a new session (it resumes only when both processed volume and residency are known and below their thresholds). `run_count` increases and `repair_count` does not. A continuation counts toward `max_runs_per_task`. The source run records `native.segment_end`.
+
+The stop reason is stored in `segment_end.reason` (`max_segments` / `max_runs` / `budget` / `capsule_not_ready` / `capsule_too_large` / `segmentation_disabled` / `control_owned` / `queue_full`). `max_segments` and `budget` also write a `budget_soft` capsule. Before a continuation is dispatched, Asterun checks again that segmentation is still enabled, the source run has terminated and points at this segment, the task's current run is this run, the capsule id and mandatory contract are unchanged, and `run_count` does not exceed `max_runs_per_task`. If segmentation is off, or the task is held by runner-control, nothing is dispatched and the error code is `CAPABILITY_UNSUPPORTED`. If the source run, the current run, the capsule id, or the mandatory contract has changed, nothing is dispatched and the error code is `REVISION_CONFLICT`. If the continuation would exceed the per-task run limit, nothing is dispatched and the error code is `BUDGET_EXHAUSTED`. On process restart, Asterun re-runs the idempotent continuation decision for a segment that is already terminal but has no `segment_end` yet. A segment that has already been judged is not given another successor. A human handoff resume also re-runs the idempotent continuation decision for a terminal segment that has not yet been judged.
+
+### Codex / agy segmentation (marker-triggered)
+
+Codex auto-continues only for the implementation role: a new thread plus a capsule, which is the handoff_fresh behavior. `native_compact` is not part of the automatic flow. Review is never segmented. Antigravity does not segment by default; it is enabled only when the matched profile sets `segment: true`. A task under externally forced review is not segmented. The profile must set a positive integer `segment_soft`. A marker plan does not read `segment_turns`.
+
+A segment continues only when the run succeeded, the last non-empty line of the summary is exactly `ASTERUN-SEGMENT: CONTINUE`, there is no subagent, and this segment's processed total is at least `segment_soft` (usage must be attributable to this run; Codex reports only thread totals, which count as this segment's usage only when the segment opened a new thread, otherwise it does not continue). Tasks that require external review are never segmented. An external Antigravity plugin registered through `manifest_path` (kind `google.antigravity-cli`) is planned as antigravity, but its result does not keep `subagent_count`, so delegation cannot be ruled out and it does not continue. Dispatch text appends the segment convention: if the task is unfinished and the context is already long, write that marker alone on the last line; do not write it when the task is finished; agy must not use a subagent. Stop reasons and the checks before dispatching a continuation are the same as Grok segmentation above.
+
+Resume: Grok keeps the source session only when the processed volume is known and below `min_long_task_processed`, the residency peak taken from the source run's usage events is known (there is at least one usage event and the curve is not partial) and below `resume_max_residency`, and that run has a native session. Otherwise it starts a new session. Codex and agy always start a new session.
+
+## Context capsules (v1, observe only generates and does not dispatch)
+
+When `capsule_candidate` is true, a continuation capsule is written after the observation row, with `trigger` `observe_only`. `capsule.progress_markers` does not affect this step, whether it is true or false. The capsule is stored only: `ready` is 0, nothing is dispatched, and the run result and counters stay unchanged. If generation fails, only that capsule is dropped; the observation row and `save_run` still complete. When `mode` is `off`, the database is not written; a terminal state only reads whether a historical reservation exists.
+
+The capsule schema is `asterun.capsule/v1`. It keeps the contract, a workspace summary, progress, and open items needed to continue. Mandatory text is never trimmed: `objective` is a byte-for-byte copy of the task text, and `constraints`, `acceptance`, `review_requirements`, `findings` (including id and text), and `limits` are copied the same way. Non-mandatory content has a soft limit of 16384 bytes (16 KB) and a hard limit of 24576 bytes (24 KB). Past the soft limit, lossy trimming runs in a fixed order (note text, commands, files touched). If the hard limit still does not hold, the body is not stored and the row's `error_code` is `CAPSULE_TOO_LARGE`.
+
+A capsule does not contain source text, diff text, chat, or credentials. The workspace keeps HEAD, branch, dirty paths and statuses, file sha256 values, and the file/insertion/deletion counts from `diff --shortstat`. Each command item stores only `program` (the basename of the first token, or null when it does not match the rule), plus the `sha256` and `length` of the full command. Rendering shows only the program name and the first 12 characters of the digest. Arguments and the command body are not stored. An unconfirmed tool call keeps the tool name and an input digest.
+
+Lines marked `ASTERUN-NOTE:` become low-trust notes (`trust=low`). They do not change any task constraint. Note text is at most 4096 bytes. The rendered prompt labels them as low-trust notes that do not change task constraints. Whitelist filtering discards any line that cannot be confirmed safe, and counts it only in `dropped_lines`.
+
+Verification is redone on read and does not trust a previous conclusion stored in the row. An empty list means the capsule checks out. Problem codes are `schema_mismatch`, `body_sha256_mismatch`, `capsule_id_mismatch`, `mandatory_sha256_mismatch`, `mandatory_mismatch`, `finding_missing:<id>`, and `finding_text_changed:<id>`. If the task contract digest no longer matches the one stored in the capsule, `contract_changed` is added.
+
+One row is kept per `(namespace, run, trigger)`; generating again updates that row. Table `context_capsules` is created on older databases automatically, and the schema version does not change. Rows are kept for 30 days and at most 2000 rows. Pruning deletes rows only, not blobs. A backup that lacks this table still restores. A backup that has the table with different columns is rejected.
+
+Read it with:
+
+```sh
+asterun capsule-inspect --task TASK_ID [--limit N] [--render]
+```
+
+The MCP tool name is `capsule_inspect`. `task_id` is required, `limit` is 1–200 and defaults to 20, and `render` defaults to false. Permission matches `context-budget-inspect`, and the caller also needs `task.get` on that task's workspace. The command does not create the table, write the database, or dispatch. When the table is missing, `capsules` is an empty list. `--render` loads the newest capsule for that task that has a body, verifies it against the current task, and returns `verify_issues` and `rendered_prompt`. The task contract inside the prompt is the original text stored in the capsule.
+
+## Candidate groups and routing explanation
+
+Candidate groups exist only in configuration v2, under `routing.candidate_groups`. A group is 1 to 8 aliases with the same role, the same backend kind, and the same execution options. Models may differ. `models_allowed` is optional and is checked only when written. `primary` must be one of the members. A group name matches `^[a-z][a-z0-9_-]{0,31}$`. Each role has at most one group, and members of different roles cannot overlap. When `candidate_groups` or `quota_preference` is omitted, read-back does not fill defaults.
+
+Role and kind: `implementation` is grok only, `review` is codex only, and `planning` is antigravity or claude. Every member of one group must share a kind. Execution-option comparison ignores the backend fields `name`, `home`, `bin`, `model`, `connection_ref`, `quota_epoch`, and `extra_env`, and the connection option keys `bin`, `home`, and `model`. Each member's billing pool must be `subscription` or `local`, and must not set `paid_overage_allowed`. A review group cannot include an implementer's backend, provider account, or a model from the same vendor: kind grok is xai; kind codex, or a model starting with gpt or with o followed by a digit, is openai; a model starting with claude, or kind claude, is anthropic; a model starting with gemini is google.
+
+`routing.quota_preference.mode` defaults to `off`, which behaves exactly as before. `enabled` set to false is the same as `off`. `dry_run` still dispatches primary and only records `would_choose`; `on` dispatches the chosen candidate. See "Quota preference (dry-run, then enable)" below. Defaults are a 72-hour horizon, a 1000 bp waste threshold, a 500 bp switch margin, confidence of at least medium, short windows excluded from value, a 500 bp short-window floor, and a 1000 bp long-window floor. `count_reset_grants` can only be false. Paid overage and reset grants do not count as available quota or as waste.
+
+Scoring reads the local quota cache. Exhausted, latched, or fully used (10000 bp) candidates are excluded. Remaining quota below the floor plus one run's estimate drops to tier 3. Only windows that reset within the horizon and last at least 24 hours count toward waste; a 5-hour window only gates unless short windows are enabled. In-flight runs deduct 100 bp on a weekly window and 500 bp on a 5-hour window. No fresh window means unknown. The choice falls back to primary when every member is unknown, the primary is unknown, or every member is latched. A suggestion leaves primary only with fresh evidence that beats the switch margin.
+
+`routing-explain --group NAME` or `routing-explain --backend @NAME` (MCP `routing_explain`) runs that read-only calculation and returns the suggestion with `dispatch_changed: false` and `preference_enabled`. Permission matches `quota-inspect`. v1 configuration, or v2 with no candidate groups, returns `INVALID_CONFIG`. This command only explains; it does not dispatch. Whether a task dispatches the chosen candidate depends on `mode`.
+
+```json
+{
+  "routing": {
+    "candidate_groups": {
+      "implementer": {"role": "implementation", "members": ["grok-a", "grok-b"], "primary": "grok-a"},
+      "reviewer": {"role": "review", "members": ["codex-a"], "primary": "codex-a"},
+      "planning": {"role": "planning", "members": ["agy-opus", "agy-gemini"], "primary": "agy-opus"}
+    },
+    "quota_preference": {"enabled": false}
+  }
+}
+```
+
+`agy-opus` and `agy-gemini` are both antigravity, with the same execution options. Their models are Claude and Gemini.
+
+### Quota preference (dry-run, then enable)
+
+`routing.quota_preference.mode` is `off`, `dry_run`, or `on`. `off` is the default and behaves exactly as before. `enabled` set to false is the same as `off`. `dry_run` is a rehearsal: dispatch stays on primary, and the result is only recorded as `would_choose`. `on` dispatches the chosen candidate.
+
+`on` is accepted only when `automatic_account_switch` is true, the candidate groups are non-empty and all pass validation, and `rules` is empty. `automatic_paid_fallback` is always false. Setting `automatic_account_switch` to true while `mode` is not `on` is rejected.
+
+The entry is `backend` set to `@group`, or `backend` omitted and `default_backend` set to `@group`. An explicit ordinary backend name does not enter preference. A missing group returns `INVALID_REQUEST`. On v1, `@…` returns `INVALID_CONFIG`. `workflow.review_backend` does not accept a candidate-group alias in this version; quality review still uses a fixed backend. `default_backend` may be `@group` (v2 only).
+
+Paid protection for an explicit backend: if a fresh window at confidence of at least medium shows the subscription quota is exhausted, and that same scope has a paid-overage entry, the call is blocked with `BUDGET_EXHAUSTED` by default. Set `routing.quota_preference.allow_paid_on_explicit` to true to turn this off; the default is false. Unknown or stale data does not block.
+
+Resume and repair rounds keep the backend selected the first time. If the chosen candidate fails admission, the call errors and does not try the next one. When quota data is invalid, dispatch falls back to primary with `reason_code` `quota_state_invalid`.
+
+Decisions go to `plugin_routing_decisions`: at most 1000 rows, kept for 30 days, score summaries only. Credentials and balances are not stored. When the entry above was used, `task-get` shows task-level `routing` with `mode`, `group`, `chosen`, `primary`, `reason_code`, and `would_choose`. Otherwise that key is omitted.
+
+Watch `routing.would_choose` under `dry_run` before setting `mode` to `on`. Paid overage is never used automatically, and reset grants are never redeemed automatically.
 
 ## Credentials and recovery
 

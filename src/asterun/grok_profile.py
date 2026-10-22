@@ -25,7 +25,7 @@ CONFIG_TEXT = '''# Asterun text-only-v1; credentials remain in the native CLI.
 preferred_method = "oidc"
 disable_api_key_auth = true
 [cli]
-auto_update = false
+auto_update = true
 installer = "internal"
 [features]
 managed_config = false
@@ -47,6 +47,18 @@ compact_mode = false
     for vendor in ("claude", "cursor", "codex")
 )
 _CONFIG = tomllib.loads(CONFIG_TEXT)
+
+
+def _without_update_choice(config: object) -> object:
+    """[cli].auto_update is the operator's choice (bool); all else must match exactly."""
+    if not isinstance(config, dict) or not isinstance(config.get("cli"), dict):
+        return config
+    cli = dict(config["cli"])
+    if isinstance(cli.get("auto_update", True), bool):
+        cli.pop("auto_update", None)
+    return {**config, "cli": cli}
+
+
 _KEEP_ENV = frozenset((
     "HOME", "USER", "LOGNAME", "PATH", "TMPDIR", "LANG", "LC_ALL",
     "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
@@ -115,7 +127,7 @@ def validate_home(path: str | Path, *, execution_profile: str = PROFILE) -> Path
         _owned_private(target, directory=True)
         config = target / "config.toml"
         _owned_private(config)
-        if tomllib.loads(config.read_text(encoding="utf-8")) != _CONFIG:
+        if _without_update_choice(tomllib.loads(config.read_text(encoding="utf-8"))) != _without_update_choice(_CONFIG):
             raise _invalid("Grok 配置已偏离 text-only-v1；拒绝启动")
         _validate_sandbox(target, required=profile == CODE_PROFILE)
         for name in ("managed_config.toml", "requirements.toml",
@@ -241,7 +253,7 @@ def build_environment(
     env = {key: value for key, value in source.items() if key in _KEEP_ENV}
     env.update(HOME=str(target), GROK_HOME=str(target), GROK_DISABLE_API_KEY_AUTH="true",
         GROK_MANAGED_MCPS_ENABLED="false", GROK_MANAGED_MCP_GATEWAY_TOOLS_ENABLED="false",
-        GROK_DISABLE_AUTOUPDATER="1", GROK_CAMPAIGNS="0")
+        GROK_CAMPAIGNS="0")
     for vendor in ("CLAUDE", "CURSOR", "CODEX"):
         for area in ("SKILLS", "RULES", "AGENTS", "MCPS", "HOOKS", "SESSIONS"):
             env[f"GROK_{vendor}_{area}_ENABLED"] = "false"

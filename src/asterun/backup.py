@@ -38,6 +38,75 @@ def _snapshot_json(payload: str) -> Any:
     return json.loads(payload, object_pairs_hook=unique)
 
 
+def _validate_context_budget_entity(item: dict, kind: str, id: str) -> bool:
+    """侧账本形状与 context_budget.ledger 的 _entity / ensure_budget / guard_dispatch 一致。"""
+
+    def safe_int(value: object, minimum: int) -> bool:
+        return type(value) is int and minimum <= value <= 2**53 - 1
+
+    def nonempty_str(value: object) -> bool:
+        return isinstance(value, str) and value != ""
+
+    def token_amount(value: object, minimum: int) -> bool:
+        if not isinstance(value, list) or len(value) != 1 or not isinstance(value[0], dict):
+            return False
+        entry = value[0]
+        if set(entry) != {"meter", "amount", "billing_pool_ref"}:
+            return False
+        return (
+            entry["meter"] == "tokens"
+            and entry["billing_pool_ref"] is None
+            and safe_int(entry["amount"], minimum)
+        )
+
+    public = (
+        "schema_version", "kind", "id", "namespace_id", "revision",
+        "created_at", "updated_at", "extensions",
+    )
+    if any(name not in item for name in public):
+        return False
+    revision = item["revision"]
+    if item["kind"] != kind or item["id"] != id or item["namespace_id"] != "asterun.context_budget.v1":
+        return False
+    if type(revision) is not int or revision < 1:
+        return False
+    if not nonempty_str(item["created_at"]) or not nonempty_str(item["updated_at"]):
+        return False
+    if not isinstance(item["extensions"], dict) or not nonempty_str(item.get("task_id")):
+        return False
+    if kind == "Budget":
+        limits = item.get("limits")
+        if not isinstance(limits, list) or len(limits) != 1 or not isinstance(limits[0], dict):
+            return False
+        entry = limits[0]
+        if set(entry) != {"meter", "limit", "enforcement", "billing_pool_ref"}:
+            return False
+        digest = hashlib.sha256(item["task_id"].encode()).hexdigest()[:24]
+        return (
+            entry["meter"] == "tokens"
+            and entry["enforcement"] == "admission_only"
+            and entry["billing_pool_ref"] is None
+            and safe_int(entry["limit"], 1)
+            and id == "bud_cb_" + digest
+        )
+    if kind != "Reservation":
+        return False
+    if not id.startswith("res_cb_"):
+        return False
+    if not nonempty_str(item.get("budget_id")) or not nonempty_str(item.get("action_id")):
+        return False
+    status = item.get("status")
+    if status not in {"HELD", "SETTLED", "RELEASED", "UNCERTAIN"}:
+        return False
+    if not token_amount(item.get("reserved"), 1) or not isinstance(item.get("receipt_evidence_ids"), list):
+        return False
+    if "actual" not in item:
+        return False
+    if status == "SETTLED":
+        return token_amount(item["actual"], 0)
+    return item["actual"] is None
+
+
 def _validate_control_snapshot(conn: sqlite3.Connection) -> None:
     from asterun.control_protocol import digest, validate
 
@@ -68,7 +137,12 @@ def _validate_control_snapshot(conn: sqlite3.Connection) -> None:
                     and 0 <= item["size_bytes"] <= 512 * 1024)
         else:
             require(kind in _CONTROL_KINDS)
-            validate(item, kind)
+            # 与 context_budget.ledger.NAMESPACE 相同。侧账本的 namespace 不是协议 Id，
+            # Budget 也不带协议超额字段；写字面量以避免循环导入。交叉引用见下方预留循环。
+            if namespace == "asterun.context_budget.v1":
+                require(kind in {"Budget", "Reservation"} and _validate_context_budget_entity(item, kind, id))
+            else:
+                validate(item, kind)
         if kind in {"Upload", "Artifact"}:
             require(blobs.get((namespace, item["sha256"])) == item["size_bytes"])
             if kind == "Artifact":
@@ -91,9 +165,24 @@ def _validate_control_snapshot(conn: sqlite3.Connection) -> None:
         require(item is not None)
         require((item["budget_id"], item["action_id"]) == (budget_id, action_id))
         budget = entities.get((namespace, "Budget", budget_id))
-        action = entities.get((namespace, "Action", action_id))
-        require(budget is not None and action is not None)
-        require(item["task_id"] == budget["task_id"] == action["task_id"])
+        # 该账本预留的 action_id 是旧系统 run id，不引用 Action。
+        if namespace == "asterun.context_budget.v1":
+            require(budget is not None and id == "res_cb_" + action_id)
+            require(item["task_id"] == budget["task_id"])
+            # save_run 写入的 task_id 是字符串；兼容历史 {"value": ...}。
+            try:
+                row = conn.execute("SELECT payload FROM runs WHERE id=?", (action_id,)).fetchone()
+            except sqlite3.OperationalError:
+                require(False)
+            require(row is not None)
+            run_task_id = json.loads(row[0]).get("task_id")
+            if isinstance(run_task_id, dict):
+                run_task_id = run_task_id.get("value")
+            require(run_task_id == item["task_id"])
+        else:
+            action = entities.get((namespace, "Action", action_id))
+            require(budget is not None and action is not None)
+            require(item["task_id"] == budget["task_id"] == action["task_id"])
         require((namespace, id) not in indexed_reservations)
         indexed_reservations.add((namespace, id))
     require(indexed_reservations == {(ns, id) for ns, kind, id in entities if kind == "Reservation"})
@@ -181,6 +270,41 @@ def _validate_snapshot(path: Path) -> int:
             actual = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
             if not columns[table] <= actual:
                 raise AsterunError(INVALID_REQUEST, "备份数据库表结构不兼容")
+        if version >= 6:
+            # 额度表随 PR1 补上，不升 schema。旧备份两张都没有时照常通过；只出现一张或列被改过则拒绝。
+            from asterun.plugin_store import QUOTA_TABLE_COLUMNS, ROUTING_TABLE_COLUMNS
+            present = [name for name in QUOTA_TABLE_COLUMNS if name in tables]
+            if present and len(present) != len(QUOTA_TABLE_COLUMNS):
+                raise AsterunError(INVALID_REQUEST, "备份数据库表结构不兼容")
+            for name in present:
+                actual = {row[1] for row in conn.execute(f"PRAGMA table_info({name})")}
+                if QUOTA_TABLE_COLUMNS[name] != actual:
+                    raise AsterunError(INVALID_REQUEST, "备份数据库表结构不兼容")
+            # 路由决策表可选。没有则通过；出现时列必须与当前结构完全一致。
+            present = [name for name in ROUTING_TABLE_COLUMNS if name in tables]
+            if present and len(present) != len(ROUTING_TABLE_COLUMNS):
+                raise AsterunError(INVALID_REQUEST, "备份数据库表结构不兼容")
+            for name in present:
+                actual = {row[1] for row in conn.execute(f"PRAGMA table_info({name})")}
+                if ROUTING_TABLE_COLUMNS[name] != actual:
+                    raise AsterunError(INVALID_REQUEST, "备份数据库表结构不兼容")
+            # 上下文预算观测表可选。没有则通过；出现时列必须完全一致。
+            from asterun.plugin_store import CAPSULE_TABLE_COLUMNS, CONTEXT_BUDGET_TABLE_COLUMNS
+            present = [name for name in CONTEXT_BUDGET_TABLE_COLUMNS if name in tables]
+            if present and len(present) != len(CONTEXT_BUDGET_TABLE_COLUMNS):
+                raise AsterunError(INVALID_REQUEST, "备份数据库表结构不兼容")
+            for name in present:
+                actual = {row[1] for row in conn.execute(f"PRAGMA table_info({name})")}
+                if CONTEXT_BUDGET_TABLE_COLUMNS[name] != actual:
+                    raise AsterunError(INVALID_REQUEST, "备份数据库表结构不兼容")
+            # 上下文胶囊表可选。没有则通过；出现时列必须完全一致。
+            present = [name for name in CAPSULE_TABLE_COLUMNS if name in tables]
+            if present and len(present) != len(CAPSULE_TABLE_COLUMNS):
+                raise AsterunError(INVALID_REQUEST, "备份数据库表结构不兼容")
+            for name in present:
+                actual = {row[1] for row in conn.execute(f"PRAGMA table_info({name})")}
+                if CAPSULE_TABLE_COLUMNS[name] != actual:
+                    raise AsterunError(INVALID_REQUEST, "备份数据库表结构不兼容")
         if conn.execute("SELECT 1 FROM sqlite_master WHERE type IN ('trigger', 'view') LIMIT 1").fetchone():
             raise AsterunError(INVALID_REQUEST, "备份含有未支持的触发器或视图")
         revision = conn.execute("SELECT value FROM meta WHERE key='applied_config_revision'").fetchone()

@@ -17,6 +17,12 @@ if sys.argv[1:] == ["--version"]:
     print("1.2.0")
     raise SystemExit(0)
 
+if sys.argv[1:] == ["--help"]:
+    for flag in ("--add-dir", "--disable-slash-commands", "--input-format", "--model",
+                 "--output-format", "--print-timeout"):
+        print(f"  {flag}  fixture", file=sys.stderr)
+    raise SystemExit(0)
+
 expected = ["--input-format", "stream-json", "--output-format", "stream-json", "--model",
             "fixture-model", "--disable-slash-commands", "--print-timeout", "__PRINT_TIMEOUT__", "--add-dir", os.getcwd()]
 assert sys.argv[1:] == expected

@@ -11,9 +11,11 @@ import tarfile
 import pytest
 
 from asterun.backup import DB_NAME, _validate_snapshot, backup_state, restore_state
+from asterun.context_budget.ledger import _entity, budget_id, reservation_id
 from asterun.control_protocol import validate
 from asterun.control_store import ControlStore, TABLE_COLUMNS
 from asterun.errors import AsterunError
+from asterun.plugin_store import CONTEXT_BUDGET_TABLE_COLUMNS
 from asterun.sqlite_store import SCHEMA, SCHEMA_VERSION, SqliteStore
 from tests.test_control_runtime import create_task, start_command
 
@@ -205,3 +207,204 @@ def test_legacy_backup_versions_remain_readable(tmp_path, version):
     archive = tmp_path / "legacy.tar.gz"
     assert backup_state(state, archive)["schema_version"] == version
     assert restore_state(archive, tmp_path / "restored")["schema_version"] == version
+
+
+def test_old_backup_without_context_budget_table_still_restores(tmp_path):
+    root = tmp_path / "source"
+    root.mkdir()
+    db = SqliteStore(root / DB_NAME)
+    try:
+        columns = {row[1] for row in db._conn.execute("PRAGMA table_info(context_budget_observations)")}
+        assert columns == CONTEXT_BUDGET_TABLE_COLUMNS["context_budget_observations"]
+    finally:
+        db.close()
+    assert _validate_snapshot(root / DB_NAME) == 6
+    with closing(sqlite3.connect(root / DB_NAME)) as conn:
+        conn.execute("DROP TABLE context_budget_observations")
+        conn.commit()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    assert _validate_snapshot(root / DB_NAME) == 6
+    archive = tmp_path / "old.tar.gz"
+    assert backup_state(root, archive)["schema_version"] == 6
+    restored = tmp_path / "restored"
+    assert restore_state(archive, restored)["schema_version"] == 6
+    with closing(sqlite3.connect(restored / DB_NAME)) as conn:
+        names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "tasks" in names
+    assert "context_budget_observations" not in names
+
+
+def test_context_budget_backup_rejects_column_mismatch(tmp_path):
+    root = tmp_path / "source"
+    root.mkdir()
+    db = SqliteStore(root / DB_NAME)
+    db.close()
+    with closing(sqlite3.connect(root / DB_NAME)) as conn:
+        conn.execute("DROP TABLE context_budget_observations")
+        conn.execute(
+            """CREATE TABLE context_budget_observations (
+                namespace_id TEXT, run_id TEXT PRIMARY KEY, task_id TEXT, payload TEXT)"""
+        )
+        conn.commit()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    with pytest.raises(AsterunError) as caught:
+        _validate_snapshot(root / DB_NAME)
+    assert "表结构" in caught.value.message
+    with pytest.raises(AsterunError, match="表结构"):
+        backup_state(root, tmp_path / "invalid.tar.gz")
+
+
+def _seed_context_budget_reservation(root: Path, reservation: str, action_id: str) -> None:
+    """Budget 与 Reservation 的形状与 ledger._entity / guard_dispatch 相同。"""
+    task_id = "tsk_1"
+    root.mkdir()
+    database = SqliteStore(root / DB_NAME)
+    try:
+        store = ControlStore(database._conn)
+        bid = budget_id(task_id)
+        budget = _entity(
+            "Budget",
+            bid,
+            task_id=task_id,
+            limits=[{
+                "meter": "tokens",
+                "limit": 100,
+                "enforcement": "admission_only",
+                "billing_pool_ref": None,
+            }],
+        )
+        budget["extensions"] = {
+            "asterun.legacy_task_id": task_id,
+            "asterun.profile_key": "grok-code/implementation",
+            "asterun.budget_policy_sha256": "a" * 64,
+            "asterun.token_basis": "processed",
+        }
+        store.put(budget)
+        store.reserve(_entity(
+            "Reservation",
+            reservation,
+            task_id=task_id,
+            budget_id=bid,
+            action_id=action_id,
+            reserved=[{"meter": "tokens", "amount": 60, "billing_pool_ref": None}],
+            actual=None,
+            status="HELD",
+            receipt_evidence_ids=[],
+        ))
+    finally:
+        database.close()
+
+
+def _insert_run(root: Path, run_id: str, task_id: str) -> None:
+    """runs.payload 与 Run.to_dict 一致：task_id 为字符串。"""
+    payload = {
+        "id": run_id,
+        "task_id": task_id,
+        "backend": "codex",
+        "status": "succeeded",
+        "created_at": "2026-09-10T00:00:00Z",
+    }
+    with closing(sqlite3.connect(root / DB_NAME)) as conn:
+        conn.execute(
+            "INSERT INTO runs(id, payload) VALUES (?, ?)",
+            (run_id, json.dumps(payload, ensure_ascii=False)),
+        )
+        conn.commit()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+
+def test_context_budget_reservation_backup_accepts_run_id_and_rejects_other_ids(tmp_path):
+    run_id = "run_1"
+    good = tmp_path / "good"
+    _seed_context_budget_reservation(good, reservation_id(run_id), run_id)
+    _insert_run(good, run_id, "tsk_1")
+    assert reservation_id(run_id) == "res_cb_" + run_id
+    assert _validate_snapshot(good / DB_NAME) == 6
+
+    bad = tmp_path / "bad"
+    _seed_context_budget_reservation(bad, "res_cb_other", run_id)
+    with pytest.raises(AsterunError, match="不一致"):
+        _validate_snapshot(bad / DB_NAME)
+
+
+def test_context_budget_reservation_rejects_missing_run(tmp_path):
+    root = tmp_path / "missing"
+    run_id = "run_1"
+    _seed_context_budget_reservation(root, reservation_id(run_id), run_id)
+    with pytest.raises(AsterunError, match="不一致"):
+        _validate_snapshot(root / DB_NAME)
+
+
+def test_context_budget_reservation_rejects_run_of_other_task(tmp_path):
+    root = tmp_path / "other"
+    run_id = "run_1"
+    _seed_context_budget_reservation(root, reservation_id(run_id), run_id)
+    _insert_run(root, run_id, "tsk_other")
+    with pytest.raises(AsterunError, match="不一致"):
+        _validate_snapshot(root / DB_NAME)
+
+
+def test_context_budget_reservation_accepts_same_task_run(tmp_path):
+    root = tmp_path / "same"
+    run_id = "run_1"
+    _seed_context_budget_reservation(root, reservation_id(run_id), run_id)
+    _insert_run(root, run_id, "tsk_1")
+    assert _validate_snapshot(root / DB_NAME) == 6
+
+
+@pytest.mark.parametrize(
+    ("kind", "damage"),
+    [
+        ("Budget", "limit_negative"),
+        ("Budget", "limit_string"),
+        ("Budget", "missing:schema_version"),
+        ("Budget", "missing:kind"),
+        ("Budget", "missing:id"),
+        ("Budget", "missing:namespace_id"),
+        ("Budget", "missing:revision"),
+        ("Budget", "missing:created_at"),
+        ("Budget", "missing:updated_at"),
+        ("Budget", "missing:extensions"),
+        ("Budget", "enforcement"),
+        ("Reservation", "amount_negative"),
+        ("Reservation", "status"),
+        ("Reservation", "settled_actual_none"),
+    ],
+)
+def test_context_budget_side_ledger_rejects_malformed_entities(tmp_path, kind, damage):
+    root = tmp_path / "ledger"
+    run_id = "run_1"
+    _seed_context_budget_reservation(root, reservation_id(run_id), run_id)
+    _insert_run(root, run_id, "tsk_1")
+    assert _validate_snapshot(root / DB_NAME) == 6
+    with closing(sqlite3.connect(root / DB_NAME)) as conn:
+        payload, = conn.execute(
+            "SELECT payload FROM control_entities WHERE namespace_id=? AND kind=?",
+            ("asterun.context_budget.v1", kind),
+        ).fetchone()
+        item = json.loads(payload)
+        if damage == "limit_negative":
+            item["limits"][0]["limit"] = -1
+        elif damage == "limit_string":
+            item["limits"][0]["limit"] = "100"
+        elif damage.startswith("missing:"):
+            del item[damage.split(":", 1)[1]]
+        elif damage == "enforcement":
+            item["limits"][0]["enforcement"] = "hard_stop"
+        elif damage == "amount_negative":
+            item["reserved"][0]["amount"] = -1
+        elif damage == "status":
+            item["status"] = "CLOSED"
+        elif damage == "settled_actual_none":
+            item["status"] = "SETTLED"
+            item["actual"] = None
+        else:
+            raise AssertionError(damage)
+        conn.execute(
+            "UPDATE control_entities SET payload=? WHERE namespace_id=? AND kind=?",
+            (json.dumps(item, ensure_ascii=False), "asterun.context_budget.v1", kind),
+        )
+        conn.commit()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    with pytest.raises(AsterunError, match="不一致"):
+        _validate_snapshot(root / DB_NAME)

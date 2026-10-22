@@ -82,7 +82,9 @@ def test_pre_session_native_error_can_be_confirmed(tmp_path):
     ("duplicate_result", "event_after_result"), ("double_done", "step_after_done"),
     ("event_after_error", "step_after_error"),
     ("active_tool", "contradictory_result"), ("active_response", "contradictory_result"),
-    ("changed_step", "step_type_changed"), ("success_nonzero", "contradictory_result"),
+    ("changed_step", "step_type_changed"), ("retyped_tool", "step_type_changed"),
+    ("renamed_subagent", "step_type_changed"), ("tool_renamed", "step_tool_changed"),
+    ("success_nonzero", "contradictory_result"),
     ("cwd_mismatch", "workspace_mismatch"), ("unsafe_permission", "unsafe_permission_mode"),
     ("unknown_permission", "unsafe_permission_mode"), ("missing_permission", "unsafe_permission_mode"),
     ("strict_permission", "unsafe_permission_mode"), ("yolo_permission", "unsafe_permission_mode"),
@@ -219,3 +221,77 @@ def test_already_stopped_does_not_spawn(tmp_path):
 def test_timeout_must_be_finite_positive(timeout):
     with pytest.raises(ValueError):
         AntigravityRuntime(timeout=timeout)
+
+
+def test_subagent_relabel_is_accepted_but_never_reported_as_success(tmp_path):
+    result, _ = execute(tmp_path, "subagent")
+    assert result["status"] == "failed" and result["terminated"] is True
+    assert result["error_code"] == "ANTIGRAVITY_RUN_INCOMPLETE"
+    assert result["native"]["subagent_count"] == 1
+    assert result["native"][DISPATCH_RECEIPT_KEY]["failure_type"] == "subagent_delegated"
+
+
+def test_plain_success_reports_no_subagents(tmp_path):
+    result, _ = execute(tmp_path, "happy")
+    assert result["status"] == "succeeded" and result["native"]["subagent_count"] == 0
+
+
+def test_subagent_that_outlives_the_result_is_stopped_promptly(tmp_path):
+    started = time.monotonic()
+    result, _ = execute(tmp_path, "subagent_lingers")
+    assert time.monotonic() - started < 2.5
+    assert result["status"] == "failed" and result["terminated"] is True
+    assert result["error_code"] == "ANTIGRAVITY_RUN_INCOMPLETE"
+    assert result["native"]["subagent_count"] == 1
+
+
+@pytest.mark.parametrize("mode", ["subagent_no_result", "subagent_step_only", "subagent_lingers"])
+def test_any_subagent_signal_ends_the_run_within_seconds(tmp_path, mode):
+    runtime = AntigravityRuntime(timeout=20)
+    started = time.monotonic()
+    result, _ = execute(tmp_path, mode, runtime=runtime)
+    assert time.monotonic() - started < 3
+    assert result["status"] == "failed" and result["terminated"] is True
+    assert result["error_code"] == "ANTIGRAVITY_RUN_INCOMPLETE"
+    assert result["native"]["subagent_count"] == 1
+    receipt = result["native"][DISPATCH_RECEIPT_KEY]
+    assert receipt["failure_type"] == "subagent_delegated"
+    assert receipt["process_exit_code"] is not None
+
+
+def test_subagent_stop_kills_the_whole_process_group(tmp_path):
+    result, _ = execute(tmp_path, "subagent_with_child", runtime=AntigravityRuntime(timeout=20))
+    assert result["status"] == "failed" and result["native"][DISPATCH_RECEIPT_KEY]["failure_type"] == "subagent_delegated"
+    child = int((tmp_path / "ready").read_text())
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        try:
+            os.kill(child, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.05)
+    else:
+        pytest.fail("grandchild survived the subagent stop")
+
+
+def test_unconfirmed_group_exit_stays_pending(tmp_path, monkeypatch):
+    monkeypatch.setattr(AntigravityRuntime, "_group_gone", staticmethod(lambda proc: False))
+    result, _ = execute(tmp_path, "subagent_no_result", runtime=AntigravityRuntime(timeout=20))
+    assert result["status"] == "pending_reconcile"
+    assert result["native"][DISPATCH_RECEIPT_KEY]["failure_type"] == "subagent_process_alive"
+
+
+def test_confirmed_subagent_stop_signals_the_group_only_once(tmp_path, monkeypatch):
+    calls = []
+    real = AntigravityRuntime._cleanup.__func__
+    monkeypatch.setattr(AntigravityRuntime, "_cleanup", classmethod(lambda cls, proc: calls.append(proc.pid) or real(cls, proc)))
+    result, _ = execute(tmp_path, "subagent_no_result", runtime=AntigravityRuntime(timeout=20))
+    assert result["native"][DISPATCH_RECEIPT_KEY]["failure_type"] == "subagent_delegated"
+    assert len(calls) == 1
+
+
+def test_runtime_without_group_ownership_never_confirms_exit(tmp_path, monkeypatch):
+    monkeypatch.setattr(module, "_OWNS_PROCESS_GROUP", False)
+    result, _ = execute(tmp_path, "subagent_no_result", runtime=AntigravityRuntime(timeout=20))
+    assert result["status"] == "pending_reconcile"
+    assert result["native"][DISPATCH_RECEIPT_KEY]["failure_type"] == "subagent_process_alive"

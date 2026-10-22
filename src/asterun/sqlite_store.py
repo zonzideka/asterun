@@ -82,6 +82,7 @@ class SqliteStore:
         self.fail_next_intent = False
         self.intent_hook = None
         self.run_hook = None
+        self.quota_hook = None
         self.migration_backup = None
         self._conn = (sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True, isolation_level=None)
                       if readonly else sqlite3.connect(self.path, isolation_level=None))
@@ -207,6 +208,8 @@ class SqliteStore:
             self._upsert("runs", run.id.value, run.to_dict())
             if self.run_hook is not None:
                 self.run_hook(run)
+            if self.quota_hook is not None:
+                self.quota_hook(run)
 
     def get_run(self, run_id: RunId) -> Run:
         return Run.from_dict(self._get("runs", run_id.value, f"找不到运行 {run_id}"))
@@ -446,6 +449,18 @@ class SqliteStore:
         if row is None:
             return None
         return self.get_operation(OperationId(row["id"]))
+
+    def find_operation_by_key(self, principal, action, target, idempotency_key):
+        row = self._conn.execute(
+            """
+            SELECT id FROM operations
+            WHERE principal=? AND action=? AND target=? AND idempotency_key=?
+            """,
+            (principal, action, target, idempotency_key),
+        ).fetchone()
+        if row is None:
+            return None
+        return self.get_operation(OperationId(row[0]))
 
     def get_operation(self, operation_id: OperationId) -> Operation:
         row = self._conn.execute("SELECT * FROM operations WHERE id=?", (operation_id.value,)).fetchone()

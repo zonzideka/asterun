@@ -17,13 +17,25 @@ import time
 
 from ._vendor.command import build_command
 from ._vendor.compat import AsterunError, RunId
-from ._vendor.profile import build_environment, validate_home, validate_workspace_binding
+from ._vendor.profile import PINS_ENV, build_environment, validate_home, validate_workspace_binding
 from ._vendor.runtime import AntigravityRuntime
 
 PROTOCOL = "asterun-worker/v1"
-VERSION = "1.2.0"
+MIN_VERSION = (1, 2, 0)
+MIN_VERSION_TEXT = "1.2.0"
+_VERSION_TEXT = re.compile(
+    r"(?:(?:Antigravity(?: CLI)?|agy)\s+)?v?([0-9]{1,4})\.([0-9]{1,4})\.([0-9]{1,4})(?:[-+][0-9A-Za-z.-]{1,64})?",
+    re.IGNORECASE,
+)
+
+
+def _parse_version(text):
+    match = _VERSION_TEXT.fullmatch(text.strip()) if isinstance(text, str) else None
+    return None if match is None else (int(match[1]), int(match[2]), int(match[3]))
+
+
 MAX_FRAME = 256 * 1024
-_OPTIONS = {"bin", "binary_sha256", "home", "model", "execution_enabled", "timeout_seconds"}
+_OPTIONS = {"bin", "binary_sha256", "home", "model", "execution_enabled", "timeout_seconds", "pins"}
 _METHODS = {"plugin.describe", "connection.inspect", "capability.prepare", "execution.start",
             "execution.observe", "execution.cancel", "execution.reconcile", "usage.observe"}
 _UNSUPPORTED = {"native_resume": "unsupported", "approval": "unsupported", "quota": "unsupported",
@@ -78,37 +90,42 @@ def _binary(path, expected):
     return target
 
 
-def _version(binary, *, cwd, env):
-    """只运行版本入口；有界读取，CLI 与当前 worker 保持同一进程组。"""
+REQUIRED_FLAGS = (
+    "--input-format", "--output-format", "--model", "--disable-slash-commands",
+    "--print-timeout", "--add-dir",
+)
+
+
+def _probe(binary, argument, *, cwd, env, limit, unavailable):
+    """运行一个探测参数；有界读取，CLI 与当前 worker 保持同一进程组。"""
     proc = None
-    output = bytearray()
+    buffers = {}
     total = 0
     deadline = time.monotonic() + 3
     try:
-        proc = subprocess.Popen([str(binary), "--version"], stdin=subprocess.DEVNULL,
+        proc = subprocess.Popen([str(binary), argument], stdin=subprocess.DEVNULL,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd, env=env)
+        buffers = {proc.stdout: bytearray(), proc.stderr: bytearray()}
         with selectors.DefaultSelector() as selector:
             for stream in (proc.stdout, proc.stderr):
                 os.set_blocking(stream.fileno(), False)
                 selector.register(stream, selectors.EVENT_READ)
             while selector.get_map():
                 if time.monotonic() >= deadline:
-                    raise Rejected("version_unavailable")
+                    raise Rejected(unavailable)
                 for key, _ in selector.select(.05):
                     data = os.read(key.fileobj.fileno(), 4096)
                     if not data:
                         selector.unregister(key.fileobj)
                         continue
                     total += len(data)
-                    if total > 4096:
-                        raise Rejected("version_unavailable")
-                    if key.fileobj is proc.stdout:
-                        output.extend(data)
+                    if total > limit:
+                        raise Rejected(unavailable)
+                    buffers[key.fileobj].extend(data)
             proc.wait(timeout=max(.01, deadline - time.monotonic()))
-        if proc.returncode != 0 or not re.fullmatch(r"(?:(?:Antigravity(?: CLI)?|agy)\s+)?v?1\.2\.0", output.decode("utf-8").strip(), re.IGNORECASE):
-            raise Rejected("upstream_version_mismatch")
-    except (OSError, ValueError, UnicodeError, subprocess.TimeoutExpired):
-        raise Rejected("version_unavailable") from None
+        return proc.returncode, bytes(buffers[proc.stdout]), bytes(buffers[proc.stderr])
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        raise Rejected(unavailable) from None
     finally:
         if proc is not None:
             try:
@@ -124,6 +141,29 @@ def _version(binary, *, cwd, env):
                     stream.close()
                 except OSError:
                     pass
+
+
+def _version(binary, *, cwd, env):
+    code, stdout, _stderr = _probe(binary, "--version", cwd=cwd, env=env, limit=4096,
+                                   unavailable="version_unavailable")
+    try:
+        detected = _parse_version(stdout.decode("utf-8")) if code == 0 else None
+    except UnicodeError:
+        raise Rejected("version_unavailable") from None
+    if detected is None or detected < MIN_VERSION:
+        raise Rejected("upstream_version_mismatch")
+    return ".".join(map(str, detected))
+
+
+def _features(binary, *, cwd, env):
+    """Every flag build_command relies on must be advertised by --help."""
+    _code, stdout, stderr = _probe(binary, "--help", cwd=cwd, env=env, limit=65536,
+                                   unavailable="feature_probe_unavailable")
+    text = (stdout + b"\n" + stderr).decode("utf-8", "replace")
+    missing = [flag for flag in REQUIRED_FLAGS
+               if not re.search(r"(?m)^\s*" + re.escape(flag) + r"(?![\w-])", text)]
+    if missing:
+        raise Rejected("upstream_feature_missing")
 
 
 def cli_timeout_seconds(timeout: object) -> int:
@@ -149,7 +189,10 @@ def _preflight(context):
         raise Rejected("execution_not_enabled")
     if context.get("auth_mode") != "native_account" or not context.get("provider_account_ref"):
         raise Rejected("auth_mode_mismatch")
-    if context.get("upstream_version") != VERSION:
+    # The connection may declare the CLI version it was set up with; any
+    # release at or above the minimum is accepted. The binary is probed below.
+    declared = context.get("upstream_version")
+    if declared is not None and ((_parse_version(declared) or (0, 0, 0)) < MIN_VERSION):
         raise Rejected("upstream_version_mismatch")
     if context.get("capability") != "agent.execute":
         raise Rejected("capability_unsupported")
@@ -166,6 +209,15 @@ def _preflight(context):
     model = options.get("model")
     if not isinstance(model, str) or not model or any(char.isspace() or ord(char) < 32 for char in model):
         raise Rejected("model_required")
+    # Optional digest pins travel as an explicit option: the host does not
+    # forward its environment to the worker.
+    pins = options.get("pins")
+    if pins is not None and (not isinstance(pins, str) or not Path(pins).is_absolute()):
+        raise Rejected("invalid_options")
+    if pins is None:
+        os.environ.pop(PINS_ENV, None)
+    else:
+        os.environ[PINS_ENV] = pins
     try:
         home_path = validate_home(home)
         workspace = validate_workspace_binding(home_path, context.get("workspace_root"))
@@ -181,6 +233,7 @@ def _preflight(context):
         command = apply_plugin_print_timeout(
             [*build_command(binary, model), "--add-dir", str(workspace)], timeout)
         _version(binary, cwd=workspace, env=env)
+        _features(binary, cwd=workspace, env=env)
         _binary(options["bin"], options["binary_sha256"])
     except AsterunError:
         raise Rejected("permission_profile_rejected") from None
@@ -220,7 +273,7 @@ def handle(method, input, context):
     if method == "plugin.describe":
         return {"manifest": _manifest(), "support": dict(_UNSUPPORTED)}
     if method == "connection.inspect":
-        return {"authenticated": "not_verified", "upstream_version": VERSION,
+        return {"authenticated": "not_verified", "upstream_version": None, "minimum_upstream_version": MIN_VERSION_TEXT,
                 "support": dict(_UNSUPPORTED), "billing_verified": False, "native_client_visible": "not_verified"}
     if method == "usage.observe":
         return {"supported": False, "quota": "unsupported", "remaining": None, "usage": []}

@@ -40,6 +40,7 @@ CODEX_CLIENT_METHODS = (
     "turn/interrupt",
     "model/list",
     "account/read",
+    "account/rateLimits/read",
     "account/login/start",
     "account/logout",
     "thread/list",
@@ -81,6 +82,7 @@ class CodexPromptResult:
     method_counts: dict[str, int] = field(default_factory=dict)
     token_usage: dict[str, Any] = field(default_factory=dict)
     usage_observation: dict[str, Any] = field(default_factory=dict)
+    quota_rate_limits: dict[str, Any] = field(default_factory=dict)
     pending_requests: list[dict[str, Any]] = field(default_factory=list)
     recent_events: list[dict[str, Any]] = field(default_factory=list)
     item_completed_count: int = 0
@@ -100,6 +102,8 @@ class CodexPromptResult:
             "item_completed_count": self.item_completed_count,
             "elapsed_ms": self.elapsed_ms,
         }
+        if self.quota_rate_limits:
+            result["quota_rate_limits"] = deepcopy(self.quota_rate_limits)
         if self.error:
             result["error"] = self.error
         return result
@@ -121,6 +125,7 @@ class CodexSession:
     method_counts: dict[str, int] = field(default_factory=dict)
     token_usage: dict[str, Any] = field(default_factory=dict)
     usage_observation: dict[str, Any] = field(default_factory=dict)
+    quota_rate_limits: dict = field(default_factory=dict)
     pending_requests: dict[str, dict[str, Any]] = field(default_factory=dict)
     recent_events: list[dict[str, Any]] = field(default_factory=list)
     item_completed_count: int = 0
@@ -141,6 +146,11 @@ class CodexSession:
         event_turn = params.get("turnId") or (params.get("turn") or {}).get("id")
         if event_turn and self.current_turn_id and event_turn != self.current_turn_id:
             return
+        captured = None
+        if method == "account/rateLimits/updated":
+            captured = _capture_quota(params)
+            params = captured["params"]
+            msg = {**msg, "params": params}
         with self._lock:
             self.message_output.observe(method, params)
             self._append_event_locked(msg)
@@ -163,6 +173,8 @@ class CodexSession:
                 self.token_usage = params
                 from asterun.usage.observations import capture
                 self.usage_observation = capture(self.usage_observation, params)
+            elif method == "account/rateLimits/updated":
+                self.quota_rate_limits = captured or {"params": deepcopy(params), "observed_at": _now_iso()}
             elif method == "item/completed":
                 self.item_completed_count += 1
             elif method == "turn/completed":
@@ -216,12 +228,20 @@ class CodexSession:
                 "method_counts": dict(self.method_counts),
                 "token_usage": dict(self.token_usage),
                 "usage_observation": deepcopy(self.usage_observation),
+                "quota_rate_limits": deepcopy(self.quota_rate_limits),
                 "pending_requests": list(self.pending_requests.values()),
                 "recent_events": list(self.recent_events),
                 "item_completed_count": self.item_completed_count,
                 "last_error": self.last_error,
                 "transport_alive": self.transport.alive,
             }
+
+
+def _capture_quota(params: Any) -> dict[str, Any]:
+    from asterun.quota.codex_probe import scrub_rate_limits
+
+    body = scrub_rate_limits(params if isinstance(params, dict) else {})
+    return {"params": body, "observed_at": _now_iso()}
 
 
 def _truncate_jsonish(value: Any, *, limit: int = 8000) -> Any:
@@ -444,6 +464,9 @@ class CodexAppServerTransport:
     def read_account(self, timeout: float = 20.0) -> dict[str, Any]:
         return self.request("account/read", {}, timeout=timeout)
 
+    def read_rate_limits(self, timeout: float = 10.0) -> dict[str, Any]:
+        return self.request("account/rateLimits/read", {}, timeout)
+
     def start_thread(self, params: dict[str, Any], timeout: float = 60.0) -> dict[str, Any]:
         return self.request("thread/start", params, timeout=timeout)
 
@@ -565,14 +588,20 @@ class CodexAppServerTransport:
         pending_requests: list[dict[str, Any]] = []
         token_usage: dict[str, Any] = {}
         usage_observation: dict[str, Any] = {}
+        quota_rate_limits: dict[str, Any] = {}
         item_completed_count = 0
         completed_turn: dict[str, Any] = {}
 
         def on_msg(msg: dict[str, Any]) -> None:
-            nonlocal item_completed_count, token_usage, completed_turn, usage_observation
-            messages.append(msg)
+            nonlocal item_completed_count, token_usage, completed_turn, usage_observation, quota_rate_limits
             method = msg.get("method", "")
             params = msg.get("params", {})
+            if method == "account/rateLimits/updated":
+                captured = _capture_quota(params)
+                params = captured["params"]
+                msg = {**msg, "params": params}
+                quota_rate_limits = captured
+            messages.append(msg)
             output.observe(method, params)
             if "id" in msg and method:
                 pending_requests.append({"id": msg.get("id"), "method": method, "params": params})
@@ -583,6 +612,8 @@ class CodexAppServerTransport:
                 token_usage = params
                 from asterun.usage.observations import capture
                 usage_observation = capture(usage_observation, params)
+            elif method == "account/rateLimits/updated":
+                quota_rate_limits = {"params": deepcopy(params), "observed_at": quota_rate_limits.get("observed_at") or _now_iso()}
             elif method == "item/completed":
                 item_completed_count += 1
             elif method == "turn/completed":
@@ -632,6 +663,7 @@ class CodexAppServerTransport:
             method_counts=method_counts,
             token_usage=token_usage,
             usage_observation=usage_observation,
+            quota_rate_limits=quota_rate_limits,
             pending_requests=pending_requests,
             recent_events=[
                 {
@@ -851,6 +883,8 @@ class CodexBackend:
             result = transport.run_text_prompt(text=text or "Reply with ASTERUN_CODEX_OK.", cwd=cwd,
                                                thread_params=normal_thread_params(self.config))
             native = result.to_dict()
+            if result.quota_rate_limits:
+                native["quota_rate_limits"] = deepcopy(result.quota_rate_limits)
         finally:
             transport.close()
         events = [{"type": "run_started", "text": "codex app-server"}]

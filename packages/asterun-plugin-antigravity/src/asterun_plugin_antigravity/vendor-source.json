@@ -1,11 +1,11 @@
 {
-  "source_commit": "a9b4d63ebb95a56448db535e31281347e9b30ec4",
+  "source_commit": "0c7b8f8b60585e01073cb031cfa79f68780e54c8",
   "files": [
     {
       "source": "src/asterun/antigravity_profile.py",
       "target": "_vendor/profile.py",
-      "source_sha256": "fb4cfe0888eec23e56076eb488f3a265786770bdbfd216a13fcbaf4df7bc99e5",
-      "vendored_sha256": "92d754487d6eeed034bd64605dba3aa3dec419234032fa76e08f95ef0bc68d67",
+      "source_sha256": "1636a20d3c9babe163724f4bcc27c60e92ff0e0522d1383a3531f1dc7dbe0e90",
+      "vendored_sha256": "03ceec03f40eb96222810da9614766f294d951d6e1a51f3e9c67674d348c6609",
       "replacements": [
         [
           "from .errors import AsterunError, INVALID_CONFIG",
@@ -21,8 +21,8 @@
     {
       "source": "src/asterun/backends/antigravity_runtime.py",
       "target": "_vendor/runtime.py",
-      "source_sha256": "b8f496643b6b336feffcbda8d7610e9a530674067b4a05ae2c3c07908514988d",
-      "vendored_sha256": "7659dc393967438a4b4a07eaee2c43d2dd50d359dfd1c896e82831049c65155c",
+      "source_sha256": "d74f08ebef0cdd625423b5960d8b9420bc678e0f2f628041ff38adaf9b528d74",
+      "vendored_sha256": "a5f2c2f06d7c4e139f0e5da2c634a8e242b8b2ccea86f2558edcfbd65e18d1e1",
       "replacements": [
         [
           "from asterun.errors import BACKEND_UNAVAILABLE, REMOTE_STATE_UNKNOWN\nfrom asterun.ids import RunId",
@@ -39,6 +39,10 @@
         [
           "# Always address the group: a child may still own stdout after agy exits.",
           "# The host owns the worker group; final host cleanup covers remaining descendants."
+        ],
+        [
+          "_OWNS_PROCESS_GROUP = True",
+          "_OWNS_PROCESS_GROUP = False"
         ]
       ],
       "extract": null
@@ -46,7 +50,7 @@
     {
       "source": "src/asterun/backends/antigravity.py",
       "target": "_vendor/command.py",
-      "source_sha256": "a8669e4731681c76987e8a47f2571f4e115a3eb4aba46642d6dc3e203e4ea9bd",
+      "source_sha256": "9e579e06d3f1efac4d7f991baf816194cc7c0d8b4be11a291652823607e00d66",
       "vendored_sha256": "725c4c58ec26a80abd3892b95b505856ccbb7d9ab50faf5108bb03a1480f5be3",
       "replacements": [],
       "extract": "build_command",
@@ -70,7 +74,7 @@
     }
   ],
   "notes": [
-    "profile、runtime、command 由当前仓库提交 a9b4d63ebb95a56448db535e31281347e9b30ec4 机械复制；compat 与 __init__ 是插件本地副本，同样钉定摘要。",
+    "profile、runtime、command 由当前仓库提交 2b8c655662b17fe834dab29a57dc6cbf5fd16e22 机械复制；compat 与 __init__ 是插件本地副本，同样钉定摘要。",
     "清单必须覆盖 _vendor 下的全部文件。来源提交须能在本仓库历史中解析。",
     "仅机械修改导入、独立 profile 命令名与 worker 所有的进程组；原始核心文件不修改。",
     "CLI 留在 worker 进程组；本地 child 信号只用 PID，host 最终负责组内剩余子孙。远端是否终止仍未知。"

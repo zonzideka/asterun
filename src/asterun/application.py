@@ -101,6 +101,9 @@ ENTRY_BLOCKED_WHEN_DISABLED = {
     "task.cancel",
     "task.handoff",
     "config.apply",
+    "quota.set",
+    "quota.clear",
+    "quota.refresh",
     "session.resume",
     "task.reconcile",
     "task.present",
@@ -186,6 +189,25 @@ def _public_run(run: Run) -> dict[str, Any]:
     return data
 
 
+def _segment_session_native(store, run) -> dict:
+    """续段 resume 时取出源 run 的会话 id。取不到则按新会话，两个字段都是 None。"""
+    blank = {"backend_session_id": None, "turn_id": None}
+    try:
+        native = run.native if isinstance(getattr(run, "native", None), dict) else {}
+        source_id = native.get("segment_source_run_id")
+        if not isinstance(source_id, str) or not source_id.strip():
+            return blank
+        source = store.get_run(RunId(source_id))
+        source_native = source.native if isinstance(getattr(source, "native", None), dict) else {}
+        for key in ("backend_session_id", "session_id"):
+            value = source_native.get(key)
+            if isinstance(value, str) and value.strip():
+                return {"backend_session_id": value, "turn_id": None}
+        return blank
+    except Exception:
+        return blank
+
+
 def ok(data: dict[str, Any], ids: dict[str, str] | None = None) -> Envelope:
     return Envelope(ok=True, data=data, ids=ids or {})
 
@@ -243,11 +265,20 @@ class Application:
             self.admission = AdmissionService(self)
             from asterun.plugins.management import sync_runtime_latches
             sync_runtime_latches(self)
+        self._bind_quota_hook()
         if restore_scheduler:
             self._restore_scheduler()
             self.local_checks.restore()
         if hasattr(self.store, "_conn"):
             self.control
+
+    def _bind_quota_hook(self) -> None:
+        if not hasattr(self.store, "quota_hook"):
+            return
+        from asterun.context_budget.observe import observe_run
+        from asterun.quota.passive import persist_run_quota
+
+        self.store.quota_hook = lambda run: (persist_run_quota(self, run), observe_run(self, run))
 
     @property
     def control(self):
@@ -360,6 +391,20 @@ class Application:
                 return ok(self.capabilities.handle(method, payload))
             if method.startswith("control."):
                 return self._handle_control(method, payload)
+            if method.startswith("quota.") or method in {
+                "routing.explain", "context_budget.inspect", "capsule.inspect",
+            }:
+                if method == "context_budget.inspect":
+                    from asterun.context_budget.inspect import handle as handle_context_budget
+
+                    return ok(handle_context_budget(self, method, payload))
+                if method == "capsule.inspect":
+                    from asterun.capsule.inspect import handle as handle_capsule
+
+                    return ok(handle_capsule(self, method, payload))
+                from asterun.quota.service import handle as handle_quota
+
+                return ok(handle_quota(self, method, payload))
             if method.startswith("plugin.") or method in {"connection.setup", "usage.inspect"}:
                 from asterun.plugins.management import handle
                 return ok(handle(self, method, payload))
@@ -598,7 +643,24 @@ class Application:
                 next_action="重新读取 config.validate 后再提交",
                 details={"expected": expected_revision, "actual": self.config.revision},
             )
-        backend_conf = self.config.get_backend(payload.get("backend"))
+        from asterun.quota.routing_entry import paid_guard, record, resolve_backend
+
+        requested_backend = payload.get("backend")
+        effective_request = requested_backend or self.config.default_backend
+        group_request = isinstance(effective_request, str) and effective_request.startswith("@")
+        pinned = self._pinned_submit_backend(payload, workspace_alias)
+        if group_request and pinned is not None:
+            # 组请求的幂等重放与会话续接沿用已绑定后端，不重新选路。
+            name, routing = pinned, None
+        elif group_request:
+            name, routing = resolve_backend(self, requested_backend)
+        else:
+            # 显式普通后端：行为与以前一致（摘要、会话绑定检查都用请求值）；
+            # 只有在不是重放/续接时才做付费保护，避免已接受的请求在重放时被新数据阻断。
+            name, routing = resolve_backend(self, requested_backend)
+            if pinned is None:
+                paid_guard(self, name)
+        backend_conf = self.config.get_backend(name)
         self._require_grok_code_permissions(backend_conf, workspace_alias)
         input_path = payload.get("path")
         resolved_path = None
@@ -624,11 +686,12 @@ class Application:
         from asterun.dependencies import validate as validate_dependencies
         dependencies = validate_dependencies(self, workspace_alias, payload.get("depends_on", []))
         now = utc_now()
+        hash_backend = effective_request if group_request else backend_conf.name
         digest = _input_hash(
             workspace_alias,
             text,
             script,
-            backend_conf.name,
+            hash_backend,
             payload.get("path"),
             str(payload.get("conversation_id") or ""),
             read_scope=read_scope,
@@ -718,6 +781,8 @@ class Application:
                     self.scheduler.admit(backend_conf.name, str(workspace.root.resolve())))
         session = replace(session, task_id=task.id, updated_at=now)
         operation, task, run, reused = self.store.commit_intent(operation, task, run, session=session)
+        if routing is not None and not reused:
+            record(self, task.id.value, run.id.value, run.role, routing)
         if reused:
             self._assert_task_binding(task)
             return ok(
@@ -1083,7 +1148,10 @@ class Application:
         if conversation_id:
             session = self.store.get_session(ConversationId(conversation_id))
         else:
-            backend_name = payload.get("backend") or self.config.default_backend
+            default_backend = self.config.default_backend
+            if isinstance(default_backend, str) and default_backend.startswith("@"):
+                default_backend = None
+            backend_name = payload.get("backend") or default_backend
             if not backend_name:
                 raise AsterunError(INVALID_REQUEST, "用 session_id 续接时需要 backend")
             found = self.store.find_session_by_native(str(backend_name), session_id)
@@ -1223,8 +1291,17 @@ class Application:
             self._event(run.id, EventType.HANDOFF_RESUMED, "core", {"orchestration_owner": "core"})
             run = self.store.get_run(run.id)
         self.store.save_task(task)
+        if action == "resume" and run is not None and run.status in TERMINAL_RUN_STATUSES:
+            native = run.native if isinstance(run.native, dict) else {}
+            if native.get("segment") and not native.get("segment_end"):
+                try:
+                    from asterun.context_budget.segment import continue_segment
+                    continue_segment(self, self.store.get_task(task.id), self.store.get_run(run.id))
+                except Exception:
+                    pass
         self._drain_queue()
-        run = self.store.get_run(run.id) if run is not None else None
+        task = self.store.get_task(task.id)
+        run = self.store.get_run(task.current_run_id) if task.current_run_id else None
         return ok(
             {
                 "task": task.to_dict(),
@@ -1801,6 +1878,7 @@ class Application:
             self.admission = AdmissionService(self)
             from asterun.plugins.management import sync_runtime_latches
             sync_runtime_latches(self)
+        self._bind_quota_hook()
         self.scheduler = Scheduler(self.config.scheduler)
         self._restore_scheduler()
         self.control
@@ -1845,7 +1923,17 @@ class Application:
             raise AsterunError(CAPABILITY_UNSUPPORTED, "v2 固定执行计划尚未绑定变换后投递，不能启用实验投递变换")
         from asterun.context_transition import guard as guard_context
         guard_context(self, task, run)
+        from asterun.context_budget.segment import plan as plan_segment
+        segment = plan_segment(self, task, run)
+        if segment is not None:
+            run.native["segment"] = segment
+        from asterun.context_budget.segment import guard_continuation
+        guard_continuation(self, task, run)
         dispatch_text = build_dispatch(self, task, run)
+        segment_plan = run.native.get("segment")
+        if isinstance(segment_plan, dict) and segment_plan.get("trigger") == "marker":
+            from asterun.context_budget.segment import MARKER
+            dispatch_text += "\n分段约定：如果任务尚未完成且上下文已经很长，请在回复最后单独一行输出 " + MARKER + "；任务完成时不要输出该行。agy 不得使用子代理。"
         if run.native.get("external_repair_target"):
             from asterun.quality import snapshot
             bound = run.native["external_repair_target"]
@@ -1853,6 +1941,9 @@ class Application:
                                   bound["target_paths"], state_dir=self.state_dir)
             if current["hash"] != bound["target_hash"]:
                 raise AsterunError(REVISION_CONFLICT, "修复排队期间所选目标改变，未派发后端")
+        from asterun.config_v2 import context_budget_settings
+        if context_budget_settings(self.config)["mode"] == "enforce" and not hasattr(self.store, "_conn"):
+            raise AsterunError("BUDGET_UNKNOWN", "context_budget.mode=enforce 需要 SQLite 状态目录（--state-dir）；未派发")
         if self.admission is not None:
             plan = self.admission.guard_run(run.id.value)
             from asterun.connections.admission import input_digest
@@ -1873,12 +1964,26 @@ class Application:
             raise backend.unavailable_error()
         from asterun.grok_quota import guard as guard_grok_quota, scopes as grok_quota_scopes
         guard_grok_quota(self, backend_name)
-        if backend.config.kind == "grok":
-            run.native["grok_quota_scopes"] = grok_quota_scopes(self, backend_name)
+        quota_scopes = grok_quota_scopes(self, backend_name)
+        if quota_scopes:
+            run.native["quota_latch_scopes"] = quota_scopes
+            if backend.config.kind == "grok":
+                run.native["grok_quota_scopes"] = quota_scopes
         from asterun.dependencies import bind as bind_dependencies
         bind_dependencies(self, task, run)
         from asterun.checkpoints import before_dispatch
         before_dispatch(self, task, run)
+        from asterun.config_v2 import context_budget_settings
+        if context_budget_settings(self.config)["mode"] == "enforce":
+            if not hasattr(self.store, "_conn"):
+                raise AsterunError("BUDGET_UNKNOWN", "context_budget.mode=enforce 需要 SQLite 状态目录（--state-dir）；未派发")
+            from asterun.context_budget.ledger import guard_dispatch as guard_context_budget
+            try:
+                guard_context_budget(self, run)
+            except AsterunError as exc:
+                if exc.code == "BUDGET_EXHAUSTED":
+                    _record_budget_capsule(self, task, run)
+                raise
         self._assign_slot(run, held=True)
         self._set_run(run, RunStatus.DISPATCHING)
         self._event(run.id, EventType.RUN_DISPATCHING, "core", {"backend": backend_name})
@@ -1888,11 +1993,52 @@ class Application:
         native = {"backend_session_id": session.backend_session_id.value if session and session.backend_session_id else None,
                   "turn_id": session.latest_turn_id if session else None,
                   "asterun_identity": {"account": self.account_ref.value, "runtime": self.runtime_ref.value}}
+        if run.native.get("segment"):
+            segment_max_turns = run.native["segment"]["max_turns"]
+            if type(segment_max_turns) is int:
+                native["segment_max_turns"] = segment_max_turns
+        if run.native.get("segment_resume") == "new_session":
+            native["backend_session_id"] = None
+            native["turn_id"] = None
+            native.pop("thread_id", None)
+        elif run.native.get("segment_resume") == "resume":
+            native.update(_segment_session_native(self.store, run))
         if run.native.get("context_transition"):
             transition = run.native["context_transition"]
             native.update(transition["source_native"])
             native["context_transition"] = transition
-        if self.executor is not None and backend.config.kind != "fake":
+        from asterun.context_budget.segment import _KIND_ALIASES
+        from asterun.grok_profile import CODE_PROFILE
+        segment_kind = _KIND_ALIASES.get(backend.config.kind, backend.config.kind)
+        # 与下面选择派发方式的条件相同。同步路径不把 native 交给 dispatch 时，
+        # CodexBackend.dispatch 不接收 native，总会新建线程。
+        background_dispatch = self.executor is not None and backend.config.kind != "fake"
+        sync_grok_code_stream = (
+            not background_dispatch
+            and run.role != "review"
+            and not task.capability
+            and hasattr(backend, "dispatch_stream")
+            and backend.config.kind == "grok"
+            and getattr(backend, "execution_profile", None) == CODE_PROFILE
+        )
+        sync_plain_dispatch = not background_dispatch and not task.capability and not sync_grok_code_stream
+        sync_dispatch_omits_native = sync_plain_dispatch and not (
+            getattr(backend, "accepts_native_context", False) and run.role != "review"
+        )
+        executor_plain_dispatch = (
+            background_dispatch
+            and reader is None
+            and not task.capability
+            and run.role != "review"
+            and not hasattr(backend, "dispatch_stream")
+        )
+        dispatch_omits_native = sync_dispatch_omits_native or executor_plain_dispatch
+        if (run.native.get("segment") and segment_kind == "codex"
+                and (native.get("backend_session_id") is None or dispatch_omits_native)):
+            # 新开线程时 thread_cumulative 才等于本段用量。派发前落盘，结果合并不得覆盖。
+            run.native = {**run.native, "segment_fresh_thread": True}
+            self.store.save_run(run)
+        if background_dispatch:
             if reader is not None:
                 native["read_scope_binding"] = task.read_scope
             cwd = self.config.get_workspace(task.workspace).root
@@ -1906,7 +2052,7 @@ class Application:
                                                               cwd=cwd, publish=publish, stopping=stopping)
                 if run.role == "review":
                     return backend.dispatch_review(task.id, run.id, task.script, run.prompt, cwd=cwd)
-                if hasattr(backend, "dispatch_stream"):
+                if not executor_plain_dispatch:
                     return backend.dispatch_stream(task.id, run.id, task.script, dispatch_text, cwd=cwd,
                                                    native=native, publish=publish, stopping=stopping)
                 return backend.dispatch(task.id, run.id, task.script, dispatch_text, cwd=cwd)
@@ -1916,14 +2062,11 @@ class Application:
                       "operation": operation.to_dict(), "session": self._session_for_task(task)}),
                       ids={"task_id": task.id.value, "run_id": run.id.value,
                            "operation_id": operation.id.value, **_conversation_ids(task)})
-        from asterun.grok_profile import CODE_PROFILE
         try:
             if task.capability:
                 result = backend.dispatch_capability(task.id, run.id, task.capability, task.capability_input,
                                                       cwd=self.config.get_workspace(task.workspace).root)
-            elif (run.role != "review" and not task.capability and hasattr(backend, "dispatch_stream")
-                  and backend.config.kind == "grok"
-                  and getattr(backend, "execution_profile", None) == CODE_PROFILE):
+            elif sync_grok_code_stream:
                 from threading import Event
 
                 def persist(snapshot):
@@ -1935,11 +2078,11 @@ class Application:
                     task.id, run.id, task.script, dispatch_text,
                     cwd=self.config.get_workspace(task.workspace).root,
                     native=native, publish=persist, stopping=Event())
-            else:
+            elif sync_plain_dispatch:
                 dispatch = backend.dispatch_review if run.role == "review" else backend.dispatch
                 result = dispatch(task.id, run.id, task.script, dispatch_text,
                                           cwd=self.config.get_workspace(task.workspace).root,
-                                          **({"native": native} if getattr(backend, "accepts_native_context", False) and run.role != "review" else {}))
+                                          **({} if sync_dispatch_omits_native else {"native": native}))
         except Exception as error:
             # 调用已经发生：即使是本地抛出的异常，也不能推断远端没有执行。
             with self._state_transaction():
@@ -2257,6 +2400,12 @@ class Application:
         run = outcome["run"]
         self._project_slot(run)
         if run.status in TERMINAL_RUN_STATUSES:
+            if isinstance(run.native, dict) and run.native.get("segment"):
+                try:
+                    from asterun.context_budget.segment import continue_segment
+                    continue_segment(self, self.store.get_task(run.task_id), self.store.get_run(run.id))
+                except Exception:
+                    pass
             self._drain_queue()
         if outcome["has_presentation"]:
             self._persist_native_presentation(run, outcome["presentation"])
@@ -2352,8 +2501,9 @@ class Application:
                     key: value for key, value in native.items()
                     if key not in {
                         "checkpoint", "local_checks", "stage_attestations", "dependency_bindings",
-                        "payload_manifests", "desktop_project", UNAPPLIED_RESULT_NATIVE_KEY,
-                        UNAPPLIED_APPROVAL_NATIVE_KEY, SLOT_RELEASED_NATIVE_KEY, SLOT_HELD_NATIVE_KEY,
+                        "payload_manifests", "desktop_project", "segment_fresh_thread",
+                        UNAPPLIED_RESULT_NATIVE_KEY, UNAPPLIED_APPROVAL_NATIVE_KEY,
+                        SLOT_RELEASED_NATIVE_KEY, SLOT_HELD_NATIVE_KEY,
                     }
                 })
             for raw in result.get("events") or []:
@@ -2466,7 +2616,16 @@ class Application:
             for task_id in self.store.list_task_ids():
                 task = self.store.get_task(task_id)
                 run = self.store.get_run(task.current_run_id) if task.current_run_id else None
-                if run is None or run.status in TERMINAL_RUN_STATUSES:
+                if run is None:
+                    continue
+                if run.status in TERMINAL_RUN_STATUSES:
+                    if (isinstance(run.native, dict) and run.native.get("segment")
+                            and not run.native.get("segment_end")):
+                        try:
+                            from asterun.context_budget.segment import continue_segment
+                            continue_segment(self, task, run)
+                        except Exception:
+                            pass
                     continue
                 self._apply_retained_result_if_any(run)
                 run = self.store.get_run(run.id)
@@ -2617,6 +2776,26 @@ class Application:
                 details={"file": self.config.revision, "applied": applied},
             )
 
+    def _pinned_submit_backend(self, payload, workspace_alias):
+        """幂等重放与会话续接沿用已绑定后端，不重新选路，也不做付费保护。"""
+        key = payload.get("idempotency_key")
+        if key:
+            finder = getattr(self.store, "find_operation_by_key", None)
+            existing = finder(self.principal.subject_id, "task.submit", workspace_alias, str(key)) if finder else None
+            if existing is not None and existing.task_id is not None:
+                return self.store.get_task(existing.task_id).backend.value
+        raw_id = str(payload.get("conversation_id") or "")
+        if raw_id:
+            try:
+                session = self.store.get_session(ConversationId(raw_id))
+            except AsterunError as error:
+                if error.code != NOT_FOUND:
+                    raise
+            else:
+                backend = getattr(session, "backend", None)
+                return getattr(backend, "value", backend) if backend else None
+        return None
+
     def _resolve_submit_session(
         self,
         payload: dict[str, Any],
@@ -2723,6 +2902,11 @@ class Application:
             return None
 
     def _backend(self, name: str | None) -> Backend:
+        if not name:
+            default_backend = self.config.default_backend
+            if isinstance(default_backend, str) and default_backend.startswith("@"):
+                from asterun.quota.routing_entry import resolve_backend
+                name = resolve_backend(self, None)[0]
         conf = self.config.get_backend(name)
         try:
             return self.backends[conf.name]
@@ -2762,6 +2946,29 @@ class Application:
         )
         return self.store.append_event(run_id, event)
 
+    def _attach_antigravity_provider_failure(self, run: Run) -> None:
+        """用已经写在 run.summary 上的终态文本做 agy 429 分类。不复制原文。"""
+        native = run.native
+        if not isinstance(native, dict) or native.get("provider_failure"):
+            return
+        if str(run.status) != "failed" or run.error_code != "ANTIGRAVITY_RUN_FAILED":
+            return
+        backend_name = getattr(getattr(run, "backend", None), "value", None)
+        if not isinstance(backend_name, str):
+            return
+        if self.config.get_backend(backend_name).kind != "antigravity":
+            return
+        from asterun.quota_latch import classify_agy_error
+        classified = classify_agy_error("ERROR", run.summary or "")
+        if not isinstance(classified, dict):
+            return
+        native["provider_failure"] = {
+            "kind": classified["kind"],
+            "status_code": classified["status_code"],
+            "source": classified["source"],
+            "provider": classified["provider"],
+        }
+
     def _apply_backend_result(self, run: Run, result: dict[str, Any], source: str) -> None:
         external = self.admission is not None and hasattr(self.backends[run.backend.value], "bind_execution")
         if external:
@@ -2788,6 +2995,7 @@ class Application:
         if result.get("native"):
             run.native.update({k: v for k, v in result["native"].items() if k not in {
                 "checkpoint", "local_checks", "stage_attestations", "dependency_bindings", "payload_manifests",
+                "segment_fresh_thread",
                 * _NATIVE_SLOT_KEYS, UNAPPLIED_RESULT_NATIVE_KEY, UNAPPLIED_APPROVAL_NATIVE_KEY,
             }})
         for raw in result.get("events") or []:
@@ -2799,12 +3007,21 @@ class Application:
         terminated = bool(result.get("terminated"))
         if terminated and status == RunStatus.CANCELLED:
             self._event(run.id, EventType.RUN_TERMINATED, source, {"status": str(status)})
+        summary = str(result.get("summary") or run.summary)
+        error_code = result.get("error_code")
+        run.status = status
+        run.error_code = error_code
+        run.summary = summary
+        try:
+            self._attach_antigravity_provider_failure(run)
+        except Exception:
+            pass
         self._set_run(
             run,
             status,
             terminated=terminated,
-            error_code=result.get("error_code"),
-            summary=str(result.get("summary") or run.summary),
+            error_code=error_code,
+            summary=summary,
         )
 
     def _task_view(self, task: Task, run: Run | None, extra: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -2826,7 +3043,47 @@ class Application:
         if run:
             pending = self.store.find_pending_approval(run.id)
             view["approval"] = pending.to_dict() if pending else None
+        from asterun.quota.routing_entry import view as routing_decision
+
+        decision = routing_decision(self, task.id.value)
+        if decision is not None:
+            view["routing"] = decision
+        try:
+            if hasattr(self.store, "_conn"):
+                from asterun.context_budget.observe import latest_for_task
+
+                row = latest_for_task(self.store._conn, task.id.value)
+                if row is not None:
+                    view["context_budget"] = row
+        except Exception:
+            pass
+        try:
+            if hasattr(self.store, "_conn"):
+                from asterun.config_v2 import context_budget_settings
+                if context_budget_settings(self.config)["mode"] == "enforce":
+                    from asterun.context_budget.ledger import budget_view
+                    budget = budget_view(self.store._conn, task.id.value)
+                    if budget is not None:
+                        view.setdefault("context_budget", {})
+                        if isinstance(view["context_budget"], dict):
+                            view["context_budget"]["budget"] = budget
+        except Exception:
+            pass
         return view
+
+
+def _record_budget_capsule(app, task, rejected_run) -> None:
+    """预算准入拒绝时为上一个终态 run 生成 budget_soft 胶囊。失败不影响拒绝本身。"""
+    try:
+        from asterun.capsule.store import record_capsule
+        runs = [
+            item for item in app.store.list_runs(task.id)
+            if item.status in TERMINAL_RUN_STATUSES and item.id != rejected_run.id
+        ]
+        if runs:
+            record_capsule(app, task, runs[-1], trigger="budget_soft")
+    except Exception:
+        return
 
 
 def _conversation_ids(task: Task) -> dict[str, str]:
