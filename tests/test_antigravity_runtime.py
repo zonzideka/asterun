@@ -38,6 +38,9 @@ def test_native_success_after_input_and_stdin_eof(tmp_path, mode):
     assert native["init_evidence"] == {"cwd": str(tmp_path.resolve()), "model": "fixture-model", "permission_mode": "request-review"}
     assert native["num_turns"] == 1
     assert native[DISPATCH_RECEIPT_KEY]["process_exit_code"] == 0
+    assert native["policy_denied_count"] == 0
+    assert native["policy_denied_tools"] == []
+    assert native["soft_denied_tools"] == []
     assert native[DISPATCH_RECEIPT_KEY]["process_started"] is True
     assert any(update["native"][DISPATCH_RECEIPT_KEY]["prompt_attempted"] for update in updates)
     assert len(updates) <= 3
@@ -61,6 +64,19 @@ def test_errors_and_soft_denial_cannot_report_success(tmp_path, mode):
         assert result["native"][DISPATCH_RECEIPT_KEY]["process_exit_code"] == 0
     if "soft_deny" in mode:
         assert result["native"]["soft_denied"] is True
+        assert result["error_code"] == "ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED"
+    elif mode in {"error", "INVALID"}:
+        assert result["error_code"] == "ANTIGRAVITY_RUN_FAILED"
+    else:
+        assert result["error_code"] == "ANTIGRAVITY_RUN_INCOMPLETE"
+
+
+def test_os_permission_denied_without_review_evidence_is_incomplete(tmp_path):
+    result, _ = execute(tmp_path, "stderr_eacces")
+    assert result["status"] == "failed" and result["terminated"] is True
+    assert result["error_code"] == "ANTIGRAVITY_RUN_INCOMPLETE"
+    assert result["native"]["soft_denied"] is True
+    assert result["summary"] == "fixture response"
 
 
 def test_pre_session_native_error_can_be_confirmed(tmp_path):
@@ -295,3 +311,158 @@ def test_runtime_without_group_ownership_never_confirms_exit(tmp_path, monkeypat
     result, _ = execute(tmp_path, "subagent_no_result", runtime=AntigravityRuntime(timeout=20))
     assert result["status"] == "pending_reconcile"
     assert result["native"][DISPATCH_RECEIPT_KEY]["failure_type"] == "subagent_process_alive"
+
+
+def test_policy_hard_denial_with_final_answer_succeeds(tmp_path):
+    result, _ = execute(tmp_path, "policy_denied_recovered")
+    assert result["status"] == "succeeded" and result["terminated"] is True
+    assert "error_code" not in result
+    assert result["summary"] == "final plan"
+    native = result["native"]
+    assert native["policy_denied_count"] == 1
+    assert native["policy_denied_tools"] == ["run_command"]
+    assert native["tool_error_count"] == 1
+    assert native["unexplained_error_count"] == 0
+    assert "private diagnostic" not in json.dumps(result)
+
+
+def test_policy_hard_denial_without_answer_is_incomplete(tmp_path):
+    result, _ = execute(tmp_path, "policy_denied_no_answer")
+    assert result["status"] == "failed" and result["terminated"] is True
+    assert result["error_code"] == "ANTIGRAVITY_RUN_INCOMPLETE"
+    assert result["native"][DISPATCH_RECEIPT_KEY]["failure_type"] == "no_final_response"
+    assert result["summary"] == "Antigravity 的工具调用被权限策略拒绝后没有产出最终结果"
+    assert "private diagnostic" not in json.dumps(result)
+
+
+def test_policy_denial_plus_other_tool_error_is_incomplete(tmp_path):
+    result, _ = execute(tmp_path, "policy_denied_plus_error")
+    assert result["status"] == "failed" and result["terminated"] is True
+    assert result["error_code"] == "ANTIGRAVITY_RUN_INCOMPLETE"
+    assert result["native"][DISPATCH_RECEIPT_KEY]["failure_type"] is None
+    assert result["summary"] == "final plan"
+    assert "private diagnostic" not in json.dumps(result)
+
+
+def test_soft_deny_review_names_the_tool_and_keeps_partial_text(tmp_path):
+    result, _ = execute(tmp_path, "soft_deny_review")
+    assert result["status"] == "failed" and result["terminated"] is True
+    assert result["error_code"] == "ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED"
+    assert result["native"]["soft_denied"] is True
+    assert result["native"]["soft_denied_tools"] == ["ReadFile"]
+    assert result["native"][DISPATCH_RECEIPT_KEY]["failure_type"] == "soft_denied_review"
+    assert "ReadFile" in result["summary"] and "partial" in result["summary"]
+
+
+def test_soft_deny_with_tool_error_stays_review_required(tmp_path):
+    result, _ = execute(tmp_path, "soft_deny_with_tool_error")
+    assert result["status"] == "failed" and result["terminated"] is True
+    assert result["error_code"] == "ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED"
+    assert "另有 1 个" in result["summary"]
+    assert result["summary"].index("另有 1 个") < result["summary"].index("partial")
+    assert result["native"]["unexplained_error_count"] == 1
+    assert result["native"][DISPATCH_RECEIPT_KEY]["failure_type"] == "soft_denied_review"
+    assert "private diagnostic" not in json.dumps(result)
+
+
+def test_policy_denial_scan_ignores_non_string_error_type():
+    state = module._Run("run_regex")
+    state.init_seen = True
+    state.session_id = "fixture-conversation-123"
+    full = (
+        'permission check failed for unsandboxed "private diagnostic": '
+        "Permission denied for unsandboxed(private diagnostic). "
+        "Matches user-configured deny rule."
+    )
+
+    def tool_error(index, error, name="run_command"):
+        line = json.dumps({"event": "step_update", "step_update": {
+            "conversation_id": "fixture-conversation-123", "step_index": index,
+            "state": "ERROR", "step_type": "tool",
+            "tool_info": {"name": name, "error": error},
+        }}).encode()
+        assert AntigravityRuntime._event(state, line) is False
+
+    tool_error(0, {"type": 7, "flag": True, "message": None,
+                   "detail": {"message": "permission check failed"}})
+    assert state.policy_denials == set()
+    tool_error(1, {"type": ["TOOL_ERROR"], "message": full})
+    assert state.policy_denials == set()
+    tool_error(2, {"type": "TOOL_ERROR", "message": "permission check failed for unsandboxed"})
+    assert state.policy_denials == set()
+    tool_error(3, {"type": "TOOL_ERROR", "message": full})
+    assert state.policy_denials == {3}
+    assert state.policy_denied_tools == {"run_command"}
+    tool_error(4, {"type": {"code": 1}, "message": "private diagnostic"})
+    assert 4 not in state.policy_denials
+
+
+@pytest.mark.parametrize("mode", [
+    "policy_lookalike_path", "policy_denied_extra_field", "policy_denied_prefix_suffix",
+])
+def test_policy_lookalikes_stay_incomplete(tmp_path, mode):
+    result, _ = execute(tmp_path, mode)
+    assert result["status"] == "failed" and result["terminated"] is True
+    assert result["error_code"] == "ANTIGRAVITY_RUN_INCOMPLETE"
+    assert result["native"]["policy_denied_count"] == 0
+    assert result["native"]["policy_denied_tools"] == []
+    assert result["summary"] == "final plan"
+    public = json.dumps(result)
+    assert "permission check failed" not in public
+    assert "private diagnostic" not in public
+    assert "/workspace/permission check failed/input.txt" not in public
+
+
+def test_unknown_tool_names_publish_only_other(tmp_path):
+    secret = "PRIVATE_CUSTOMER_TOKEN_123"
+    denied, _ = execute(tmp_path, "policy_denied_secret_tool")
+    assert denied["status"] == "succeeded" and denied["terminated"] is True
+    assert denied["native"]["policy_denied_tools"] == ["other"]
+    assert secret not in json.dumps(denied)
+    assert secret not in denied["summary"]
+    soft, _ = execute(tmp_path, "soft_deny_secret_tool")
+    assert soft["status"] == "failed" and soft["terminated"] is True
+    assert soft["error_code"] == "ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED"
+    assert soft["native"]["soft_denied_tools"] == ["other"]
+    assert "other" in soft["summary"]
+    assert secret not in json.dumps(soft)
+    assert secret not in soft["summary"]
+
+
+@pytest.mark.parametrize("message,expected", [
+    (
+        'permission check failed for unsandboxed "grep -n -A30 -i \\"T59\\" /workspace/x.md | head -80": '
+        'Permission denied for unsandboxed(grep -n -A30 -i "T59" /workspace/x.md | head -80). '
+        "Matches user-configured deny rule.",
+        True,
+    ),
+    (
+        'permission check failed for unsandboxed "ls": Permission denied for unsandboxed(ls). '
+        "Matches user-configured deny rule.",
+        True,
+    ),
+    (
+        'permission check failed for unsandboxed "ls "extra": '
+        'Permission denied for unsandboxed(ls "extra). Matches user-configured deny rule. '
+        "Another sentence.",
+        False,
+    ),
+    (
+        'permission check failed for unsandboxed "ls\\": '
+        "Permission denied for unsandboxed(ls). Matches user-configured deny rule.",
+        False,
+    ),
+    (
+        'permission check failed for unsandboxed "ls\rwhoami": '
+        "Permission denied for unsandboxed(ls). Matches user-configured deny rule.",
+        False,
+    ),
+    (
+        'permission check failed for unsandboxed "ls": '
+        "Permission denied for unsandboxed(ls\r\nwhoami). Matches user-configured deny rule.",
+        False,
+    ),
+    ("File not found: /workspace/permission check failed/input.txt", False),
+])
+def test_is_policy_denial_requires_escaped_quotes_inside_the_command(message, expected):
+    assert module._is_policy_denial({"type": "TOOL_ERROR", "message": message}) is expected

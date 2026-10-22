@@ -57,6 +57,19 @@ def result(status="SUCCESS", response="fixture response", **values):
                     "cache_read_tokens": 0, "total_tokens": 10}, **values}})
 
 
+_POLICY_DENY_MESSAGE = (
+    'permission check failed for unsandboxed "private diagnostic": '
+    "Permission denied for unsandboxed(private diagnostic). "
+    "Matches user-configured deny rule."
+)
+
+
+def policy_denied_command():
+    step(0, "tool", "ACTIVE", tool_info={"name": "run_command"})
+    step(0, "tool", "ERROR", tool_info={"name": "run_command", "error": {
+        "type": "TOOL_ERROR", "message": _POLICY_DENY_MESSAGE}})
+
+
 if MODE == "before_input":
     init()
 if MODE == "no_input":
@@ -165,6 +178,9 @@ elif MODE in {"soft_deny", "split_soft_deny", "benign_stderr"}:
     else:
         os.write(2, b"private diagnostic\n" if MODE == "benign_stderr" else b"tool run_command requires approval: private diagnostic\n")
     result()
+elif MODE == "stderr_eacces":
+    os.write(2, b"open /x: permission denied\n")
+    result()
 elif MODE == "subagent":
     step(0, "tool", "ACTIVE", tool_name="invoke_subagent", tool_info={"name": "invoke_subagent"})
     step(0, "subagent", "DONE", tool_name="invoke_subagent")
@@ -215,6 +231,54 @@ elif MODE == "large_response":
 elif MODE == "result_no_exit":
     result("INTERRUPTED", "")
     time.sleep(30)
+elif MODE == "policy_denied_recovered":
+    policy_denied_command()
+    step(1, "tool", "DONE", tool_info={"name": "read_file"})
+    step(2, "agent_response", "DONE", text_delta="final plan")
+    result(response="final plan")
+elif MODE == "policy_denied_no_answer":
+    policy_denied_command()
+    result(response="")
+elif MODE == "policy_denied_plus_error":
+    policy_denied_command()
+    step(1, "tool", "ERROR", tool_info={"name": "read_file", "error": {
+        "type": "TOOL_ERROR", "message": "private diagnostic"}})
+    result(response="final plan")
+elif MODE == "soft_deny_review":
+    step(0, "tool", "DONE", tool_info={"name": "read_file"})
+    os.write(2, b'Print mode: soft-denying tool confirmation "ReadFile" at step 6\n')
+    result(response="partial")
+elif MODE == "soft_deny_with_tool_error":
+    step(0, "tool", "ERROR", tool_info={"name": "read_file", "error": {
+        "type": "TOOL_ERROR", "message": "private diagnostic"}})
+    os.write(2, b'Print mode: soft-denying tool confirmation "ReadFile" at step 6\n')
+    result(response="partial")
+elif MODE == "policy_lookalike_path":
+    step(0, "tool", "ERROR", tool_info={"name": "read_file", "error": {
+        "type": "TOOL_ERROR",
+        "message": "File not found: /workspace/permission check failed/input.txt"}})
+    step(1, "agent_response", "DONE", text_delta="final plan")
+    result(response="final plan")
+elif MODE == "policy_denied_extra_field":
+    step(0, "tool", "ERROR", tool_info={"name": "run_command", "error": {
+        "type": "TOOL_ERROR", "message": _POLICY_DENY_MESSAGE,
+        "execution_error": "private diagnostic"}})
+    step(1, "agent_response", "DONE", text_delta="final plan")
+    result(response="final plan")
+elif MODE == "policy_denied_prefix_suffix":
+    step(0, "tool", "ERROR", tool_info={"name": "run_command", "error": {
+        "type": "TOOL_ERROR", "message": "note: " + _POLICY_DENY_MESSAGE + " trailing"}})
+    step(1, "agent_response", "DONE", text_delta="final plan")
+    result(response="final plan")
+elif MODE == "policy_denied_secret_tool":
+    step(0, "tool", "ERROR", tool_info={"name": "PRIVATE_CUSTOMER_TOKEN_123", "error": {
+        "type": "TOOL_ERROR", "message": _POLICY_DENY_MESSAGE}})
+    step(1, "agent_response", "DONE", text_delta="final plan")
+    result(response="final plan")
+elif MODE == "soft_deny_secret_tool":
+    step(0, "tool", "DONE", tool_info={"name": "PRIVATE_CUSTOMER_TOKEN_123"})
+    os.write(2, b'Print mode: soft-denying tool confirmation "PRIVATE_CUSTOMER_TOKEN_123" at step 6\n')
+    result(response="partial")
 else:
     step(0, "user_input", text_delta=message["message"]["content"])
     step(1, "thinking", text_delta="private reasoning")

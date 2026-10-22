@@ -112,7 +112,7 @@ def submit(app):
     return result
 
 
-SOURCE_COMMIT = "0c7b8f8b60585e01073cb031cfa79f68780e54c8"
+SOURCE_COMMIT = "a549b0232c11aee842f2b1ec9b85681ab98fa766"
 
 
 def test_verify_source_covers_every_vendor_file_without_assert(tmp_path):
@@ -166,6 +166,8 @@ def test_standalone_manifest_describe_and_no_native_discovery(antigravity_instal
     ("malformed", "pending_reconcile", "native_result_unknown"), ("unsafe_permission", "pending_reconcile", "native_result_unknown"),
     ("id_mismatch", "pending_reconcile", "native_result_unknown"), ("active_tool", "pending_reconcile", "native_result_unknown"),
     ("model_mismatch", "pending_reconcile", "native_result_unknown"), ("CANCELED", "cancelled", "native_terminal"),
+    ("policy_denied_recovered", "succeeded", "native_terminal"),
+    ("soft_deny_review", "failed", "tool_permission_denied"),
 ])
 def test_native_protocol_terminals_and_failure_categories(antigravity_installation, isolated_env, workspace_root, mode, status, category):
     native = setup_native(isolated_env, workspace_root, antigravity_installation, mode)

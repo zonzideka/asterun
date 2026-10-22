@@ -19,6 +19,8 @@ from asterun.errors import BACKEND_UNAVAILABLE, REMOTE_STATE_UNKNOWN
 from asterun.ids import RunId
 
 DISPATCH_RECEIPT_KEY = "asterun.antigravity_dispatch_v1"
+ANTIGRAVITY_RUN_INCOMPLETE = "ANTIGRAVITY_RUN_INCOMPLETE"
+ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED = "ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED"
 MAX_FRAME_BYTES = 256 * 1024
 MAX_STDOUT_BYTES = 4 * 1024 * 1024
 MAX_STDERR_BYTES = 256 * 1024
@@ -34,11 +36,32 @@ PROGRESS_INTERVAL = 1.0
 USAGE_KEYS = {"input_tokens", "output_tokens", "thinking_tokens", "cache_read_tokens", "total_tokens"}
 # These are diagnostics, never permission grants. Keep a rolling suffix so a notice
 # split across reads cannot turn a denied tool into a successful execution.
+# Print mode logs "soft-denying", not only "soft-denied", then closes the turn.
 _DENIED = re.compile(
-    r"soft[- ]denied|permission (?:was )?denied|(?:tool|action|command)[^\n]{0,100}"
+    r"soft[- ]denied|soft[- ]denying|permission (?:was )?denied|(?:tool|action|command)[^\n]{0,100}"
     r"(?:requires? approval|requires? permission|not allowed|denied)|"
     r"(?:cannot|can't|unable to)[^\n]{0,80}(?:ask|obtain)[^\n]{0,80}(?:approval|permission)",
     re.IGNORECASE,
+)
+# 普通 OS “permission denied” 只算宽泛信号；复核码只认软拒绝或审批措辞。
+_REVIEW_EVIDENCE = re.compile(r"soft[- ]den(?:ied|ying)|requires? approval", re.IGNORECASE)
+# Profile deny rules are a hard refusal only for agy's whole native sentence.
+# A substring, an extra field, or a non-string value is an ordinary tool error.
+# Never copy the tool error text into a public result.
+_POLICY_DENIED = re.compile(
+    r'permission check failed for (unsandboxed|command|read_file|write_file|read_url|execute_url|mcp) "(?:[^"\\\r\n]|\\[^\r\n]){0,4096}": Permission denied for \1\([^\r\n]{0,4096}\)\. Matches user-configured deny rule\.'
+)
+_POLICY_DENIED_KEYS = frozenset({"type", "message"})
+_KNOWN_TOOLS = frozenset({
+    "run_command", "read_file", "write_file", "view_file", "list_dir", "grep_search",
+    "find_by_name", "codebase_search", "read_url_content", "view_content_chunk",
+    "search_web", "read_url", "execute_url", "mcp", "replace_file_content",
+    "multi_replace_file_content", "write_to_file", "ReadFile", "WriteFile",
+    "RunCommand", "ReadUrl", "ExecuteUrl", "Mcp", "ViewFile", "ListDir",
+    "GrepSearch", "FindByName",
+})
+_SOFT_DENIED_TOOL = re.compile(
+    r'soft-denying tool confirmation "([A-Za-z_][A-Za-z0-9_]{0,63})"'
 )
 # agy 真实额度错误格式出现后在此补充
 AGY_QUOTA_PATTERNS: tuple[re.Pattern[str], ...] = ()
@@ -75,6 +98,24 @@ def _provider_failure(classified: dict) -> dict[str, Any]:
 
 class _ProtocolError(Exception):
     pass
+
+
+def _public_tool_name(value: Any) -> str:
+    if isinstance(value, str) and value in _KNOWN_TOOLS:
+        return value
+    return "other"
+
+
+def _is_policy_denial(error_info: Any) -> bool:
+    """True only for agy's native deny sentence in a {type?, message} object."""
+    if not isinstance(error_info, dict) or not set(error_info).issubset(_POLICY_DENIED_KEYS):
+        return False
+    message = error_info.get("message")
+    if not isinstance(message, str) or _POLICY_DENIED.fullmatch(message) is None:
+        return False
+    if "type" in error_info and not isinstance(error_info["type"], str):
+        return False
+    return True
 
 
 def _bounded_text(value: str) -> str:
@@ -118,6 +159,10 @@ class _Run:
     step_states: dict[int, str] = field(default_factory=dict)
     step_types: dict[int, str] = field(default_factory=dict)
     soft_denied: bool = False
+    review_evidence: bool = False
+    policy_denials: set[int] = field(default_factory=set)
+    policy_denied_tools: set[str] = field(default_factory=set)
+    soft_denied_tools: set[str] = field(default_factory=set)
     text: str = ""
     text_truncated: bool = False
     stdout_bytes: int = 0
@@ -138,8 +183,12 @@ class _Run:
                 "events_seen": self.events_seen,
             },
             "tool_error_count": len(self.tool_errors), "step_error_count": len(self.step_errors),
+            "unexplained_error_count": len((self.tool_errors | self.step_errors) - self.policy_denials),
             "soft_denied": self.soft_denied, "subagent_count": len(self.subagents),
             "summary_truncated": self.text_truncated,
+            "policy_denied_count": len(self.policy_denials),
+            "policy_denied_tools": sorted(self.policy_denied_tools),
+            "soft_denied_tools": sorted(self.soft_denied_tools),
         }
         if self.session_id:
             native["backend_session_id"] = self.session_id
@@ -303,6 +352,11 @@ class AntigravityRuntime:
                     if not isinstance(info["error"], dict):
                         raise _ProtocolError("invalid_tool_error")
                     state.tool_errors.add(index)
+                    error_info = info["error"]
+                    if _is_policy_denial(error_info):
+                        state.policy_denials.add(index)
+                        named = state.step_tools[index] if index in state.step_tools else info.get("name")
+                        state.policy_denied_tools.add(_public_tool_name(named))
             if kind == "tool" and (state.step_tools.get(index) == "invoke_subagent"
                                    or (isinstance(step.get("tool_info"), dict)
                                        and step["tool_info"].get("name") == "invoke_subagent")):
@@ -408,9 +462,30 @@ class AntigravityRuntime:
                 return self._unknown(state)
             if (status == "SUCCESS" and state.session_id and state.proc.returncode == 0
                     and not state.active_tools and all(value in {"DONE", "ERROR"} for value in state.step_states.values())):
-                if state.tool_errors or state.step_errors or state.soft_denied or state.result.get("has_error"):
+                if state.soft_denied and (state.review_evidence or state.soft_denied_tools):
+                    names = ", ".join(sorted(state.soft_denied_tools)) or "未知工具"
+                    summary = (
+                        f"Antigravity 遇到需要人工审批的工具调用（{names}），无人值守模式下被软拒绝，"
+                        "原生 CLI 随即结束本轮，未产出完整结果。请把所需文件放进已授权的读取目录，或调整提示避免该调用后重试。"
+                    )
+                    # 软拒绝直接结束本轮，是提前终止的原因；其它错误只计数，错误码仍为 REVIEW_REQUIRED。
+                    other = (state.tool_errors | state.step_errors) - state.policy_denials
+                    if other:
+                        summary += f"另有 {len(other)} 个与权限无关的工具或步骤错误，修正授权后仍可能失败。"
+                    if state.text:
+                        summary += "\n\n" + state.text
+                    state.failure_type = "soft_denied_review"
                     return self._snapshot(state, status="failed", terminated=True,
-                                          error_code="ANTIGRAVITY_RUN_INCOMPLETE", summary=state.text or "Antigravity 步骤执行失败或权限被拒绝")
+                                          error_code=ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED, summary=summary)
+                if state.soft_denied or state.result.get("has_error") or (state.tool_errors | state.step_errors) - state.policy_denials:
+                    return self._snapshot(state, status="failed", terminated=True,
+                                          error_code=ANTIGRAVITY_RUN_INCOMPLETE,
+                                          summary=state.text or "Antigravity 步骤执行失败或权限被拒绝")
+                if state.policy_denials and not state.text.strip():
+                    state.failure_type = "no_final_response"
+                    return self._snapshot(state, status="failed", terminated=True,
+                                          error_code=ANTIGRAVITY_RUN_INCOMPLETE,
+                                          summary="Antigravity 的工具调用被权限策略拒绝后没有产出最终结果")
                 return self._snapshot(state, status="succeeded", terminated=True)
             state.failure_type = "contradictory_result" if status == "SUCCESS" else "nonterminal_result"
             return self._unknown(state)
@@ -457,7 +532,7 @@ class AntigravityRuntime:
             return self._unknown(state)
         state.failure_type = "subagent_delegated"
         return self._snapshot(state, status="failed", terminated=True,
-                              error_code="ANTIGRAVITY_RUN_INCOMPLETE",
+                              error_code=ANTIGRAVITY_RUN_INCOMPLETE,
                               summary="Antigravity 派出了子代理；Asterun 不接受委派结果，已结束进程。请要求不使用子代理后重试")
 
     @classmethod
@@ -528,7 +603,11 @@ class AntigravityRuntime:
                         if state.stderr_bytes > MAX_STDERR_BYTES:
                             raise _ProtocolError("stderr_limit")
                         diagnostic = stderr_tail + data
-                        state.soft_denied |= bool(_DENIED.search(diagnostic.decode("utf-8", errors="replace")))
+                        decoded = diagnostic.decode("utf-8", errors="replace")
+                        state.soft_denied |= bool(_DENIED.search(decoded))
+                        state.review_evidence |= bool(_REVIEW_EVIDENCE.search(decoded))
+                        state.soft_denied_tools.update(
+                            _public_tool_name(name) for name in _SOFT_DENIED_TOOL.findall(decoded))
                         stderr_tail = diagnostic[-512:]
                         continue
                     state.stdout_bytes += len(data)
