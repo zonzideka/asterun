@@ -8,12 +8,12 @@ Status: alpha (`0.1.0aN` prereleases). The first-release scope is frozen; see [r
 
 ## What it solves
 
-Agent CLIs each have their own sessions, approval prompts, and failure modes, and they stop when the terminal that started them closes. Asterun puts a resident core in front of them:
+Agent CLIs each have their own sessions, approval prompts, and failure modes. Running an agent directly from a terminal can tie task observation and lifecycle management to that terminal. Asterun puts a resident core in front of them:
 
 - Tasks keep running after the caller disconnects. Each task, run, and native session reference is stored in SQLite, so a caller can come back later, watch, or reconcile.
 - Submissions are idempotent. Retrying the same request with the same key in the same idempotency scope returns the existing task. Different input returns `IDEMPOTENCY_CONFLICT`.
 - Unknown outcomes are kept as `pending_reconcile` instead of being reported as success or failure.
-- Approvals, quotas, and permissions are checked by the core before a backend is invoked.
+- The core checks permissions and quota admission before dispatch, and mediates supported native approval requests during execution.
 
 ## Core concepts
 
@@ -82,7 +82,7 @@ Validation status per backend and platform is listed in the [release notes](docs
 ## Security model
 
 - Asterun stores account references. Auth is native login or an explicit API-key reference: local CLI backends use native login, Cursor uses `CURSOR_API_KEY`, and Jules uses `JULES_API_KEY`. Child processes get a filtered environment.
-- The core only accepts configured workspaces as task working directories. Codex defaults to native approval mode `untrusted` with a `workspace-write` sandbox. Grok coding runs within configured workspace and command scopes. The Antigravity profile allows reading only the bound workspace and denies writes, commands, URLs, and MCP tools. The file-access boundary depends on those backend permissions and on separately configured OS isolation.
+- The core only accepts configured workspaces as task working directories. Codex defaults to native approval mode `untrusted` with a `workspace-write` sandbox. Grok coding uses the native workspace sandbox, a fixed tool allowlist, and `dontAsk` permission mode. The Antigravity profile allows reading only the bound workspace and denies writes, commands, URLs, and MCP tools. The file-access boundary depends on those backend permissions and on separately configured OS isolation.
 - Permission prompts are never auto-approved by default. Unattended denials are reported with explicit error codes instead of being counted as success.
 - The core listens on a same-user Unix socket. Callers authenticate through their own channel; cross-host transport is the caller's responsibility.
 - Operating-system isolation is configured separately and is not implied by the permission settings above.
