@@ -112,7 +112,7 @@ def submit(app):
     return result
 
 
-SOURCE_COMMIT = "fb16b80b7ca64ab1083baf381c5d7cf3a0f36df7"
+SOURCE_COMMIT = "aec687ee8036034ba9fa338dad4e02752d93d42d"
 
 
 def test_verify_source_covers_every_vendor_file_without_assert(tmp_path):
