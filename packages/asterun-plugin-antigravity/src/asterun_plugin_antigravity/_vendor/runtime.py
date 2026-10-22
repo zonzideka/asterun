@@ -20,6 +20,15 @@ from .compat import BACKEND_UNAVAILABLE, REMOTE_STATE_UNKNOWN, RunId
 DISPATCH_RECEIPT_KEY = "asterun.antigravity_dispatch_v1"
 ANTIGRAVITY_RUN_INCOMPLETE = "ANTIGRAVITY_RUN_INCOMPLETE"
 ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED = "ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED"
+# Prepended only to the text sent to the CLI. The stored task text and its
+# input hash stay the caller's original. {workspace} is the resolved workspace.
+# Lives here so the built-in backend and the vendored plugin runtime share it.
+READ_ONLY_PREAMBLE = (
+    "[Asterun] This run is read-only. You may only read files under {workspace} with read_file. "
+    "Writing files (including /tmp), running commands or scripts, network/URL access, MCP tools and subagents "
+    "are blocked by policy; do not attempt them, and do not try to list directories (read files by exact path). "
+    "Finish with your complete answer in this turn.\n\n"
+)
 MAX_FRAME_BYTES = 256 * 1024
 MAX_STDOUT_BYTES = 4 * 1024 * 1024
 MAX_STDERR_BYTES = 256 * 1024
@@ -50,9 +59,11 @@ _REVIEW_EVIDENCE = re.compile(r"soft[- ]den(?:ied|ying)|requires? approval", re.
 # Go %q and must unquote to the parenthesized text, which may contain newlines.
 _MAX_DENIAL_MESSAGE = 40000
 _MAX_GO_QUOTE_BODY = 16384
+# Single-byte escapes. \x and octal are raw bytes as well; \u and \U are
+# code points written as UTF-8. See _go_unquote.
 _GO_SIMPLE_ESCAPES = {
-    "\\": "\\", '"': '"', "n": "\n", "t": "\t", "r": "\r",
-    "a": "\a", "b": "\b", "f": "\f", "v": "\v",
+    "\\": 0x5C, '"': 0x22, "n": 0x0A, "t": 0x09, "r": 0x0D,
+    "a": 0x07, "b": 0x08, "f": 0x0C, "v": 0x0B,
 }
 # strconv.Unquote accepts only ASCII hex. int(text, 16) also accepts signs
 # and underscores, which are not hex digits and must be rejected first.
@@ -140,66 +151,94 @@ def _public_tool_name(value: Any) -> str:
 def _go_unquote(body: str) -> str | None:
     """Decode one Go strconv.Unquote body with the surrounding quotes removed.
 
-    Double-quoted Go literals allow backslash, quote, the letters a, b, f, n,
-    r, t and v, exactly two ASCII hex digits (\\x), exactly four (\\u), exactly
-    eight (\\U), and exactly three octal digits whose value is at most 255.
-    \\u and \\U reject surrogates and code points above U+10FFFF. A sign,
-    underscore, or other non-hex digit is invalid. Any invalid escape, bare
-    quote, raw newline or CR, or body longer than 16384 characters yields
-    None. This function does not raise.
+    The result is built as bytes, then decoded as UTF-8. \\xNN and exactly
+    three octal digits append one raw byte (not a Unicode code point), so
+    ``\\xc3\\xa9`` is é. \\u, \\U and literal characters append their UTF-8
+    encoding. Simple escapes append their single byte. \\u and \\U reject
+    surrogates and code points above U+10FFFF. A sign, underscore, or other
+    non-hex digit is invalid. Any invalid escape, bare quote, raw newline or
+    CR, body longer than 16384 characters, or byte string that is not valid
+    UTF-8 yields None. This function does not raise.
     """
-    if not isinstance(body, str) or len(body) > _MAX_GO_QUOTE_BODY:
-        return None
-    out: list[str] = []
-    index = 0
-    limit = len(body)
-    while index < limit:
-        char = body[index]
-        if char in {'"', "\n", "\r"}:
+    try:
+        if not isinstance(body, str) or len(body) > _MAX_GO_QUOTE_BODY:
             return None
-        if char != "\\":
-            out.append(char)
-            index += 1
-            continue
-        if index + 1 >= limit:
+        out = bytearray()
+        index = 0
+        limit = len(body)
+        while index < limit:
+            char = body[index]
+            if char in {'"', "\n", "\r"}:
+                return None
+            if char != "\\":
+                out.extend(char.encode("utf-8"))
+                index += 1
+                continue
+            if index + 1 >= limit:
+                return None
+            escaped = body[index + 1]
+            index += 2
+            simple = _GO_SIMPLE_ESCAPES.get(escaped)
+            if simple is not None:
+                out.append(simple)
+                continue
+            if escaped == "x":
+                end = index + 2
+                if end > limit:
+                    return None
+                hex_digits = body[index:end]
+                if any(digit not in _ASCII_HEX for digit in hex_digits):
+                    return None
+                # Digits were checked, so int() cannot see a sign or underscore.
+                out.append(int(hex_digits, 16))
+                index = end
+                continue
+            if escaped in {"u", "U"}:
+                width = 4 if escaped == "u" else 8
+                end = index + width
+                if end > limit:
+                    return None
+                hex_digits = body[index:end]
+                if any(digit not in _ASCII_HEX for digit in hex_digits):
+                    return None
+                code = int(hex_digits, 16)
+                index = end
+                if code > 0x10FFFF or 0xD800 <= code <= 0xDFFF:
+                    return None
+                out.extend(chr(code).encode("utf-8"))
+                continue
+            if "0" <= escaped <= "7":
+                # strconv.Unquote requires exactly three octal digits, not one or two.
+                end = index + 2
+                if end > limit:
+                    return None
+                second, third = body[index], body[index + 1]
+                if not ("0" <= second <= "7" and "0" <= third <= "7"):
+                    return None
+                value = ((ord(escaped) - 48) << 6) | ((ord(second) - 48) << 3) | (ord(third) - 48)
+                index = end
+                if value > 255:
+                    return None
+                out.append(value)
+                continue
             return None
-        escaped = body[index + 1]
-        index += 2
-        simple = _GO_SIMPLE_ESCAPES.get(escaped)
-        if simple is not None:
-            out.append(simple)
-            continue
-        if escaped in {"x", "u", "U"}:
-            width = {"x": 2, "u": 4, "U": 8}[escaped]
-            end = index + width
-            if end > limit:
-                return None
-            hex_digits = body[index:end]
-            if any(digit not in _ASCII_HEX for digit in hex_digits):
-                return None
-            # Digits were checked, so int() cannot see a sign or underscore.
-            code = int(hex_digits, 16)
-            index = end
-            if code < 0 or code > 0x10FFFF or (escaped != "x" and 0xD800 <= code <= 0xDFFF):
-                return None
-            out.append(chr(code))
-            continue
-        if "0" <= escaped <= "7":
-            # strconv.Unquote requires exactly three octal digits, not one or two.
-            end = index + 2
-            if end > limit:
-                return None
-            second, third = body[index], body[index + 1]
-            if not ("0" <= second <= "7" and "0" <= third <= "7"):
-                return None
-            value = ((ord(escaped) - 48) << 6) | ((ord(second) - 48) << 3) | (ord(third) - 48)
-            index = end
-            if value > 255:
-                return None
-            out.append(chr(value))
-            continue
+        return bytes(out).decode("utf-8")
+    except Exception:
         return None
-    return "".join(out)
+
+
+def _quoted_argument_matches(quoted: str, raw: str) -> bool:
+    """True when unquoting the Go %q body yields raw's UTF-8 bytes.
+
+    Invalid UTF-8 does not match. This function does not raise.
+    """
+    produced = _go_unquote(quoted)
+    if produced is None or not isinstance(raw, str):
+        return False
+    try:
+        return produced.encode("utf-8") == raw.encode("utf-8")
+    except Exception:
+        return False
 
 
 def _denial_parts(message: str, prefix: re.Pattern[str], suffix: str) -> tuple[str, str, str] | None:
@@ -237,7 +276,7 @@ def _is_policy_denial(error_info: Any) -> bool:
     if parts is None:
         return False
     _tool, quoted, raw = parts
-    return _go_unquote(quoted) == raw
+    return _quoted_argument_matches(quoted, raw)
 
 
 def _is_review_denial(error_info: Any) -> str | None:
@@ -257,9 +296,53 @@ def _is_review_denial(error_info: Any) -> str | None:
     if parts is None:
         return None
     tool, quoted, raw = parts
-    if _go_unquote(quoted) != raw:
+    if not _quoted_argument_matches(quoted, raw):
         return None
     return tool
+
+
+def _record_step_denial(state: "_Run", index: int, status: str, info: Any) -> None:
+    """Replace this step's denial from its current record.
+
+    Only a terminal ERROR is evidence. An earlier ACTIVE frame, or any other
+    non-terminal status, must not leave the step classified as a denial.
+    """
+    policy_name = None
+    review_name = None
+    if status == "ERROR" and isinstance(info, dict) and isinstance(info.get("error"), dict):
+        error_info = info["error"]
+        named = state.step_tools[index] if index in state.step_tools else info.get("name")
+        public = _public_tool_name(named)
+        if _is_policy_denial(error_info):
+            policy_name = public
+        if _is_review_denial(error_info) is not None:
+            review_name = public
+    if policy_name is None:
+        state._policy_tools.pop(index, None)
+    else:
+        state._policy_tools[index] = policy_name
+    if review_name is None:
+        state._review_tools.pop(index, None)
+    else:
+        state._review_tools[index] = review_name
+    _publish_denial_flags(state)
+
+
+def _clear_step_denial(state: "_Run", index: int) -> None:
+    if index not in state._policy_tools and index not in state._review_tools:
+        return
+    state._policy_tools.pop(index, None)
+    state._review_tools.pop(index, None)
+    _publish_denial_flags(state)
+
+
+def _publish_denial_flags(state: "_Run") -> None:
+    state.policy_denials = set(state._policy_tools)
+    state.review_denials = set(state._review_tools)
+    state.policy_denied_tools = set(state._policy_tools.values())
+    state.soft_denied_tools = set(state._stderr_tools) | set(state._review_tools.values())
+    state.soft_denied = state._stderr_soft or bool(state._review_tools)
+    state.review_evidence = state._stderr_review or bool(state._review_tools)
 
 
 def _bounded_text(value: str) -> str:
@@ -308,6 +391,11 @@ class _Run:
     review_denials: set[int] = field(default_factory=set)
     policy_denied_tools: set[str] = field(default_factory=set)
     soft_denied_tools: set[str] = field(default_factory=set)
+    _policy_tools: dict[int, str] = field(default_factory=dict)
+    _review_tools: dict[int, str] = field(default_factory=dict)
+    _stderr_soft: bool = False
+    _stderr_review: bool = False
+    _stderr_tools: set[str] = field(default_factory=set)
     text: str = ""
     text_truncated: bool = False
     stdout_bytes: int = 0
@@ -499,19 +587,11 @@ class AntigravityRuntime:
                     if not isinstance(info["error"], dict):
                         raise _ProtocolError("invalid_tool_error")
                     state.tool_errors.add(index)
-                    error_info = info["error"]
-                    if _is_policy_denial(error_info):
-                        state.policy_denials.add(index)
-                        named = state.step_tools[index] if index in state.step_tools else info.get("name")
-                        state.policy_denied_tools.add(_public_tool_name(named))
-                    if _is_review_denial(error_info) is not None:
-                        # Record the step's own tool name. The message token
-                        # (read_file, command, ...) is only the recognition key.
-                        state.review_denials.add(index)
-                        state.soft_denied = True
-                        state.review_evidence = True
-                        named = state.step_tools[index] if index in state.step_tools else info.get("name")
-                        state.soft_denied_tools.add(_public_tool_name(named))
+                # Denial evidence is only this step's latest terminal ERROR.
+                # A prior ACTIVE frame that carried the sentence is replaced.
+                _record_step_denial(state, index, status, info if isinstance(info, dict) else None)
+            else:
+                _clear_step_denial(state, index)
             if kind == "tool" and (state.step_tools.get(index) == "invoke_subagent"
                                    or (isinstance(step.get("tool_info"), dict)
                                        and step["tool_info"].get("name") == "invoke_subagent")):
@@ -760,10 +840,11 @@ class AntigravityRuntime:
                             raise _ProtocolError("stderr_limit")
                         diagnostic = stderr_tail + data
                         decoded = diagnostic.decode("utf-8", errors="replace")
-                        state.soft_denied |= bool(_DENIED.search(decoded))
-                        state.review_evidence |= bool(_REVIEW_EVIDENCE.search(decoded))
-                        state.soft_denied_tools.update(
+                        state._stderr_soft = state._stderr_soft or bool(_DENIED.search(decoded))
+                        state._stderr_review = state._stderr_review or bool(_REVIEW_EVIDENCE.search(decoded))
+                        state._stderr_tools.update(
                             _public_tool_name(name) for name in _SOFT_DENIED_TOOL.findall(decoded))
+                        _publish_denial_flags(state)
                         stderr_tail = diagnostic[-512:]
                         continue
                     state.stdout_bytes += len(data)
