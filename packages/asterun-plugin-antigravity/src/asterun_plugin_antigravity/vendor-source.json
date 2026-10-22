@@ -1,5 +1,5 @@
 {
-  "source_commit": "a549b0232c11aee842f2b1ec9b85681ab98fa766",
+  "source_commit": "119c28d3b3af84b0fc6f1312af7ad36ede5d6966",
   "files": [
     {
       "source": "src/asterun/antigravity_profile.py",
@@ -21,8 +21,8 @@
     {
       "source": "src/asterun/backends/antigravity_runtime.py",
       "target": "_vendor/runtime.py",
-      "source_sha256": "774742a893e0e7e4f9e61e7d976f7509582e91fd99f01be535b4b005ad7bf693",
-      "vendored_sha256": "c8f9dae907488879a04b5b5111cac856655eb344bbc82a53d640c467105f349b",
+      "source_sha256": "4549c357149257b932dfc0e60dc276b8c2abe36dfa0e698caf95930787245917",
+      "vendored_sha256": "0308d1e6c61f7b21089276d474bf9608ac60bd4364c1dca411b1058ef0562d00",
       "replacements": [
         [
           "from asterun.errors import BACKEND_UNAVAILABLE, REMOTE_STATE_UNKNOWN\nfrom asterun.ids import RunId",
@@ -50,7 +50,7 @@
     {
       "source": "src/asterun/backends/antigravity.py",
       "target": "_vendor/command.py",
-      "source_sha256": "9e579e06d3f1efac4d7f991baf816194cc7c0d8b4be11a291652823607e00d66",
+      "source_sha256": "50503dcea9b5f7fa3fcf86f7b73d131f57072038dfc557f01c8c87448c79ecbe",
       "vendored_sha256": "725c4c58ec26a80abd3892b95b505856ccbb7d9ab50faf5108bb03a1480f5be3",
       "replacements": [],
       "extract": "build_command",

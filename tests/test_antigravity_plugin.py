@@ -12,6 +12,7 @@ import time
 import pytest
 
 from asterun.application import Application
+from asterun.backends.antigravity_runtime import READ_ONLY_PREAMBLE
 from asterun.plugin_api import PluginManifest
 from asterun.plugins.registry import PluginRegistry, installation_digest
 from asterun.plugins.worker import WorkerFailure, WorkerHost, WorkerLimits
@@ -112,7 +113,7 @@ def submit(app):
     return result
 
 
-SOURCE_COMMIT = "a549b0232c11aee842f2b1ec9b85681ab98fa766"
+SOURCE_COMMIT = "119c28d3b3af84b0fc6f1312af7ad36ede5d6966"
 
 
 def test_verify_source_covers_every_vendor_file_without_assert(tmp_path):
@@ -445,6 +446,27 @@ def test_default_execution_gate_is_off_in_core_and_explained(antigravity_install
         assert not native["marker"].exists()
     finally:
         app.close()
+
+
+def test_dispatched_prompt_starts_with_read_only_preamble(antigravity_installation, isolated_env, workspace_root):
+    native = setup_native(isolated_env, workspace_root, antigravity_installation)
+    log = isolated_env / "sent-prompt.txt"
+    script = native["binary"].read_text()
+    needle = "sys.argv = [FIXTURE_PATH]\n"
+    assert needle in script
+    native["binary"].write_text(script.replace(
+        needle, f"os.environ['AGY_FIXTURE_PROMPT_LOG'] = {str(log)!r}\n{needle}", 1))
+    native["options"]["binary_sha256"] = hashlib.sha256(native["binary"].read_bytes()).hexdigest()
+    original = "offline prompt"
+    result = call_native(antigravity_installation, native)
+    assert result["status"] == "succeeded", result
+    received = json.loads(log.read_text())
+    prefix = READ_ONLY_PREAMBLE.replace("{workspace}", str(native["workspace"]), 1)
+    content = received["message"]["content"]
+    assert content.startswith(prefix)
+    assert content[len(prefix):] == original
+    assert "[Asterun]" not in result["output"]["text"]
+    assert result["output"]["text"] == "fixture response"
 
 
 def test_native_process_never_receives_parent_api_keys(antigravity_installation, isolated_env, workspace_root, monkeypatch):

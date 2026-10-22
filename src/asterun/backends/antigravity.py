@@ -14,6 +14,7 @@ from threading import Event, Lock
 import time
 from typing import Any
 
+from asterun.backends.antigravity_runtime import READ_ONLY_PREAMBLE
 from asterun.backends.base import BackendCall, capability_rows, require_dispatch_cwd
 from asterun.config import BackendConfig
 from asterun.errors import (
@@ -357,7 +358,11 @@ class AntigravityBackend:
                         "task_id": task_id.value, "run_id": run_id.value, "stage": "preflight",
                         "prompt_attempted": False, "delivery": "not_sent", "failure_type": type(exc).__name__,
                     }}}
-        result = self.runtime.run(run_id, text, command=command, env=env, cwd=workspace,
+        # Profile denies writes, commands, URLs, MCP, and subagents. The model
+        # still tries them unless the prompt says not to. This prefix is not
+        # part of the stored task or the input hash.
+        cli_text = READ_ONLY_PREAMBLE.replace("{workspace}", str(workspace), 1) + text
+        result = self.runtime.run(run_id, cli_text, command=command, env=env, cwd=workspace,
                                   expected_model=model,
                                   publish=lambda item: publish(bind_receipt(item)), stopping=stopping)
         native_out = result.get("native")
