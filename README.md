@@ -33,7 +33,10 @@ Agent CLIs each have their own sessions, approval prompts, and failure modes. Ru
 Requires Python 3.11 or later. Download the wheel and `SHA256SUMS` from the [releases page](https://github.com/zonzideka/asterun/releases), verify, and install into a virtual environment:
 
 ```sh
+# Linux
 sha256sum -c SHA256SUMS --ignore-missing
+# macOS
+shasum -a 256 -c SHA256SUMS --ignore-missing
 python3 -m venv .venv
 .venv/bin/python -m pip install ./asterun-*.whl
 .venv/bin/asterun version
