@@ -6,8 +6,8 @@ import json
 import subprocess
 import sys
 
-SOURCE_COMMIT = "4a964b76e294d3b6d912cff5ee33444bad486de0"
-PROOF_SHA256 = "bcbbd978475b62c2f0577a1b08065c78a6c0b0a96e6db97295aca30ae92d7b39"
+SOURCE_COMMIT = "d9a1c42304353ecc9160c108f3de327a00006232"
+PROOF_SHA256 = "23fa02a152a2a87cf5444ce08c17b2970cc1e0e9ebea62972b79c8aaf1a6c65e"
 
 
 def fail(message: str) -> None:
