@@ -464,11 +464,35 @@ def test_go_unquote_decodes_simple_escapes_and_the_heredoc():
     assert module._go_unquote(_MULTILINE_QUOTED) == _MULTILINE_RAW
 
 
+def test_hex_and_octal_escapes_are_utf8_bytes_not_code_points():
+    # \xc3\xa9 is the UTF-8 of é. Reading those escapes as code points yields U+00C3 U+00A9.
+    assert module._go_unquote(r"\xc3\xa9") == "é"
+    assert module._go_unquote(r"\xc3\xa9") != "\u00c3\u00a9"
+    assert module._go_unquote(r"\303\251") == "é"
+    assert module._go_unquote(r"\377") is None
+    assert module._go_unquote(r"\xff") is None
+    matched = {"type": "TOOL_ERROR", "message": _policy_message("unsandboxed", r"\xc3\xa9", "é")}
+    mojibake = {"type": "TOOL_ERROR", "message": _policy_message("unsandboxed", r"\xc3\xa9", "\u00c3\u00a9")}
+    assert module._is_policy_denial(matched) is True
+    assert module._is_policy_denial(mojibake) is False
+    assert module._is_review_denial(
+        {"type": "TOOL_ERROR", "message": _review_sentence("read_file", r"\xc3\xa9", "é")}) == "read_file"
+    assert module._is_review_denial(
+        {"type": "TOOL_ERROR", "message": _review_sentence("read_file", r"\xc3\xa9", "\u00c3\u00a9")}) is None
+
+
 @pytest.mark.parametrize("body,expected", [
     (r"\x41\u0042\U00000043", "ABC"),
     (r"\101\040", "A "),
     (r"\000", "\x00"),
-    (r"\377", "\xff"),
+    (r"\377", None),
+    (r"\xff", None),
+    (r"\xc3\xa9", "é"),
+    (r"\303\251", "é"),
+    (r"\xc3\xbf", "\u00ff"),
+    (r"\u00e9", "é"),
+    (r"\xc3\x28", None),
+    ("é", "é"),
     (r"\1234", "S4"),
     (r"\x00", "\x00"),
     (r"\uD7FF", "\uD7FF"),
@@ -692,6 +716,49 @@ def test_invalid_escape_denial_is_an_ordinary_tool_error(tmp_path, mode):
     assert "需要人工审批" not in result["summary"]
     if mode == "policy_denied_bad_escape":
         assert result["summary"] == "final plan"
+    assert "private diagnostic" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("mode,status,code,count_key", [
+    ("policy_utf8_match", "succeeded", None, "policy_denied_count"),
+    ("policy_utf8_mojibake", "failed", "ANTIGRAVITY_RUN_INCOMPLETE", "policy_denied_count"),
+    ("review_utf8_match", "failed", "ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED", "review_denied_count"),
+    ("review_utf8_mojibake", "failed", "ANTIGRAVITY_RUN_INCOMPLETE", "review_denied_count"),
+])
+def test_utf8_byte_escapes_match_the_character_not_its_code_points(tmp_path, mode, status, code, count_key):
+    result, _ = execute(tmp_path, mode)
+    assert result["status"] == status and result["terminated"] is True
+    native = result["native"]
+    if code is None:
+        assert "error_code" not in result
+        assert native[count_key] == 1
+        assert native["unexplained_error_count"] == 0
+    elif code == "ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED":
+        assert result["error_code"] == code
+        assert native[count_key] == 1
+        assert native["unexplained_error_count"] == 0
+    else:
+        assert result["error_code"] == code
+        assert native["policy_denied_count"] == 0
+        assert native["review_denied_count"] == 0
+        assert native["unexplained_error_count"] == 1
+        assert native["soft_denied"] is False
+    assert "private diagnostic" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("mode", ["policy_active_deny_then_error", "review_active_deny_then_error"])
+def test_nonterminal_deny_does_not_explain_a_later_ordinary_error(tmp_path, mode):
+    result, _ = execute(tmp_path, mode)
+    assert result["status"] == "failed" and result["terminated"] is True
+    assert result["error_code"] == "ANTIGRAVITY_RUN_INCOMPLETE"
+    native = result["native"]
+    assert native["unexplained_error_count"] == 1
+    assert native["policy_denied_count"] == 0
+    assert native["review_denied_count"] == 0
+    assert native["soft_denied"] is False
+    assert native["policy_denied_tools"] == []
+    assert native["soft_denied_tools"] == []
+    assert "需要人工审批" not in result["summary"]
     assert "private diagnostic" not in json.dumps(result)
 
 

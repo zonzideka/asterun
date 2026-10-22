@@ -14,6 +14,7 @@ from threading import Event, Lock
 import time
 from typing import Any
 
+from asterun.backends.antigravity_runtime import READ_ONLY_PREAMBLE
 from asterun.backends.base import BackendCall, capability_rows, require_dispatch_cwd
 from asterun.config import BackendConfig
 from asterun.errors import (
@@ -26,14 +27,6 @@ LIVE_ENV = "ASTERUN_RUN_ANTIGRAVITY"
 BIN_ENV = "ANTIGRAVITY_BIN"
 DISPATCH_RECEIPT_KEY = "asterun.antigravity_dispatch_v1"
 PRE_PROMPT_STAGES = frozenset({"preflight", "spawn"})
-# Prepended only to the text sent to the CLI. The stored task text and its
-# input hash stay the caller's original. {workspace} is the resolved workspace.
-READ_ONLY_PREAMBLE = (
-    "[Asterun] This run is read-only. You may only read files under {workspace} with read_file. "
-    "Writing files (including /tmp), running commands or scripts, network/URL access, MCP tools and subagents "
-    "are blocked by policy; do not attempt them, and do not try to list directories (read files by exact path). "
-    "Finish with your complete answer in this turn.\n\n"
-)
 
 
 def live_antigravity_enabled() -> bool:
