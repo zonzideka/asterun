@@ -42,6 +42,8 @@ _DENIED = re.compile(
     r"(?:cannot|can't|unable to)[^\n]{0,80}(?:ask|obtain)[^\n]{0,80}(?:approval|permission)",
     re.IGNORECASE,
 )
+# 普通 OS “permission denied” 只算宽泛信号；复核码只认软拒绝或审批措辞。
+_REVIEW_EVIDENCE = re.compile(r"soft[- ]den(?:ied|ying)|requires? approval", re.IGNORECASE)
 # Profile deny rules are a hard refusal only for agy's whole native sentence.
 # A substring, an extra field, or a non-string value is an ordinary tool error.
 # Never copy the tool error text into a public result.
@@ -156,6 +158,7 @@ class _Run:
     step_states: dict[int, str] = field(default_factory=dict)
     step_types: dict[int, str] = field(default_factory=dict)
     soft_denied: bool = False
+    review_evidence: bool = False
     policy_denials: set[int] = field(default_factory=set)
     policy_denied_tools: set[str] = field(default_factory=set)
     soft_denied_tools: set[str] = field(default_factory=set)
@@ -458,7 +461,7 @@ class AntigravityRuntime:
                 return self._unknown(state)
             if (status == "SUCCESS" and state.session_id and state.proc.returncode == 0
                     and not state.active_tools and all(value in {"DONE", "ERROR"} for value in state.step_states.values())):
-                if state.soft_denied:
+                if state.soft_denied and (state.review_evidence or state.soft_denied_tools):
                     names = ", ".join(sorted(state.soft_denied_tools)) or "未知工具"
                     summary = (
                         f"Antigravity 遇到需要人工审批的工具调用（{names}），无人值守模式下被软拒绝，"
@@ -473,7 +476,7 @@ class AntigravityRuntime:
                     state.failure_type = "soft_denied_review"
                     return self._snapshot(state, status="failed", terminated=True,
                                           error_code=ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED, summary=summary)
-                if state.result.get("has_error") or (state.tool_errors | state.step_errors) - state.policy_denials:
+                if state.soft_denied or state.result.get("has_error") or (state.tool_errors | state.step_errors) - state.policy_denials:
                     return self._snapshot(state, status="failed", terminated=True,
                                           error_code=ANTIGRAVITY_RUN_INCOMPLETE,
                                           summary=state.text or "Antigravity 步骤执行失败或权限被拒绝")
@@ -601,6 +604,7 @@ class AntigravityRuntime:
                         diagnostic = stderr_tail + data
                         decoded = diagnostic.decode("utf-8", errors="replace")
                         state.soft_denied |= bool(_DENIED.search(decoded))
+                        state.review_evidence |= bool(_REVIEW_EVIDENCE.search(decoded))
                         state.soft_denied_tools.update(
                             _public_tool_name(name) for name in _SOFT_DENIED_TOOL.findall(decoded))
                         stderr_tail = diagnostic[-512:]
