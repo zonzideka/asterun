@@ -64,7 +64,7 @@ Use `task-get` to read the result and `task-reconcile` after a timeout or discon
 
 ## Configuration
 
-Configuration is a JSON file with a monotonically increasing `revision`. Validate it with `asterun --config FILE config-validate` and apply a new revision to a running core with `config-apply`. Schema v2 adds plugin registrations, provider accounts, connections, billing pools, candidate groups, `quota`, and `context_budget`; v1 files remain valid. Start from the examples in [`examples/`](examples/) and the [installation guide](docs/en/install.md).
+Configuration is a JSON file with a monotonically increasing `revision`. Validate it with `asterun --config FILE config-validate`. After changing configuration, restart the core to load it, then apply the loaded revision with `config-apply --expected-applied-revision N`. Schema v2 adds plugin registrations, provider accounts, connections, billing pools, candidate groups, `quota`, and `context_budget`; v1 files remain valid. Start from the examples in [`examples/`](examples/) and the [installation guide](docs/en/install.md).
 
 ## Backends
 
@@ -83,7 +83,7 @@ Validation status per backend and platform is listed in the [release notes](docs
 
 - Asterun stores account references. Auth is native login or an explicit API-key reference: local CLI backends use native login, Cursor uses `CURSOR_API_KEY`, and Jules uses `JULES_API_KEY`. Child processes get a filtered environment.
 - The core only accepts configured workspaces as task working directories. Codex defaults to native approval mode `untrusted` with a `workspace-write` sandbox. Grok coding uses the native workspace sandbox, a fixed tool allowlist, and `dontAsk` permission mode. The Antigravity profile allows reading only the bound workspace and denies writes, commands, URLs, and MCP tools. The file-access boundary depends on those backend permissions and on separately configured OS isolation.
-- Permission prompts are never auto-approved by default. Unattended denials are reported with explicit error codes instead of being counted as success.
+- Permission prompts are never auto-approved by default. Unattended approval-required denials return explicit errors. Antigravity policy hard denials may still yield a successful run when a final answer is produced; denial metadata is retained.
 - The core listens on a same-user Unix socket. Callers authenticate through their own channel; cross-host transport is the caller's responsibility.
 - Operating-system isolation is configured separately and is not implied by the permission settings above.
 
