@@ -2,7 +2,7 @@ English | [中文（待更新）](README.zh-CN.md)
 
 # Asterun
 
-Asterun is a self-hosted task runner for coding agents. It runs Codex, Grok, Claude, Antigravity, and plugin backends on the host where their accounts are already signed in, and exposes them through one CLI, an MCP server, and a local socket.
+Asterun is a self-hosted task runner for coding agents, exposed through one CLI, an MCP server, and a local socket. Codex, Grok, Claude, and Antigravity are local CLI backends. The Cursor plugin runs the local Cursor SDK and uses `CURSOR_API_KEY`. The Jules plugin calls remote REST and uses `JULES_API_KEY`. Auth is native login or an explicit API-key reference.
 
 Status: alpha (`0.1.0aN` prereleases). The first-release scope is frozen; see [release notes](docs/en/release-v0.1.md) for what is validated. Licensed under [Apache-2.0](LICENSE).
 
@@ -11,7 +11,7 @@ Status: alpha (`0.1.0aN` prereleases). The first-release scope is frozen; see [r
 Agent CLIs each have their own sessions, approval prompts, and failure modes, and they stop when the terminal that started them closes. Asterun puts a resident core in front of them:
 
 - Tasks keep running after the caller disconnects. Each task, run, and native session reference is stored in SQLite, so a caller can come back later, watch, or reconcile.
-- Submissions are idempotent. Retrying with the same idempotency key returns the existing task instead of starting a second run.
+- Submissions are idempotent. Retrying the same request with the same key in the same idempotency scope returns the existing task. Different input returns `IDEMPOTENCY_CONFLICT`.
 - Unknown outcomes are kept as `pending_reconcile` instead of being reported as success or failure.
 - Approvals, quotas, and permissions are checked by the core before a backend is invoked.
 
@@ -19,11 +19,11 @@ Agent CLIs each have their own sessions, approval prompts, and failure modes, an
 
 | Concept | What it is |
 |---|---|
-| Workspace | A named directory a task may run in. Backends only see configured workspaces. |
+| Workspace | A named directory a task may run in. The core only accepts configured workspaces as task working directories; the actual file-access boundary depends on backend permissions and separately configured OS isolation. |
 | Backend | A named, configured agent interface. Built-in kinds: `codex`, `grok`, `claude`, `antigravity`, and `fake` (offline testing). Plugins add more. |
 | Task / Run | A task is the unit of work; each execution attempt is a run with its own `run_id`. `conversation_id` links follow-up tasks. |
 | Candidate groups | Named backend groups per role (`implementation`, `review`, `planning`). Submit to `@group` and the core picks a member; `routing-explain` shows why. Review and implementation groups may not share members. |
-| Approvals | When a backend asks for permission the task enters `waiting_input`; answer with `approval-respond`. See the [approval guide](docs/en/approval-policy.md). |
+| Approvals | When a backend that supports a native approval bridge asks for permission, the task enters `waiting_input`; answer with `approval-respond`. Claude and Antigravity return `CAPABILITY_UNSUPPORTED` for approvals. Jules plan approval uses `capability.invoke` (`remote.plan.approve`). See the [approval guide](docs/en/approval-policy.md). |
 | Quota and billing pools | Backends sharing an account share a billing pool with concurrency limits. A local quota cache (`quota-inspect`) and strict quota-exhaustion latches stop dispatch to an exhausted pool. Quota-based preference inside a group is off by default. |
 | Context capsules and budgets | Optional `context_budget` config: `off` (default), `observe` (records token usage and capsules), or `enforce` (per-task token budget admission, plus opt-in segmentation for listed backends). See [plugins and configuration](docs/en/plugins.md#context-budget-context_budget). |
 | Workflows | Optional checks, independent reviews, bounded repairs, and PR review recipes against a fixed revision. See the [PR review guide](docs/en/pr-review.md). |
@@ -74,15 +74,15 @@ Configuration is a JSON file with a monotonically increasing `revision`. Validat
 | Grok (built-in) | Text tasks (`text-only-v1`) and autonomous coding in a workspace (`workspace-code-v1`) with bounded turns and timeout. See [Grok autonomous coding](docs/en/install.md#grok-autonomous-coding). |
 | Claude (built-in) | One-shot tasks, text processing, and workspace file reads. |
 | Antigravity (built-in, or plugin) | Text tasks and read-only workspace file access through the `agy` CLI with a dedicated permission profile. See the [Antigravity guide](docs/en/antigravity.md). |
-| Cursor (plugin) | Local agent tasks, session recovery, cancellation. |
-| Jules (plugin) | Hosted coding tasks, plan retrieval and approval, feedback, status. |
+| Cursor (plugin) | Local Cursor SDK agent tasks (`CURSOR_API_KEY`), session recovery, cancellation. |
+| Jules (plugin) | Remote REST coding tasks (`JULES_API_KEY`), plan retrieval and approval, feedback, status. |
 
 Validation status per backend and platform is listed in the [release notes](docs/en/release-v0.1.md).
 
 ## Security model
 
-- Asterun stores account references, not credentials. Each backend uses its own native sign-in, and child processes get a filtered environment.
-- Tasks run only in configured workspaces. Codex defaults to native approval mode `untrusted` with a `workspace-write` sandbox. Grok coding runs within configured workspace and command scopes. The Antigravity profile allows reading only the bound workspace and denies writes, commands, URLs, and MCP tools.
+- Asterun stores account references. Auth is native login or an explicit API-key reference: local CLI backends use native login, Cursor uses `CURSOR_API_KEY`, and Jules uses `JULES_API_KEY`. Child processes get a filtered environment.
+- The core only accepts configured workspaces as task working directories. Codex defaults to native approval mode `untrusted` with a `workspace-write` sandbox. Grok coding runs within configured workspace and command scopes. The Antigravity profile allows reading only the bound workspace and denies writes, commands, URLs, and MCP tools. The file-access boundary depends on those backend permissions and on separately configured OS isolation.
 - Permission prompts are never auto-approved by default. Unattended denials are reported with explicit error codes instead of being counted as success.
 - The core listens on a same-user Unix socket. Callers authenticate through their own channel; cross-host transport is the caller's responsibility.
 - Operating-system isolation is configured separately and is not implied by the permission settings above.
