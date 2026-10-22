@@ -38,6 +38,9 @@ def test_native_success_after_input_and_stdin_eof(tmp_path, mode):
     assert native["init_evidence"] == {"cwd": str(tmp_path.resolve()), "model": "fixture-model", "permission_mode": "request-review"}
     assert native["num_turns"] == 1
     assert native[DISPATCH_RECEIPT_KEY]["process_exit_code"] == 0
+    assert native["policy_denied_count"] == 0
+    assert native["policy_denied_tools"] == []
+    assert native["soft_denied_tools"] == []
     assert native[DISPATCH_RECEIPT_KEY]["process_started"] is True
     assert any(update["native"][DISPATCH_RECEIPT_KEY]["prompt_attempted"] for update in updates)
     assert len(updates) <= 3
@@ -61,6 +64,11 @@ def test_errors_and_soft_denial_cannot_report_success(tmp_path, mode):
         assert result["native"][DISPATCH_RECEIPT_KEY]["process_exit_code"] == 0
     if "soft_deny" in mode:
         assert result["native"]["soft_denied"] is True
+        assert result["error_code"] == "ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED"
+    elif mode in {"error", "INVALID"}:
+        assert result["error_code"] == "ANTIGRAVITY_RUN_FAILED"
+    else:
+        assert result["error_code"] == "ANTIGRAVITY_RUN_INCOMPLETE"
 
 
 def test_pre_session_native_error_can_be_confirmed(tmp_path):
@@ -295,3 +303,66 @@ def test_runtime_without_group_ownership_never_confirms_exit(tmp_path, monkeypat
     result, _ = execute(tmp_path, "subagent_no_result", runtime=AntigravityRuntime(timeout=20))
     assert result["status"] == "pending_reconcile"
     assert result["native"][DISPATCH_RECEIPT_KEY]["failure_type"] == "subagent_process_alive"
+
+
+def test_policy_hard_denial_with_final_answer_succeeds(tmp_path):
+    result, _ = execute(tmp_path, "policy_denied_recovered")
+    assert result["status"] == "succeeded" and result["terminated"] is True
+    assert "error_code" not in result
+    assert result["summary"] == "final plan"
+    native = result["native"]
+    assert native["policy_denied_count"] == 1
+    assert native["policy_denied_tools"] == ["run_command"]
+    assert native["tool_error_count"] == 1
+    assert "private diagnostic" not in json.dumps(result)
+
+
+def test_policy_hard_denial_without_answer_is_incomplete(tmp_path):
+    result, _ = execute(tmp_path, "policy_denied_no_answer")
+    assert result["status"] == "failed" and result["terminated"] is True
+    assert result["error_code"] == "ANTIGRAVITY_RUN_INCOMPLETE"
+    assert result["native"][DISPATCH_RECEIPT_KEY]["failure_type"] == "no_final_response"
+    assert result["summary"] == "Antigravity 的工具调用被权限策略拒绝后没有产出最终结果"
+    assert "private diagnostic" not in json.dumps(result)
+
+
+def test_policy_denial_plus_other_tool_error_is_incomplete(tmp_path):
+    result, _ = execute(tmp_path, "policy_denied_plus_error")
+    assert result["status"] == "failed" and result["terminated"] is True
+    assert result["error_code"] == "ANTIGRAVITY_RUN_INCOMPLETE"
+    assert result["native"][DISPATCH_RECEIPT_KEY]["failure_type"] is None
+    assert result["summary"] == "final plan"
+    assert "private diagnostic" not in json.dumps(result)
+
+
+def test_soft_deny_review_names_the_tool_and_keeps_partial_text(tmp_path):
+    result, _ = execute(tmp_path, "soft_deny_review")
+    assert result["status"] == "failed" and result["terminated"] is True
+    assert result["error_code"] == "ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED"
+    assert result["native"]["soft_denied"] is True
+    assert result["native"]["soft_denied_tools"] == ["ReadFile"]
+    assert result["native"][DISPATCH_RECEIPT_KEY]["failure_type"] == "soft_denied_review"
+    assert "ReadFile" in result["summary"] and "partial" in result["summary"]
+
+
+def test_policy_denial_scan_ignores_non_string_error_type():
+    state = module._Run("run_regex")
+    state.init_seen = True
+    state.session_id = "fixture-conversation-123"
+
+    def tool_error(index, error, name="run_command"):
+        line = json.dumps({"event": "step_update", "step_update": {
+            "conversation_id": "fixture-conversation-123", "step_index": index,
+            "state": "ERROR", "step_type": "tool",
+            "tool_info": {"name": name, "error": error},
+        }}).encode()
+        assert AntigravityRuntime._event(state, line) is False
+
+    tool_error(0, {"type": 7, "flag": True, "message": None,
+                   "detail": {"message": "permission check failed"}})
+    assert state.policy_denials == set()
+    tool_error(1, {"type": ["TOOL_ERROR"], "message": "permission check failed for unsandboxed"})
+    assert state.policy_denials == {1}
+    assert state.policy_denied_tools == {"run_command"}
+    tool_error(2, {"type": {"code": 1}, "message": "private diagnostic"})
+    assert 2 not in state.policy_denials

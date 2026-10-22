@@ -57,6 +57,19 @@ def result(status="SUCCESS", response="fixture response", **values):
                     "cache_read_tokens": 0, "total_tokens": 10}, **values}})
 
 
+_POLICY_DENY_MESSAGE = (
+    'permission check failed for unsandboxed "private diagnostic": '
+    "Permission denied for unsandboxed(private diagnostic). "
+    "Matches user-configured deny rule."
+)
+
+
+def policy_denied_command():
+    step(0, "tool", "ACTIVE", tool_info={"name": "run_command"})
+    step(0, "tool", "ERROR", tool_info={"name": "run_command", "error": {
+        "type": "TOOL_ERROR", "message": _POLICY_DENY_MESSAGE}})
+
+
 if MODE == "before_input":
     init()
 if MODE == "no_input":
@@ -215,6 +228,23 @@ elif MODE == "large_response":
 elif MODE == "result_no_exit":
     result("INTERRUPTED", "")
     time.sleep(30)
+elif MODE == "policy_denied_recovered":
+    policy_denied_command()
+    step(1, "tool", "DONE", tool_info={"name": "read_file"})
+    step(2, "agent_response", "DONE", text_delta="final plan")
+    result(response="final plan")
+elif MODE == "policy_denied_no_answer":
+    policy_denied_command()
+    result(response="")
+elif MODE == "policy_denied_plus_error":
+    policy_denied_command()
+    step(1, "tool", "ERROR", tool_info={"name": "read_file", "error": {
+        "type": "TOOL_ERROR", "message": "private diagnostic"}})
+    result(response="final plan")
+elif MODE == "soft_deny_review":
+    step(0, "tool", "DONE", tool_info={"name": "read_file"})
+    os.write(2, b'Print mode: soft-denying tool confirmation "ReadFile" at step 6\n')
+    result(response="partial")
 else:
     step(0, "user_input", text_delta=message["message"]["content"])
     step(1, "thinking", text_delta="private reasoning")
