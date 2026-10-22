@@ -127,7 +127,7 @@ def inspect_bilingual_documents(files: dict[str, bytes]) -> list[str]:
     name = BytesParser().parsebytes(files[metadata_path]).get("Name")
     required = []
     if name == "asterun":
-        required = ["README.md", "README.en.md", "examples/non-code/README.md", "examples/non-code/README.en.md",
+        required = ["README.md", "README.zh-CN.md", "examples/non-code/README.md", "examples/non-code/README.en.md",
                     "docs/protocol/IMPLEMENTATION.md", "docs/en/protocol/IMPLEMENTATION.md"]
         required.extend(f"docs/{prefix}{guide}.md" for guide in PUBLIC_GUIDES for prefix in ("", "en/"))
         required.extend(f"packages/asterun-plugin-{plugin}/{readme}"
@@ -136,6 +136,19 @@ def inspect_bilingual_documents(files: dict[str, bytes]) -> list[str]:
         required = ["README.md", "README.en.md"]
     prefix = posixpath.dirname(metadata_path)
     return [f"{name} 源码包缺少双语文档：{path}" for path in required if f"{prefix}/{path}" not in files]
+
+
+# Repository files the sdist leaves out on purpose. Status logs are rejected
+# as release members. Maintenance plans and provenance notes are not release
+# manuals; shipped design pages may still point at them for git readers.
+_UNPACKAGED_REPO_BASENAMES = {
+    "STATUS.md",
+    "STATUS.en.md",
+    "AGENTS.md",
+    "development-plan.md",
+    "tuning-plan.md",
+    "source-provenance.md",
+}
 
 
 def inspect_document_links(files: dict[str, bytes]) -> list[str]:
@@ -150,6 +163,8 @@ def inspect_document_links(files: dict[str, bytes]) -> list[str]:
                 continue
             linked = posixpath.normpath(posixpath.join(posixpath.dirname(name), unquote(parsed.path)))
             if linked not in files and not any(item.startswith(linked.rstrip("/") + "/") for item in files):
+                if posixpath.basename(linked) in _UNPACKAGED_REPO_BASENAMES:
+                    continue
                 problems.append(f"{name} 的相对文档链接不在发行包内：{target}")
     return problems
 
