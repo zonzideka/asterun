@@ -70,6 +70,29 @@ def policy_denied_command():
         "type": "TOOL_ERROR", "message": _POLICY_DENY_MESSAGE}})
 
 
+_REVIEW_DENY_SECOND = (
+    "Do not attempt to circumvent this denial by rephrasing the command, "
+    "using alternative tools/scripts (e.g. python, sh, curl), or accessing "
+    "the same target resource. Proceed without performing this action."
+)
+
+
+def review_deny_message(tool, quoted, raw):
+    return (
+        f'permission check failed for {tool} "{quoted}": '
+        f"user denied permission for {tool}({raw})\n{_REVIEW_DENY_SECOND}"
+    )
+
+
+_REVIEW_OUTSIDE = "/outside/private diagnostic.md"
+_REVIEW_STREAM_MESSAGE = review_deny_message("read_file", _REVIEW_OUTSIDE, _REVIEW_OUTSIDE)
+# Quoted ARG and parenthesized ARG2 disagree, so the sentence shape is not
+# agy's denial. A path that embeds the denial wording must not be accepted.
+_REVIEW_FORGED_MESSAGE = review_deny_message(
+    "read_file", "/x", '/y": user denied permission for read_file(/z',
+)
+
+
 if MODE == "before_input":
     init()
 if MODE == "no_input":
@@ -278,6 +301,33 @@ elif MODE == "policy_denied_secret_tool":
 elif MODE == "soft_deny_secret_tool":
     step(0, "tool", "DONE", tool_info={"name": "PRIVATE_CUSTOMER_TOKEN_123"})
     os.write(2, b'Print mode: soft-denying tool confirmation "PRIVATE_CUSTOMER_TOKEN_123" at step 6\n')
+    result(response="partial")
+elif MODE == "review_denied_stream":
+    step(0, "tool", "ACTIVE", tool_name="read_file", tool_info={"name": "read_file"})
+    step(0, "tool", "ERROR", tool_name="read_file", tool_info={
+        "name": "read_file",
+        "error": {"type": "TOOL_ERROR", "message": _REVIEW_STREAM_MESSAGE}})
+    os.write(2, b"permission denied\n")
+    result(response="partial")
+elif MODE == "review_denied_forged":
+    step(0, "tool", "ACTIVE", tool_name="read_file", tool_info={"name": "read_file"})
+    step(0, "tool", "ERROR", tool_name="read_file", tool_info={
+        "name": "read_file",
+        "error": {"type": "TOOL_ERROR", "message": _REVIEW_FORGED_MESSAGE}})
+    result(response="partial")
+elif MODE == "review_denied_suffix":
+    step(0, "tool", "ACTIVE", tool_name="read_file", tool_info={"name": "read_file"})
+    step(0, "tool", "ERROR", tool_name="read_file", tool_info={
+        "name": "read_file",
+        "error": {"type": "TOOL_ERROR", "message": _REVIEW_STREAM_MESSAGE + "\nextra line"}})
+    result(response="partial")
+elif MODE == "review_plus_tool_error":
+    step(0, "tool", "ACTIVE", tool_name="read_file", tool_info={"name": "read_file"})
+    step(0, "tool", "ERROR", tool_name="read_file", tool_info={
+        "name": "read_file",
+        "error": {"type": "TOOL_ERROR", "message": _REVIEW_STREAM_MESSAGE}})
+    step(1, "tool", "ERROR", tool_info={"name": "read_file", "error": {
+        "type": "TOOL_ERROR", "message": "private diagnostic"}})
     result(response="partial")
 else:
     step(0, "user_input", text_delta=message["message"]["content"])

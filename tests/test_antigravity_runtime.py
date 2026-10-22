@@ -39,6 +39,7 @@ def test_native_success_after_input_and_stdin_eof(tmp_path, mode):
     assert native["num_turns"] == 1
     assert native[DISPATCH_RECEIPT_KEY]["process_exit_code"] == 0
     assert native["policy_denied_count"] == 0
+    assert native["review_denied_count"] == 0
     assert native["policy_denied_tools"] == []
     assert native["soft_denied_tools"] == []
     assert native[DISPATCH_RECEIPT_KEY]["process_started"] is True
@@ -466,3 +467,70 @@ def test_unknown_tool_names_publish_only_other(tmp_path):
 ])
 def test_is_policy_denial_requires_escaped_quotes_inside_the_command(message, expected):
     assert module._is_policy_denial({"type": "TOOL_ERROR", "message": message}) is expected
+
+
+_REVIEW_SECOND = (
+    "Do not attempt to circumvent this denial by rephrasing the command, "
+    "using alternative tools/scripts (e.g. python, sh, curl), or accessing "
+    "the same target resource. Proceed without performing this action."
+)
+
+
+def _review_sentence(tool, quoted, raw):
+    return (
+        f'permission check failed for {tool} "{quoted}": '
+        f"user denied permission for {tool}({raw})\n{_REVIEW_SECOND}"
+    )
+
+
+_REVIEW_REAL = _review_sentence(
+    "read_file", "/outside/private diagnostic.md", "/outside/private diagnostic.md",
+)
+_REVIEW_ESCAPED = _review_sentence(
+    "command",
+    'grep -n -A30 -i \\"T59\\" /workspace/x.md | head -80',
+    'grep -n -A30 -i "T59" /workspace/x.md | head -80',
+)
+
+
+@pytest.mark.parametrize("error_info,expected", [
+    ({"type": "TOOL_ERROR", "message": _REVIEW_REAL}, "read_file"),
+    ({"type": "TOOL_ERROR", "message": _REVIEW_ESCAPED}, "command"),
+    ({"type": "TOOL_ERROR", "message": _review_sentence("read_file", "ls\rwhoami", "ls\rwhoami")}, None),
+    ({"type": "TOOL_ERROR", "message": _REVIEW_REAL.replace("\n", "\r\n")}, None),
+    ({"type": "TOOL_ERROR", "message": _REVIEW_REAL, "detail": "extra"}, None),
+    ({"type": 7, "message": _REVIEW_REAL}, None),
+    ({"type": "TOOL_ERROR", "message": _review_sentence("read_file", "/x", "/y")}, None),
+])
+def test_is_review_denial_requires_exact_sentence_and_matching_args(error_info, expected):
+    assert module._is_review_denial(error_info) == expected
+
+
+def test_review_denied_stream_is_review_required(tmp_path):
+    result, _ = execute(tmp_path, "review_denied_stream")
+    assert result["status"] == "failed" and result["terminated"] is True
+    assert result["error_code"] == "ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED"
+    assert result["native"]["soft_denied"] is True
+    assert result["native"]["soft_denied_tools"] == ["read_file"]
+    assert result["native"]["review_denied_count"] == 1
+    assert result["native"]["unexplained_error_count"] == 0
+    assert "private diagnostic" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("mode", ["review_denied_forged", "review_denied_suffix"])
+def test_forged_or_suffixed_review_denial_stays_incomplete(tmp_path, mode):
+    result, _ = execute(tmp_path, mode)
+    assert result["status"] == "failed" and result["terminated"] is True
+    assert result["error_code"] == "ANTIGRAVITY_RUN_INCOMPLETE"
+    assert result["native"]["review_denied_count"] == 0
+    assert result["native"]["soft_denied_tools"] == []
+
+
+def test_review_denial_plus_unrelated_tool_error_counts_the_other_error(tmp_path):
+    result, _ = execute(tmp_path, "review_plus_tool_error")
+    assert result["status"] == "failed" and result["terminated"] is True
+    assert result["error_code"] == "ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED"
+    assert "另有 1 个" in result["summary"]
+    assert result["native"]["unexplained_error_count"] == 1
+    assert result["native"]["review_denied_count"] == 1
+    assert "private diagnostic" not in json.dumps(result)

@@ -52,6 +52,21 @@ _POLICY_DENIED = re.compile(
     r'permission check failed for (unsandboxed|command|read_file|write_file|read_url|execute_url|mcp) "(?:[^"\\\r\n]|\\[^\r\n]){0,4096}": Permission denied for \1\([^\r\n]{0,4096}\)\. Matches user-configured deny rule\.'
 )
 _POLICY_DENIED_KEYS = frozenset({"type", "message"})
+# Second line of agy's unattended request-review denial. fullmatch requires
+# this sentence verbatim: no prefix, suffix, or extra line. agy writes
+# "soft-denying tool confirmation" only to its own log; stderr may carry a
+# generic "permission denied" that is not this denial.
+_REVIEW_DENIAL_SECOND_LINE = (
+    "Do not attempt to circumvent this denial by rephrasing the command, "
+    "using alternative tools/scripts (e.g. python, sh, curl), or accessing "
+    "the same target resource. Proceed without performing this action."
+)
+_REVIEW_DENIED = re.compile(
+    r"permission check failed for (read_file|write_file|command|unsandboxed|read_url|execute_url|mcp) "
+    r'"((?:[^"\\\r\n]|\\[^\r\n]){0,4096})": '
+    r"user denied permission for \1\(([^\r\n]{0,4096})\)\n"
+    + re.escape(_REVIEW_DENIAL_SECOND_LINE)
+)
 _KNOWN_TOOLS = frozenset({
     "run_command", "read_file", "write_file", "view_file", "list_dir", "grep_search",
     "find_by_name", "codebase_search", "read_url_content", "view_content_chunk",
@@ -118,6 +133,44 @@ def _is_policy_denial(error_info: Any) -> bool:
     return True
 
 
+def _unescape_review_arg(value: str) -> str:
+    """Turn escaped quotes and backslashes back into the raw argument."""
+    parts: list[str] = []
+    index = 0
+    limit = len(value)
+    while index < limit:
+        char = value[index]
+        if char == "\\" and index + 1 < limit and value[index + 1] in {'"', "\\"}:
+            parts.append(value[index + 1])
+            index += 2
+            continue
+        parts.append(char)
+        index += 1
+    return "".join(parts)
+
+
+def _is_review_denial(error_info: Any) -> str | None:
+    """Tool token from agy's exact unattended review denial, else None.
+
+    The quoted argument, after unescaping quote and backslash, must equal the
+    parenthesized argument. A path or command that only embeds the sentence
+    cannot pass that check.
+    """
+    if not isinstance(error_info, dict) or not set(error_info).issubset(_POLICY_DENIED_KEYS):
+        return None
+    message = error_info.get("message")
+    if not isinstance(message, str):
+        return None
+    match = _REVIEW_DENIED.fullmatch(message)
+    if match is None:
+        return None
+    if "type" in error_info and not isinstance(error_info["type"], str):
+        return None
+    if _unescape_review_arg(match.group(2)) != match.group(3):
+        return None
+    return match.group(1)
+
+
 def _bounded_text(value: str) -> str:
     raw = value.encode("utf-8")
     return raw[:MAX_SUMMARY_BYTES].decode("utf-8", errors="ignore")
@@ -161,6 +214,7 @@ class _Run:
     soft_denied: bool = False
     review_evidence: bool = False
     policy_denials: set[int] = field(default_factory=set)
+    review_denials: set[int] = field(default_factory=set)
     policy_denied_tools: set[str] = field(default_factory=set)
     soft_denied_tools: set[str] = field(default_factory=set)
     text: str = ""
@@ -183,10 +237,12 @@ class _Run:
                 "events_seen": self.events_seen,
             },
             "tool_error_count": len(self.tool_errors), "step_error_count": len(self.step_errors),
-            "unexplained_error_count": len((self.tool_errors | self.step_errors) - self.policy_denials),
+            "unexplained_error_count": len(
+                (self.tool_errors | self.step_errors) - self.policy_denials - self.review_denials),
             "soft_denied": self.soft_denied, "subagent_count": len(self.subagents),
             "summary_truncated": self.text_truncated,
             "policy_denied_count": len(self.policy_denials),
+            "review_denied_count": len(self.review_denials),
             "policy_denied_tools": sorted(self.policy_denied_tools),
             "soft_denied_tools": sorted(self.soft_denied_tools),
         }
@@ -357,6 +413,14 @@ class AntigravityRuntime:
                         state.policy_denials.add(index)
                         named = state.step_tools[index] if index in state.step_tools else info.get("name")
                         state.policy_denied_tools.add(_public_tool_name(named))
+                    if _is_review_denial(error_info) is not None:
+                        # Record the step's own tool name. The message token
+                        # (read_file, command, ...) is only the recognition key.
+                        state.review_denials.add(index)
+                        state.soft_denied = True
+                        state.review_evidence = True
+                        named = state.step_tools[index] if index in state.step_tools else info.get("name")
+                        state.soft_denied_tools.add(_public_tool_name(named))
             if kind == "tool" and (state.step_tools.get(index) == "invoke_subagent"
                                    or (isinstance(step.get("tool_info"), dict)
                                        and step["tool_info"].get("name") == "invoke_subagent")):
@@ -468,8 +532,9 @@ class AntigravityRuntime:
                         f"Antigravity 遇到需要人工审批的工具调用（{names}），无人值守模式下被软拒绝，"
                         "原生 CLI 随即结束本轮，未产出完整结果。请把所需文件放进已授权的读取目录，或调整提示避免该调用后重试。"
                     )
-                    # 软拒绝直接结束本轮，是提前终止的原因；其它错误只计数，错误码仍为 REVIEW_REQUIRED。
-                    other = (state.tool_errors | state.step_errors) - state.policy_denials
+                    # A soft denial ends the turn. Other errors are only counted;
+                    # the error code stays REVIEW_REQUIRED.
+                    other = (state.tool_errors | state.step_errors) - state.policy_denials - state.review_denials
                     if other:
                         summary += f"另有 {len(other)} 个与权限无关的工具或步骤错误，修正授权后仍可能失败。"
                     if state.text:
@@ -477,7 +542,7 @@ class AntigravityRuntime:
                     state.failure_type = "soft_denied_review"
                     return self._snapshot(state, status="failed", terminated=True,
                                           error_code=ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED, summary=summary)
-                if state.soft_denied or state.result.get("has_error") or (state.tool_errors | state.step_errors) - state.policy_denials:
+                if state.soft_denied or state.result.get("has_error") or (state.tool_errors | state.step_errors) - state.policy_denials - state.review_denials:
                     return self._snapshot(state, status="failed", terminated=True,
                                           error_code=ANTIGRAVITY_RUN_INCOMPLETE,
                                           summary=state.text or "Antigravity 步骤执行失败或权限被拒绝")
