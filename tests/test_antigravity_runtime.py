@@ -314,6 +314,7 @@ def test_policy_hard_denial_with_final_answer_succeeds(tmp_path):
     assert native["policy_denied_count"] == 1
     assert native["policy_denied_tools"] == ["run_command"]
     assert native["tool_error_count"] == 1
+    assert native["unexplained_error_count"] == 0
     assert "private diagnostic" not in json.dumps(result)
 
 
@@ -343,6 +344,17 @@ def test_soft_deny_review_names_the_tool_and_keeps_partial_text(tmp_path):
     assert result["native"]["soft_denied_tools"] == ["ReadFile"]
     assert result["native"][DISPATCH_RECEIPT_KEY]["failure_type"] == "soft_denied_review"
     assert "ReadFile" in result["summary"] and "partial" in result["summary"]
+
+
+def test_soft_deny_with_tool_error_stays_review_required(tmp_path):
+    result, _ = execute(tmp_path, "soft_deny_with_tool_error")
+    assert result["status"] == "failed" and result["terminated"] is True
+    assert result["error_code"] == "ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED"
+    assert "另有 1 个" in result["summary"]
+    assert result["summary"].index("另有 1 个") < result["summary"].index("partial")
+    assert result["native"]["unexplained_error_count"] == 1
+    assert result["native"][DISPATCH_RECEIPT_KEY]["failure_type"] == "soft_denied_review"
+    assert "private diagnostic" not in json.dumps(result)
 
 
 def test_policy_denial_scan_ignores_non_string_error_type():
@@ -430,6 +442,16 @@ def test_unknown_tool_names_publish_only_other(tmp_path):
     (
         'permission check failed for unsandboxed "ls\\": '
         "Permission denied for unsandboxed(ls). Matches user-configured deny rule.",
+        False,
+    ),
+    (
+        'permission check failed for unsandboxed "ls\rwhoami": '
+        "Permission denied for unsandboxed(ls). Matches user-configured deny rule.",
+        False,
+    ),
+    (
+        'permission check failed for unsandboxed "ls": '
+        "Permission denied for unsandboxed(ls\r\nwhoami). Matches user-configured deny rule.",
         False,
     ),
     ("File not found: /workspace/permission check failed/input.txt", False),

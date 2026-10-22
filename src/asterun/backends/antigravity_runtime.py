@@ -47,7 +47,7 @@ _DENIED = re.compile(
 # A substring, an extra field, or a non-string value is an ordinary tool error.
 # Never copy the tool error text into a public result.
 _POLICY_DENIED = re.compile(
-    r'permission check failed for (unsandboxed|command|read_file|write_file|read_url|execute_url|mcp) "(?:[^"\\\n]|\\.){0,4096}": Permission denied for \1\([^\n]{0,4096}\)\. Matches user-configured deny rule\.'
+    r'permission check failed for (unsandboxed|command|read_file|write_file|read_url|execute_url|mcp) "(?:[^"\\\r\n]|\\[^\r\n]){0,4096}": Permission denied for \1\([^\r\n]{0,4096}\)\. Matches user-configured deny rule\.'
 )
 _POLICY_DENIED_KEYS = frozenset({"type", "message"})
 _KNOWN_TOOLS = frozenset({
@@ -180,6 +180,7 @@ class _Run:
                 "events_seen": self.events_seen,
             },
             "tool_error_count": len(self.tool_errors), "step_error_count": len(self.step_errors),
+            "unexplained_error_count": len((self.tool_errors | self.step_errors) - self.policy_denials),
             "soft_denied": self.soft_denied, "subagent_count": len(self.subagents),
             "summary_truncated": self.text_truncated,
             "policy_denied_count": len(self.policy_denials),
@@ -464,6 +465,10 @@ class AntigravityRuntime:
                         f"Antigravity 遇到需要人工审批的工具调用（{names}），无人值守模式下被软拒绝，"
                         "原生 CLI 随即结束本轮，未产出完整结果。请把所需文件放进已授权的读取目录，或调整提示避免该调用后重试。"
                     )
+                    # 软拒绝直接结束本轮，是提前终止的原因；其它错误只计数，错误码仍为 REVIEW_REQUIRED。
+                    other = (state.tool_errors | state.step_errors) - state.policy_denials
+                    if other:
+                        summary += f"另有 {len(other)} 个与权限无关的工具或步骤错误，修正授权后仍可能失败。"
                     if state.text:
                         summary += "\n\n" + state.text
                     state.failure_type = "soft_denied_review"

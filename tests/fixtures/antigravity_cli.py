@@ -245,6 +245,11 @@ elif MODE == "soft_deny_review":
     step(0, "tool", "DONE", tool_info={"name": "read_file"})
     os.write(2, b'Print mode: soft-denying tool confirmation "ReadFile" at step 6\n')
     result(response="partial")
+elif MODE == "soft_deny_with_tool_error":
+    step(0, "tool", "ERROR", tool_info={"name": "read_file", "error": {
+        "type": "TOOL_ERROR", "message": "private diagnostic"}})
+    os.write(2, b'Print mode: soft-denying tool confirmation "ReadFile" at step 6\n')
+    result(response="partial")
 elif MODE == "policy_lookalike_path":
     step(0, "tool", "ERROR", tool_info={"name": "read_file", "error": {
         "type": "TOOL_ERROR",
