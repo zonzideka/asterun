@@ -40,6 +40,13 @@ _METHODS = {"plugin.describe", "connection.inspect", "capability.prepare", "exec
             "execution.observe", "execution.cancel", "execution.reconcile", "usage.observe"}
 _UNSUPPORTED = {"native_resume": "unsupported", "approval": "unsupported", "quota": "unsupported",
                 "cancel": "unsupported", "reconcile": "unsupported"}
+# Host output_schema checks only output.text. Top-level reason is already used
+# for preflight failures and is ignored, not rejected, by WorkerBackend._normalize.
+_PUBLIC_FAILURE_REASONS = frozenset({
+    "ANTIGRAVITY_RUN_INCOMPLETE",
+    "ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED",
+    "ANTIGRAVITY_RUN_FAILED",
+})
 
 
 class Rejected(Exception):
@@ -259,10 +266,23 @@ def _mapped(native_result, context):
                 result["usage"].append({"meter": meter, "used": used, "scope": "session_cumulative",
                     "scope_ref": session, "cumulative": True, "sequence": 0,
                     "cursor": f'{context["run_id"]}:{meter}:final', "observed_at": now})
-    code = ("tool_permission_denied" if native.get("soft_denied") else
-            "native_tool_failed" if native.get("tool_error_count") or native.get("step_error_count") else
-            "native_run_failed" if result["status"] == "failed" else
-            "native_result_unknown" if result["status"] == "pending_reconcile" else "native_terminal")
+    status = result["status"]
+    error_code = native_result.get("error_code")
+    # A recovered hard denial is still a native success: the model handled it.
+    if status == "succeeded":
+        code = "native_terminal"
+    elif error_code == "ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED" or native.get("soft_denied"):
+        code = "tool_permission_denied"
+    elif native.get("tool_error_count") or native.get("step_error_count"):
+        code = "native_tool_failed"
+    elif status == "failed":
+        code = "native_run_failed"
+    elif status == "pending_reconcile":
+        code = "native_result_unknown"
+    else:
+        code = "native_terminal"
+    if status == "failed" and error_code in _PUBLIC_FAILURE_REASONS:
+        result["reason"] = error_code
     result["events"] = [{"provider_event_id": f'{context["run_id"]}:final',
         "category": f"antigravity.{code}", "summary": code, "provider_sequence": 0,
         "observed_at": now, **({"provider_session_id": session} if session else {})}]

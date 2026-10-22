@@ -166,6 +166,8 @@ def test_standalone_manifest_describe_and_no_native_discovery(antigravity_instal
     ("malformed", "pending_reconcile", "native_result_unknown"), ("unsafe_permission", "pending_reconcile", "native_result_unknown"),
     ("id_mismatch", "pending_reconcile", "native_result_unknown"), ("active_tool", "pending_reconcile", "native_result_unknown"),
     ("model_mismatch", "pending_reconcile", "native_result_unknown"), ("CANCELED", "cancelled", "native_terminal"),
+    ("policy_denied_recovered", "succeeded", "native_terminal"),
+    ("soft_deny_review", "failed", "tool_permission_denied"),
 ])
 def test_native_protocol_terminals_and_failure_categories(antigravity_installation, isolated_env, workspace_root, mode, status, category):
     native = setup_native(isolated_env, workspace_root, antigravity_installation, mode)

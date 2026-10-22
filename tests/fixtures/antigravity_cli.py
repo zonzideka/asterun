@@ -245,6 +245,32 @@ elif MODE == "soft_deny_review":
     step(0, "tool", "DONE", tool_info={"name": "read_file"})
     os.write(2, b'Print mode: soft-denying tool confirmation "ReadFile" at step 6\n')
     result(response="partial")
+elif MODE == "policy_lookalike_path":
+    step(0, "tool", "ERROR", tool_info={"name": "read_file", "error": {
+        "type": "TOOL_ERROR",
+        "message": "File not found: /workspace/permission check failed/input.txt"}})
+    step(1, "agent_response", "DONE", text_delta="final plan")
+    result(response="final plan")
+elif MODE == "policy_denied_extra_field":
+    step(0, "tool", "ERROR", tool_info={"name": "run_command", "error": {
+        "type": "TOOL_ERROR", "message": _POLICY_DENY_MESSAGE,
+        "execution_error": "private diagnostic"}})
+    step(1, "agent_response", "DONE", text_delta="final plan")
+    result(response="final plan")
+elif MODE == "policy_denied_prefix_suffix":
+    step(0, "tool", "ERROR", tool_info={"name": "run_command", "error": {
+        "type": "TOOL_ERROR", "message": "note: " + _POLICY_DENY_MESSAGE + " trailing"}})
+    step(1, "agent_response", "DONE", text_delta="final plan")
+    result(response="final plan")
+elif MODE == "policy_denied_secret_tool":
+    step(0, "tool", "ERROR", tool_info={"name": "PRIVATE_CUSTOMER_TOKEN_123", "error": {
+        "type": "TOOL_ERROR", "message": _POLICY_DENY_MESSAGE}})
+    step(1, "agent_response", "DONE", text_delta="final plan")
+    result(response="final plan")
+elif MODE == "soft_deny_secret_tool":
+    step(0, "tool", "DONE", tool_info={"name": "PRIVATE_CUSTOMER_TOKEN_123"})
+    os.write(2, b'Print mode: soft-denying tool confirmation "PRIVATE_CUSTOMER_TOKEN_123" at step 6\n')
+    result(response="partial")
 else:
     step(0, "user_input", text_delta=message["message"]["content"])
     step(1, "thinking", text_delta="private reasoning")

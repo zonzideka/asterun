@@ -43,13 +43,21 @@ _DENIED = re.compile(
     r"(?:cannot|can't|unable to)[^\n]{0,80}(?:ask|obtain)[^\n]{0,80}(?:approval|permission)",
     re.IGNORECASE,
 )
-# Profile deny rules are a hard refusal. Match stable phrases only; never copy the
-# tool error text into a public result. One-level string values only.
+# Profile deny rules are a hard refusal only for agy's whole native sentence.
+# A substring, an extra field, or a non-string value is an ordinary tool error.
+# Never copy the tool error text into a public result.
 _POLICY_DENIED = re.compile(
-    r"permission check failed|Matches user-configured deny rule|Permission denied for (?:unsandboxed|command|read_file|write_file|read_url|execute_url|mcp)\(",
-    re.IGNORECASE,
+    r'permission check failed for (unsandboxed|command|read_file|write_file|read_url|execute_url|mcp) "(?:[^"\\\n]|\\.){0,4096}": Permission denied for \1\([^\n]{0,4096}\)\. Matches user-configured deny rule\.'
 )
-_TOOL_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
+_POLICY_DENIED_KEYS = frozenset({"type", "message"})
+_KNOWN_TOOLS = frozenset({
+    "run_command", "read_file", "write_file", "view_file", "list_dir", "grep_search",
+    "find_by_name", "codebase_search", "read_url_content", "view_content_chunk",
+    "search_web", "read_url", "execute_url", "mcp", "replace_file_content",
+    "multi_replace_file_content", "write_to_file", "ReadFile", "WriteFile",
+    "RunCommand", "ReadUrl", "ExecuteUrl", "Mcp", "ViewFile", "ListDir",
+    "GrepSearch", "FindByName",
+})
 _SOFT_DENIED_TOOL = re.compile(
     r'soft-denying tool confirmation "([A-Za-z_][A-Za-z0-9_]{0,63})"'
 )
@@ -91,9 +99,21 @@ class _ProtocolError(Exception):
 
 
 def _public_tool_name(value: Any) -> str:
-    if isinstance(value, str) and _TOOL_NAME.fullmatch(value):
+    if isinstance(value, str) and value in _KNOWN_TOOLS:
         return value
     return "other"
+
+
+def _is_policy_denial(error_info: Any) -> bool:
+    """True only for agy's native deny sentence in a {type?, message} object."""
+    if not isinstance(error_info, dict) or not set(error_info).issubset(_POLICY_DENIED_KEYS):
+        return False
+    message = error_info.get("message")
+    if not isinstance(message, str) or _POLICY_DENIED.fullmatch(message) is None:
+        return False
+    if "type" in error_info and not isinstance(error_info["type"], str):
+        return False
+    return True
 
 
 def _bounded_text(value: str) -> str:
@@ -329,7 +349,7 @@ class AntigravityRuntime:
                         raise _ProtocolError("invalid_tool_error")
                     state.tool_errors.add(index)
                     error_info = info["error"]
-                    if any(isinstance(value, str) and _POLICY_DENIED.search(value) for value in error_info.values()):
+                    if _is_policy_denial(error_info):
                         state.policy_denials.add(index)
                         named = state.step_tools[index] if index in state.step_tools else info.get("name")
                         state.policy_denied_tools.add(_public_tool_name(named))
@@ -577,7 +597,8 @@ class AntigravityRuntime:
                         diagnostic = stderr_tail + data
                         decoded = diagnostic.decode("utf-8", errors="replace")
                         state.soft_denied |= bool(_DENIED.search(decoded))
-                        state.soft_denied_tools.update(_SOFT_DENIED_TOOL.findall(decoded))
+                        state.soft_denied_tools.update(
+                            _public_tool_name(name) for name in _SOFT_DENIED_TOOL.findall(decoded))
                         stderr_tail = diagnostic[-512:]
                         continue
                     state.stdout_bytes += len(data)

@@ -349,6 +349,11 @@ def test_policy_denial_scan_ignores_non_string_error_type():
     state = module._Run("run_regex")
     state.init_seen = True
     state.session_id = "fixture-conversation-123"
+    full = (
+        'permission check failed for unsandboxed "private diagnostic": '
+        "Permission denied for unsandboxed(private diagnostic). "
+        "Matches user-configured deny rule."
+    )
 
     def tool_error(index, error, name="run_command"):
         line = json.dumps({"event": "step_update", "step_update": {
@@ -361,8 +366,73 @@ def test_policy_denial_scan_ignores_non_string_error_type():
     tool_error(0, {"type": 7, "flag": True, "message": None,
                    "detail": {"message": "permission check failed"}})
     assert state.policy_denials == set()
-    tool_error(1, {"type": ["TOOL_ERROR"], "message": "permission check failed for unsandboxed"})
-    assert state.policy_denials == {1}
+    tool_error(1, {"type": ["TOOL_ERROR"], "message": full})
+    assert state.policy_denials == set()
+    tool_error(2, {"type": "TOOL_ERROR", "message": "permission check failed for unsandboxed"})
+    assert state.policy_denials == set()
+    tool_error(3, {"type": "TOOL_ERROR", "message": full})
+    assert state.policy_denials == {3}
     assert state.policy_denied_tools == {"run_command"}
-    tool_error(2, {"type": {"code": 1}, "message": "private diagnostic"})
-    assert 2 not in state.policy_denials
+    tool_error(4, {"type": {"code": 1}, "message": "private diagnostic"})
+    assert 4 not in state.policy_denials
+
+
+@pytest.mark.parametrize("mode", [
+    "policy_lookalike_path", "policy_denied_extra_field", "policy_denied_prefix_suffix",
+])
+def test_policy_lookalikes_stay_incomplete(tmp_path, mode):
+    result, _ = execute(tmp_path, mode)
+    assert result["status"] == "failed" and result["terminated"] is True
+    assert result["error_code"] == "ANTIGRAVITY_RUN_INCOMPLETE"
+    assert result["native"]["policy_denied_count"] == 0
+    assert result["native"]["policy_denied_tools"] == []
+    assert result["summary"] == "final plan"
+    public = json.dumps(result)
+    assert "permission check failed" not in public
+    assert "private diagnostic" not in public
+    assert "/workspace/permission check failed/input.txt" not in public
+
+
+def test_unknown_tool_names_publish_only_other(tmp_path):
+    secret = "PRIVATE_CUSTOMER_TOKEN_123"
+    denied, _ = execute(tmp_path, "policy_denied_secret_tool")
+    assert denied["status"] == "succeeded" and denied["terminated"] is True
+    assert denied["native"]["policy_denied_tools"] == ["other"]
+    assert secret not in json.dumps(denied)
+    assert secret not in denied["summary"]
+    soft, _ = execute(tmp_path, "soft_deny_secret_tool")
+    assert soft["status"] == "failed" and soft["terminated"] is True
+    assert soft["error_code"] == "ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED"
+    assert soft["native"]["soft_denied_tools"] == ["other"]
+    assert "other" in soft["summary"]
+    assert secret not in json.dumps(soft)
+    assert secret not in soft["summary"]
+
+
+@pytest.mark.parametrize("message,expected", [
+    (
+        'permission check failed for unsandboxed "grep -n -A30 -i \\"T59\\" /workspace/x.md | head -80": '
+        'Permission denied for unsandboxed(grep -n -A30 -i "T59" /workspace/x.md | head -80). '
+        "Matches user-configured deny rule.",
+        True,
+    ),
+    (
+        'permission check failed for unsandboxed "ls": Permission denied for unsandboxed(ls). '
+        "Matches user-configured deny rule.",
+        True,
+    ),
+    (
+        'permission check failed for unsandboxed "ls "extra": '
+        'Permission denied for unsandboxed(ls "extra). Matches user-configured deny rule. '
+        "Another sentence.",
+        False,
+    ),
+    (
+        'permission check failed for unsandboxed "ls\\": '
+        "Permission denied for unsandboxed(ls). Matches user-configured deny rule.",
+        False,
+    ),
+    ("File not found: /workspace/permission check failed/input.txt", False),
+])
+def test_is_policy_denial_requires_escaped_quotes_inside_the_command(message, expected):
+    assert module._is_policy_denial({"type": "TOOL_ERROR", "message": message}) is expected
