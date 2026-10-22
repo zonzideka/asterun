@@ -2,13 +2,19 @@
 
 # 首版发行说明
 
-当前公开源码版本为 `0.1.0a27`，正式稳定版 `0.1.0` 尚未发布。本次预发布的安装资产和校验文件见[对应版本发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a27)。首版范围已冻结，发布准备集中在现有行为、兼容和打包修复。项目采用 [Apache-2.0](../LICENSE)。`v0.1.0a27` 标签尚未打出，发行页上的文件要等该标签进入 `main` 且发行工作流成功之后才会出现。
+当前公开源码版本为 `0.1.0a28`，正式稳定版 `0.1.0` 尚未发布。本次预发布的安装资产和校验文件见[对应版本发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a28)。首版范围已冻结，发布准备集中在现有行为、兼容和打包修复。项目采用 [Apache-2.0](../LICENSE)。`v0.1.0a28` 标签尚未打出，发行页上的文件要等该标签进入 `main` 且发行工作流成功之后才会出现。
+
+## 0.1.0a28
+
+相对 2026-10-22 已发布的 [`v0.1.0a27`](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a27)，本版修复 Antigravity 后端的结果判定。profile deny 规则的硬拒绝只认原生完整报错句和 `{type,message}` 结构；模型给出最终回答时记为成功，并记录 `policy_denied_count` 与 `policy_denied_tools`。无人值守下的软拒绝且有明确复核证据时，改报新码 `ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED`，并记录 `soft_denied_tools` 与 `unexplained_error_count`。其他工具错误，或硬拒绝后没有最终回答，仍为 `ANTIGRAVITY_RUN_INCOMPLETE`。对外只公开白名单内的工具名。外部 Antigravity 插件升到 `1.0.8`（同步 runtime，并修正事件分类；已知：宿主仍把插件失败归一为 `PLUGIN_EXECUTION_FAILED`）。Cursor `1.0.1`、Jules `1.0.0` 不变。协议与标准 skill 最低接口 `0.1.0a14` 不变。
+
+尚未打 `v0.1.0a28`。资产要等该标签进入 `main` 且发行工作流成功之后，才会出现在[发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a28)。本次资产为核心 wheel、源码包、`asterun-skill-0.1.0a28.zip`、三个外部插件的 wheel 与源码包（Antigravity `1.0.8`，Cursor `1.0.1`，Jules `1.0.0`），以及 `SHA256SUMS`。
 
 ## 0.1.0a27
 
 相对 2026-10-21 已发布的 [`v0.1.0a26`](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a26)，本版是上下文胶囊与 Token 预算第二阶段（默认关闭）。`context_budget.mode` 新增 `enforce`：任务级 Token 预算准入（`admission_only`），首次在 enforce 下派发且匹配 profile 含 `task_hard` 时建立 Budget、上限按首次快照，超限 `BUDGET_EXHAUSTED` 并生成 `budget_soft` 胶囊，终态按 processed 结算、未知转 `UNCERTAIN`；enforce 需至少一个带 `task_hard` 的 profile。白名单内分段（`segmentation.backends`）：grok（`workspace-code-v1`）以原生回合上限分段；codex 仅实现角色、agy 仅 profile `segment: true`，在 run 成功、回复末行为 `ASTERUN-SEGMENT: CONTINUE`、无子代理、用量可归属且本段 processed ≥ `segment_soft` 时触发（外部 Antigravity 插件结果不保留 `subagent_count`，目前不会自动续段；完整条件见[插件文档](plugins.md)），新线程 + 胶囊续段（native_compact 不进自动流程）；审查、质量流程、外部强制审查等任务永不分段。续段幂等（`seg:{task}:{run}:{idx}`），计入 `max_runs_per_task`，重启与人工交接 resume 会对未判定的终态段重新判定。grok 续段仅在处理量与驻留峰值都已知且低于阈值时 resume 原会话。备份校验预算预留引用的 run 存在且同任务。默认 `off`，未写此键的既有配置序列化与摘要不变；schema 版本仍为 6。插件版本不变（Antigravity `1.0.7`、Cursor `1.0.1`、Jules `1.0.0`）；协议与标准 skill 最低接口 `0.1.0a14` 不变。
 
-尚未打 `v0.1.0a27`。资产要等该标签进入 `main` 且发行工作流成功之后，才会出现在[发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a27)。本次资产为核心 wheel、源码包、`asterun-skill-0.1.0a27.zip`、三个外部插件的 wheel 与源码包（Antigravity `1.0.7`，Cursor `1.0.1`，Jules `1.0.0`），以及 `SHA256SUMS`。
+`v0.1.0a27` 已于 2026-10-22 发布，资产见[发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a27)：核心 wheel、源码包、`asterun-skill-0.1.0a27.zip`、三个外部插件的 wheel 与源码包（Antigravity `1.0.7`，Cursor `1.0.1`，Jules `1.0.0`），以及 `SHA256SUMS`。
 
 ## 0.1.0a26
 
