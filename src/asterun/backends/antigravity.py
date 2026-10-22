@@ -26,6 +26,14 @@ LIVE_ENV = "ASTERUN_RUN_ANTIGRAVITY"
 BIN_ENV = "ANTIGRAVITY_BIN"
 DISPATCH_RECEIPT_KEY = "asterun.antigravity_dispatch_v1"
 PRE_PROMPT_STAGES = frozenset({"preflight", "spawn"})
+# Prepended only to the text sent to the CLI. The stored task text and its
+# input hash stay the caller's original. {workspace} is the resolved workspace.
+READ_ONLY_PREAMBLE = (
+    "[Asterun] This run is read-only. You may only read files under {workspace} with read_file. "
+    "Writing files (including /tmp), running commands or scripts, network/URL access, MCP tools and subagents "
+    "are blocked by policy; do not attempt them, and do not try to list directories (read files by exact path). "
+    "Finish with your complete answer in this turn.\n\n"
+)
 
 
 def live_antigravity_enabled() -> bool:
@@ -357,7 +365,11 @@ class AntigravityBackend:
                         "task_id": task_id.value, "run_id": run_id.value, "stage": "preflight",
                         "prompt_attempted": False, "delivery": "not_sent", "failure_type": type(exc).__name__,
                     }}}
-        result = self.runtime.run(run_id, text, command=command, env=env, cwd=workspace,
+        # Profile denies writes, commands, URLs, MCP, and subagents. The model
+        # still tries them unless the prompt says not to. This prefix is not
+        # part of the stored task or the input hash.
+        cli_text = READ_ONLY_PREAMBLE.replace("{workspace}", str(workspace), 1) + text
+        result = self.runtime.run(run_id, cli_text, command=command, env=env, cwd=workspace,
                                   expected_model=model,
                                   publish=lambda item: publish(bind_receipt(item)), stopping=stopping)
         native_out = result.get("native")

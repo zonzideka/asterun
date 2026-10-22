@@ -327,6 +327,14 @@ def test_policy_hard_denial_with_final_answer_succeeds(tmp_path):
     assert "private diagnostic" not in json.dumps(result)
 
 
+def test_multiline_policy_denial_with_final_answer_succeeds(tmp_path):
+    result, _ = execute(tmp_path, "policy_denied_multiline")
+    assert result["status"] == "succeeded" and result["terminated"] is True
+    assert result["summary"] == "final plan"
+    assert result["native"]["policy_denied_count"] == 1
+    assert result["native"]["policy_denied_tools"] == ["run_command"]
+
+
 def test_policy_hard_denial_without_answer_is_incomplete(tmp_path):
     result, _ = execute(tmp_path, "policy_denied_no_answer")
     assert result["status"] == "failed" and result["terminated"] is True
@@ -430,6 +438,53 @@ def test_unknown_tool_names_publish_only_other(tmp_path):
     assert secret not in soft["summary"]
 
 
+def _policy_message(tool, quoted, raw):
+    return (
+        f'permission check failed for {tool} "{quoted}": '
+        f"Permission denied for {tool}({raw}). "
+        "Matches user-configured deny rule."
+    )
+
+
+# Real agy deny for a heredoc: the quoted side is Go %q, the parenthesised side
+# is the original command with real newlines.
+_MULTILINE_QUOTED = "cd /tmp && python3 - <<'EOF'\\nimport json\\nprint(\\\"x\\\")\\nEOF"
+_MULTILINE_RAW = "cd /tmp && python3 - <<'EOF'\nimport json\nprint(\"x\")\nEOF"
+_REAL_POLICY = (
+    'permission check failed for unsandboxed "cd /tmp && python3 - <<\'EOF\'\\nimport json\\nprint(\\"x\\")\\nEOF": '
+    'Permission denied for unsandboxed(cd /tmp && python3 - <<\'EOF\'\nimport json\nprint("x")\nEOF). '
+    "Matches user-configured deny rule."
+)
+
+
+def test_go_unquote_decodes_simple_escapes_and_the_heredoc():
+    body = r"\n\t\r\a\b\f\v\\" + r'\"'
+    assert module._go_unquote(body) == "\n\t\r\a\b\f\v\\" + '"'
+    assert _policy_message("unsandboxed", _MULTILINE_QUOTED, _MULTILINE_RAW) == _REAL_POLICY
+    assert module._go_unquote(_MULTILINE_QUOTED) == _MULTILINE_RAW
+
+
+@pytest.mark.parametrize("body,expected", [
+    (r"\x41\u0042\U00000043", "ABC"),
+    (r"\101\040", "A "),
+    (r"\0", "\x00"),
+    (r"\08", "\x008"),
+    (r"\q", None),
+    ("\n", None),
+    ("\r", None),
+    ('"', None),
+    ("\\", None),
+    (r"\x4", None),
+    (r"\uD800", None),
+    (r"\U00110000", None),
+    (r"\400", None),
+    ("a" * 16384, "a" * 16384),
+    ("a" * 16385, None),
+])
+def test_go_unquote_decodes_percent_q_body(body, expected):
+    assert module._go_unquote(body) == expected
+
+
 @pytest.mark.parametrize("message,expected", [
     (
         'permission check failed for unsandboxed "grep -n -A30 -i \\"T59\\" /workspace/x.md | head -80": '
@@ -437,6 +492,18 @@ def test_unknown_tool_names_publish_only_other(tmp_path):
         "Matches user-configured deny rule.",
         True,
     ),
+    (_REAL_POLICY, True),
+    (_policy_message("unsandboxed", _MULTILINE_QUOTED, _MULTILINE_RAW.replace('print("x")', 'print("y")', 1)), False),
+    (_policy_message("unsandboxed", _MULTILINE_QUOTED, _MULTILINE_RAW + "\nextra"), False),
+    (
+        _policy_message(
+            "unsandboxed",
+            _MULTILINE_QUOTED,
+            _MULTILINE_RAW + "). Matches user-configured deny rule. more",
+        ),
+        False,
+    ),
+    (_policy_message("unsandboxed", "ls\\q", "ls\\q"), False),
     (
         'permission check failed for unsandboxed "ls": Permission denied for unsandboxed(ls). '
         "Matches user-configured deny rule.",
@@ -496,6 +563,12 @@ _REVIEW_ESCAPED = _review_sentence(
 @pytest.mark.parametrize("error_info,expected", [
     ({"type": "TOOL_ERROR", "message": _REVIEW_REAL}, "read_file"),
     ({"type": "TOOL_ERROR", "message": _REVIEW_ESCAPED}, "command"),
+    ({"type": "TOOL_ERROR", "message": _review_sentence("unsandboxed", _MULTILINE_QUOTED, _MULTILINE_RAW)}, "unsandboxed"),
+    (
+        {"type": "TOOL_ERROR", "message": _review_sentence(
+            "unsandboxed", _MULTILINE_QUOTED, _MULTILINE_RAW.replace('print("x")', 'print("y")', 1))},
+        None,
+    ),
     ({"type": "TOOL_ERROR", "message": _review_sentence("read_file", "ls\rwhoami", "ls\rwhoami")}, None),
     ({"type": "TOOL_ERROR", "message": _REVIEW_REAL.replace("\n", "\r\n")}, None),
     ({"type": "TOOL_ERROR", "message": _REVIEW_REAL, "detail": "extra"}, None),

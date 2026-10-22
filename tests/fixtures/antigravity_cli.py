@@ -62,6 +62,13 @@ _POLICY_DENY_MESSAGE = (
     "Permission denied for unsandboxed(private diagnostic). "
     "Matches user-configured deny rule."
 )
+# Go %q puts newlines in the quoted argument as the two characters \n, and the
+# parenthesised argument keeps the real newlines.
+_POLICY_DENY_MULTILINE = (
+    'permission check failed for unsandboxed "cd /tmp && python3 - <<\'EOF\'\\nimport json\\nprint(\\"x\\")\\nEOF": '
+    'Permission denied for unsandboxed(cd /tmp && python3 - <<\'EOF\'\nimport json\nprint("x")\nEOF). '
+    "Matches user-configured deny rule."
+)
 
 
 def policy_denied_command():
@@ -258,6 +265,12 @@ elif MODE == "policy_denied_recovered":
     policy_denied_command()
     step(1, "tool", "DONE", tool_info={"name": "read_file"})
     step(2, "agent_response", "DONE", text_delta="final plan")
+    result(response="final plan")
+elif MODE == "policy_denied_multiline":
+    step(0, "tool", "ACTIVE", tool_info={"name": "run_command"})
+    step(0, "tool", "ERROR", tool_info={"name": "run_command", "error": {
+        "type": "TOOL_ERROR", "message": _POLICY_DENY_MULTILINE}})
+    step(1, "agent_response", "DONE", text_delta="final plan")
     result(response="final plan")
 elif MODE == "policy_denied_no_answer":
     policy_denied_command()
