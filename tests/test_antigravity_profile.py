@@ -225,6 +225,35 @@ def test_context_directory_listing_failure_is_rejected(tmp_path, monkeypatch):
         validate_workspace(workspace)
 
 
+def test_empty_context_directory_swapped_for_symlink_after_lstat_is_rejected(tmp_path, monkeypatch):
+    import asterun.antigravity_profile as profile
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    marker = workspace / ".agents"
+    marker.mkdir()
+    # Empty target: a listing that follows the swapped symlink would allow it.
+    other = tmp_path / "other"
+    other.mkdir()
+    real_lstat = profile.os.lstat
+    swapped = False
+
+    def lstat_then_swap(target, *args, **kwargs):
+        nonlocal swapped
+        result = real_lstat(target, *args, **kwargs)
+        if not swapped and Path(target) == marker:
+            swapped = True
+            marker.rmdir()
+            marker.symlink_to(other, target_is_directory=True)
+        return result
+
+    monkeypatch.setattr(profile.os, "lstat", lstat_then_swap)
+    # O_DIRECTORY|O_NOFOLLOW on the swapped symlink is ENOTDIR.
+    with pytest.raises(AsterunError, match="NotADirectoryError") as captured:
+        validate_workspace(workspace)
+    assert swapped
+    assert captured.value.code == "INVALID_CONFIG"
+
+
 def test_invalid_or_shared_home_is_not_modified(tmp_path):
     home = tmp_path / "native"
     home.mkdir(mode=0o755)
