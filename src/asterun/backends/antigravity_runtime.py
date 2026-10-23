@@ -8,7 +8,10 @@ import os
 import re
 import selectors
 import signal
+import sqlite3
+import stat
 import subprocess
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
@@ -106,6 +109,23 @@ _KNOWN_TOOLS = frozenset({
 _SOFT_DENIED_TOOL = re.compile(
     r'soft-denying tool confirmation "([A-Za-z_][A-Za-z0-9_]{0,63})"'
 )
+# agy >= 1.4.5 stores a soft-denied tool confirmation as conversation step
+# type 132, status 6. The file name is the lowercase UUID form already used
+# for agy state files (antigravity_profile._validate_uuid_state).
+_CONVERSATION_UUID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
+_REVIEW_STEP_TYPE = 132
+_REVIEW_STEP_STATUS = 6
+_MAX_CONVERSATION_DB_BYTES = 64 * 1024 * 1024
+_MAX_REVIEW_ROWS = 256
+_MAX_PROTO_BYTES = 256 * 1024
+# A conversation-db query that exceeds any of these is no evidence.
+# The instruction budget is large enough for a scan of the size cap.
+_SQL_PROGRESS_INSTRUCTIONS = 10000
+_SQL_INSTRUCTION_BUDGET = 50000000
+_SQL_DEADLINE_SECONDS = 1.0
+_MAX_PROTO_DEPTH = 8
+_MAX_PROTO_FIELDS = 512
+_COPY_CHUNK = 1024 * 1024
 # agy 真实额度错误格式出现后在此补充
 AGY_QUOTA_PATTERNS: tuple[re.Pattern[str], ...] = ()
 _AGY_RATE_LIMIT = re.compile(r"\b429\b|RESOURCE_EXHAUSTED")
@@ -147,6 +167,346 @@ def _public_tool_name(value: Any) -> str:
     if isinstance(value, str) and value in _KNOWN_TOOLS:
         return value
     return "other"
+
+
+class _ReviewTools(set):
+    """Whitelist tool names from conversation-db review steps."""
+
+    def __init__(self, names: set[str], step_count: int) -> None:
+        super().__init__(names)
+        self.step_count = step_count
+
+
+def _read_varint(data: bytes, index: int) -> tuple[int, int] | None:
+    """Read one protobuf varint. None if the encoding does not fit in 64 bits."""
+    value = 0
+    shift = 0
+    limit = min(len(data), index + 10)
+    while index < limit:
+        byte = data[index]
+        index += 1
+        # The 10th byte may contribute only bit 63. A continuation bit or any
+        # higher bit does not fit in an unsigned 64-bit value.
+        if shift == 63 and byte > 1:
+            return None
+        value |= (byte & 0x7F) << shift
+        if byte < 0x80:
+            return value, index
+        shift += 7
+    return None
+
+
+def _protobuf_fields(data: bytes, *, depth: int = 0) -> list[tuple[int, int, object]] | None:
+    """Parse one protobuf message into (field number, wire type, value).
+
+    Accepts varint, fixed64, length-delimited, and fixed32. Groups and any
+    other wire type are rejected. Length-delimited values stay raw bytes;
+    callers descend explicitly so a string is not required to be a message.
+    Returns None on any malformation, depth overflow, or size overflow.
+    """
+    try:
+        if not isinstance(data, (bytes, bytearray)) or depth > _MAX_PROTO_DEPTH or len(data) > _MAX_PROTO_BYTES:
+            return None
+        fields: list[tuple[int, int, object]] = []
+        index = 0
+        size = len(data)
+        while index < size:
+            if len(fields) >= _MAX_PROTO_FIELDS:
+                return None
+            parsed = _read_varint(data, index)
+            if parsed is None:
+                return None
+            key, index = parsed
+            field_number = key >> 3
+            wire = key & 7
+            if field_number < 1 or field_number > 536870911:
+                return None
+            if wire == 0:
+                parsed = _read_varint(data, index)
+                if parsed is None:
+                    return None
+                value, index = parsed
+            elif wire == 1:
+                if index + 8 > size:
+                    return None
+                value = data[index:index + 8]
+                index += 8
+            elif wire == 2:
+                parsed = _read_varint(data, index)
+                if parsed is None:
+                    return None
+                length, index = parsed
+                if length > _MAX_PROTO_BYTES or index + length > size:
+                    return None
+                value = data[index:index + length]
+                index += length
+            elif wire == 5:
+                if index + 4 > size:
+                    return None
+                value = data[index:index + 4]
+                index += 4
+            else:
+                return None
+            fields.append((field_number, wire, value))
+        return fields
+    except Exception:
+        return None
+
+
+def _call_tool_name(call: list[tuple[int, int, object]]) -> str | None:
+    """Whitelist tool name from the first field 2 of a tool-call message."""
+    for number, wire, value in call:
+        if number != 2 or wire != 2:
+            continue
+        if not isinstance(value, bytes) or len(value) > 64:
+            return None
+        try:
+            text = value.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+        public = _public_tool_name(text)
+        # Unknown names stay off the public result. "other" would hide which
+        # tool was denied and is not evidence for this path.
+        return None if public == "other" else public
+    return None
+
+
+def _review_tool_from_payload(payload: bytes) -> str | None:
+    """Public tool name encoded in an agy 1.4.5 review step payload.
+
+    The name is field 2 of the tool call at field 5 → field 4. Arguments in
+    sibling fields are ignored. Malformed input returns None and does not raise.
+    """
+    try:
+        if isinstance(payload, memoryview):
+            payload = payload.tobytes()
+        if not isinstance(payload, (bytes, bytearray)):
+            return None
+        fields = _protobuf_fields(bytes(payload), depth=0)
+        if fields is None:
+            return None
+        for number, wire, value in fields:
+            if number != 5 or wire != 2 or not isinstance(value, bytes):
+                continue
+            body = _protobuf_fields(value, depth=1)
+            if body is None:
+                return None
+            for sub_number, sub_wire, sub_value in body:
+                if sub_number != 4 or sub_wire != 2 or not isinstance(sub_value, bytes):
+                    continue
+                call = _protobuf_fields(sub_value, depth=2)
+                if call is None:
+                    return None
+                return _call_tool_name(call)
+        return None
+    except Exception:
+        return None
+
+
+def _copy_fd(fd: int, dest: Path, size: int) -> None:
+    with dest.open("wb") as handle:
+        remaining = size
+        while remaining:
+            chunk = os.read(fd, min(_COPY_CHUNK, remaining))
+            if not chunk:
+                raise OSError("short_copy")
+            handle.write(chunk)
+            remaining -= len(chunk)
+
+
+def _open_directory(parent: int | None, name: str | Path) -> int:
+    flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0)
+    if parent is None:
+        return os.open(name, flags)
+    # O_NOFOLLOW keeps a swapped directory entry from escaping the agy HOME.
+    return os.open(name, flags | os.O_NOFOLLOW, dir_fd=parent)
+
+
+def _bounded_regular(dir_fd: int, name: str) -> os.stat_result | None:
+    """lstat of one regular file inside the size cap, or None when absent.
+
+    A symlink, another file type, or a file over the cap raises OSError so
+    the caller returns no evidence instead of following the link.
+    """
+    try:
+        info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        raise OSError("not_regular")
+    if info.st_size < 0 or info.st_size > _MAX_CONVERSATION_DB_BYTES:
+        raise OSError("db_size")
+    return info
+
+
+def _opened_regular_size(fd: int, earlier: os.stat_result) -> int | None:
+    """Byte size of fd when it is still the regular file ``earlier`` lstat saw.
+
+    None means the opened object is not a regular file, is over the size cap,
+    or has a different device or inode. Callers treat that as no evidence.
+    """
+    found = os.fstat(fd)
+    if not stat.S_ISREG(found.st_mode):
+        return None
+    if found.st_size < 0 or found.st_size > _MAX_CONVERSATION_DB_BYTES:
+        return None
+    if (found.st_dev, found.st_ino) != (earlier.st_dev, earlier.st_ino):
+        return None
+    return found.st_size
+
+
+def _tools_from_copied_db(dest: Path) -> set[str]:
+    """Whitelist tools from review steps in a private read-only database copy.
+
+    ``steps`` must be an ordinary sqlite_master table. Rows are filtered to
+    step_type 132, status 6, and payloads within the cap before the candidate
+    limit. SQLite's string/BLOB limit, an instruction budget, and a deadline
+    are armed first. A limit or any SQLite error returns no evidence.
+    """
+    try:
+        connection = sqlite3.connect(dest.as_uri() + "?mode=ro", uri=True, timeout=1.0)
+    except sqlite3.Error:
+        return set()
+    rows: list = []
+    try:
+        connection.execute("PRAGMA query_only=ON")
+        connection.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, _MAX_PROTO_BYTES)
+        deadline = time.monotonic() + _SQL_DEADLINE_SECONDS
+        used = 0
+
+        def _abort_over_budget() -> int:
+            nonlocal used
+            used += _SQL_PROGRESS_INSTRUCTIONS
+            if used > _SQL_INSTRUCTION_BUDGET or time.monotonic() >= deadline:
+                return 1
+            return 0
+
+        connection.set_progress_handler(_abort_over_budget, _SQL_PROGRESS_INSTRUCTIONS)
+        # SELECT does not fire triggers, so the steps object's own type is enough.
+        found = connection.execute(
+            "SELECT type FROM sqlite_master WHERE name = ?",
+            ("steps",),
+        ).fetchall()
+        if found != [("table",)]:
+            return set()
+        rows = connection.execute(
+            "SELECT step_type, status, step_payload FROM steps "
+            "WHERE step_type = ? AND status = ? AND length(step_payload) <= ? "
+            "ORDER BY idx LIMIT ?",
+            (_REVIEW_STEP_TYPE, _REVIEW_STEP_STATUS, _MAX_PROTO_BYTES, _MAX_REVIEW_ROWS),
+        ).fetchall()
+    except sqlite3.Error:
+        return set()
+    finally:
+        try:
+            connection.set_progress_handler(None, 0)
+        except sqlite3.Error:
+            pass
+        try:
+            connection.close()
+        except sqlite3.Error:
+            pass
+    names: set[str] = set()
+    count = 0
+    for step_type, status, payload in rows:
+        if step_type != _REVIEW_STEP_TYPE or status != _REVIEW_STEP_STATUS:
+            continue
+        if isinstance(payload, memoryview):
+            if payload.nbytes > _MAX_PROTO_BYTES:
+                continue
+            payload = payload.tobytes()
+        if not isinstance(payload, (bytes, bytearray)) or len(payload) > _MAX_PROTO_BYTES:
+            continue
+        try:
+            tool = _review_tool_from_payload(payload)
+        except Exception:
+            continue
+        if tool:
+            names.add(tool)
+            count += 1
+    if count == 0:
+        return set()
+    return _ReviewTools(names, count)
+
+
+def _readonly_open_flags() -> int:
+    """Flags for the database and WAL: read-only, no symlink follow, no block."""
+    return os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
+
+
+def _review_steps_in_directory(dir_fd: int, filename: str) -> set[str]:
+    """Copy filename and an optional -wal, then read review tool names.
+
+    The agy profile is never opened with SQLite. SQLite would create a -shm
+    sidecar even for a read-only connection. Open cannot block on a FIFO
+    swapped in after lstat. The fd must still be that regular file, within
+    the size cap.
+    """
+    info = _bounded_regular(dir_fd, filename)
+    if info is None or info.st_size == 0:
+        return set()
+    wal_name = filename + "-wal"
+    wal_info = _bounded_regular(dir_fd, wal_name)
+    flags = _readonly_open_flags()
+    db_fd = os.open(filename, flags, dir_fd=dir_fd)
+    try:
+        size = _opened_regular_size(db_fd, info)
+        if size is None:
+            return set()
+        wal_fd = None
+        wal_size = None
+        if wal_info is not None:
+            wal_fd = os.open(wal_name, flags, dir_fd=dir_fd)
+        try:
+            if wal_fd is not None and wal_info is not None:
+                wal_size = _opened_regular_size(wal_fd, wal_info)
+                if wal_size is None:
+                    return set()
+            with tempfile.TemporaryDirectory(prefix="asterun-agy-conv-") as tmp:
+                dest = Path(tmp) / filename
+                _copy_fd(db_fd, dest, size)
+                if wal_fd is not None and wal_size is not None:
+                    _copy_fd(wal_fd, Path(tmp) / wal_name, wal_size)
+                return _tools_from_copied_db(dest)
+        finally:
+            if wal_fd is not None:
+                os.close(wal_fd)
+    finally:
+        os.close(db_fd)
+
+
+def _review_steps_from_conversation_db(home: Path, conversation_id: str) -> set[str]:
+    """Public tool names of soft-denied confirmation steps in one agy conversation.
+
+    The conversation id must be the lowercase UUID of the session. The database
+    must be a regular file under ``<home>/.gemini/antigravity-cli/conversations/``.
+    Any OS error, SQLite error, rejected path, or resource limit yields an empty set.
+    """
+    try:
+        if not isinstance(home, Path) or not isinstance(conversation_id, str):
+            return set()
+        if _CONVERSATION_UUID.fullmatch(conversation_id) is None or "\x00" in conversation_id:
+            return set()
+        filename = conversation_id + ".db"
+        root = _open_directory(None, home)
+        try:
+            gemini = _open_directory(root, ".gemini")
+            try:
+                cli = _open_directory(gemini, "antigravity-cli")
+                try:
+                    conversations = _open_directory(cli, "conversations")
+                    try:
+                        return _review_steps_in_directory(conversations, filename)
+                    finally:
+                        os.close(conversations)
+                finally:
+                    os.close(cli)
+            finally:
+                os.close(gemini)
+        finally:
+            os.close(root)
+    except (OSError, sqlite3.Error):
+        return set()
 
 
 def _go_unquote(body: str) -> str | None:
@@ -341,9 +701,17 @@ def _publish_denial_flags(state: "_Run") -> None:
     state.policy_denials = set(state._policy_tools)
     state.review_denials = set(state._review_tools)
     state.policy_denied_tools = set(state._policy_tools.values())
-    state.soft_denied_tools = set(state._stderr_tools) | set(state._review_tools.values())
+    state.soft_denied_tools = set(state._stderr_tools) | set(state._review_tools.values()) | set(state._db_tools)
     state.soft_denied = state._stderr_soft or bool(state._review_tools)
-    state.review_evidence = state._stderr_review or bool(state._review_tools)
+    state.review_evidence = state._stderr_review or bool(state._review_tools) or bool(state._db_tools)
+    if state._review_tools:
+        state.review_evidence_source = "stream"
+    elif state._stderr_review or state._stderr_tools:
+        state.review_evidence_source = "stderr"
+    elif state._db_tools:
+        state.review_evidence_source = "conversation_db"
+    else:
+        state.review_evidence_source = None
 
 
 def _bounded_text(value: str) -> str:
@@ -392,11 +760,14 @@ class _Run:
     review_denials: set[int] = field(default_factory=set)
     policy_denied_tools: set[str] = field(default_factory=set)
     soft_denied_tools: set[str] = field(default_factory=set)
+    review_step_count: int = 0
+    review_evidence_source: str | None = None
     _policy_tools: dict[int, str] = field(default_factory=dict)
     _review_tools: dict[int, str] = field(default_factory=dict)
     _stderr_soft: bool = False
     _stderr_review: bool = False
     _stderr_tools: set[str] = field(default_factory=set)
+    _db_tools: set[str] = field(default_factory=set)
     text: str = ""
     text_truncated: bool = False
     stdout_bytes: int = 0
@@ -423,6 +794,8 @@ class _Run:
             "summary_truncated": self.text_truncated,
             "policy_denied_count": len(self.policy_denials),
             "review_denied_count": len(self.review_denials),
+            "review_step_count": self.review_step_count,
+            "review_evidence_source": self.review_evidence_source,
             "policy_denied_tools": sorted(self.policy_denied_tools),
             "soft_denied_tools": sorted(self.soft_denied_tools),
         }
@@ -698,6 +1071,17 @@ class AntigravityRuntime:
                 return self._unknown(state)
             if (status == "SUCCESS" and state.session_id and state.proc.returncode == 0
                     and not state.active_tools and all(value in {"DONE", "ERROR"} for value in state.step_states.values())):
+                # agy >= 1.4.5 keeps the soft-denied confirmation in the
+                # conversation DB. Consult it only when stderr set the broad
+                # soft-deny flag and neither the stream nor stderr named a tool.
+                if state.soft_denied and not state.review_evidence and not state.soft_denied_tools:
+                    home_text = env.get("HOME")
+                    if isinstance(home_text, str) and home_text and "\x00" not in home_text:
+                        found = _review_steps_from_conversation_db(Path(home_text), state.session_id)
+                        if found:
+                            state._db_tools.update(found)
+                            state.review_step_count = getattr(found, "step_count", len(found))
+                            _publish_denial_flags(state)
                 if state.soft_denied and (state.review_evidence or state.soft_denied_tools):
                     names = ", ".join(sorted(state.soft_denied_tools)) or "未知工具"
                     summary = (

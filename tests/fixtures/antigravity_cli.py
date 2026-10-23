@@ -4,11 +4,16 @@ import json
 import os
 from pathlib import Path
 import signal
+import sqlite3
 import sys
 import time
 
 MODE = os.environ.get("AGY_FIXTURE_MODE", "happy")
 SESSION = "fixture-conversation-123"
+# Real agy 1.4.5 soft-denied confirmation step (idx 2, type 132, status 6).
+_REVIEW_CONVERSATION_ID = "c31a1601-21d5-4e6c-89c1-5596f85e698f"
+_AGY145_STEP_HEX = "08840120062aac030a0c08dcf6e7d606108adda2d703180222630a23746f6f6c755f767274785f30314a753642756831724e787243704e4e4a54546e7672561209726561645f66696c651a317b2250617468223a222f776f726b73706163652f6173746572756e2d6167792d6669782f70726f67726573732e6d64227d320b08ddf6e7d60610aae8e7143a0b08ddf6e7d60610aae8e714420b08ddf6e7d60610a5ce831758fa0a622463333161313630312d323164352d346536632d383963312d353539366638356536393866a2014e0a2465636565373530312d323863662d343838322d613831392d6136303962393430656637621002222430616631376366612d363330372d343664642d616336322d303234393565626431633831d201550a0f0801120b08ddf6e7d60610e2c7eb140a0f0802120b08ddf6e7d60610f89fdf150a0f0809120b08ddf6e7d60610d7a0af160a0f0802120b08ddf6e7d60610b4c3ef160a0f0806120b08ddf6e7d606109df6831782020b08ddf6e7d60610fdd9de159202072205616c6c6f779a02203534666661333734346231663432653661623264386261343864626438613333b00201e208300a2e0a045061746812262f776f726b73706163652f6173746572756e2d6167792d6669782f70726f67726573732e6d64"
+_AGY145_STEP_PAYLOAD = bytes.fromhex(_AGY145_STEP_HEX)
 
 if sys.argv[1:] == ["--version"]:
     print(os.environ.get("AGY_FIXTURE_VERSION", "1.3.2"))
@@ -114,6 +119,104 @@ _REVIEW_FORGED_MESSAGE = review_deny_message(
 )
 
 
+def _fill_review_db(path, payload, step_type, status):
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute("PRAGMA journal_mode=DELETE")
+        connection.execute(
+            "CREATE TABLE steps ("
+            "idx integer PRIMARY KEY, step_type integer, status integer, "
+            "has_subtrajectory, metadata blob, error_details blob, "
+            "permissions blob, task_details blob, render_info blob, "
+            "step_payload blob, step_format integer)"
+        )
+        connection.executemany(
+            "INSERT INTO steps (idx, step_type, status, step_payload) VALUES (?, ?, ?, ?)",
+            (
+                (0, 14, 3, None),
+                (1, 15, 3, None),
+                (2, step_type, status, payload),
+            ),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    # Drop sidecars this fixture created so a later reader can be checked for
+    # leaving the agy directory untouched.
+    for suffix in ("-journal", "-shm", "-wal"):
+        sidecar = Path(str(path) + suffix)
+        if sidecar.is_symlink():
+            continue
+        if sidecar.is_file():
+            sidecar.unlink()
+
+
+def _prepare_review_db(payload, step_type, status, *, write, symlink):
+    raw = os.environ.get("HOME")
+    if not raw:
+        return
+    directory = Path(raw) / ".gemini" / "antigravity-cli" / "conversations"
+    directory.mkdir(parents=True, exist_ok=True)
+    if not write:
+        return
+    db_path = directory / (_REVIEW_CONVERSATION_ID + ".db")
+    if symlink:
+        real = directory / (_REVIEW_CONVERSATION_ID + ".real.db")
+        _fill_review_db(real, payload, step_type, status)
+        db_path.symlink_to(real.name)
+        return
+    _fill_review_db(db_path, payload, step_type, status)
+
+
+def _emit_review_step_transcript(conversation_id):
+    # agy 1.4.5 print mode: init, user, planner, agent response, SUCCESS.
+    # The denied read is absent from the stream and recorded only in the DB.
+    emit({"event": "init", "conversation_id": conversation_id, "init": {
+        "cwd": os.getcwd(), "tools": ["read_file"],
+        "permission_mode": "request-review", "model": "fixture-model",
+    }})
+    for index, kind in ((0, "user"), (1, "planner")):
+        emit({"event": "step_update", "step_update": {
+            "conversation_id": conversation_id, "step_index": index,
+            "state": "DONE", "step_type": kind,
+        }})
+    emit({"event": "step_update", "step_update": {
+        "conversation_id": conversation_id, "step_index": 2, "state": "DONE",
+        "step_type": "agent_response", "text_delta": "fixture response",
+    }})
+    os.write(2, b"permission denied\n")
+    emit({"event": "result", "result": {
+        "conversation_id": conversation_id, "status": "SUCCESS",
+        "response": "fixture response", "num_turns": 1, "duration_seconds": 0.01,
+        "usage": {"input_tokens": 7, "output_tokens": 3, "thinking_tokens": 1,
+                  "cache_read_tokens": 0, "total_tokens": 10},
+    }})
+
+
+def _emit_review_step_db(mode):
+    payload = _AGY145_STEP_PAYLOAD
+    step_type, status = 132, 6
+    write, symlink = True, False
+    if mode == "review_step_db_status":
+        status = 3
+    elif mode == "review_step_db_type":
+        step_type = 14
+    elif mode == "review_step_db_unknown_tool":
+        payload = payload.replace(b"read_file", b"fake_tool", 1)
+    elif mode == "review_step_db_truncated":
+        payload = payload[:24]
+    elif mode == "review_step_db_garbage":
+        payload = b"\xff\x00not-a-protobuf"
+    elif mode == "review_step_db_missing":
+        write = False
+    elif mode == "review_step_db_symlink":
+        symlink = True
+    elif mode != "review_step_db":
+        write = False
+    _prepare_review_db(payload, step_type, status, write=write, symlink=symlink)
+    _emit_review_step_transcript(_REVIEW_CONVERSATION_ID)
+
+
 if MODE == "before_input":
     init()
 if MODE == "no_input":
@@ -132,7 +235,7 @@ if MODE == "result_only":
 if MODE == "error_no_id":
     result("ERROR", response="", conversation_id="", error="fixture-native-secret")
     sys.exit(2)
-if MODE != "before_input":
+if MODE != "before_input" and not MODE.startswith("review_step_db"):
     init()
 if MODE in {"cancel_ack", "cancel_nack", "timeout", "core_stop"}:
     if MODE == "cancel_ack":
@@ -432,6 +535,8 @@ elif MODE == "soft_and_hard_deny":
         "error": {"type": "TOOL_ERROR", "message": _REVIEW_STREAM_MESSAGE}})
     step(2, "agent_response", "DONE", text_delta="final plan")
     result(response="final plan")
+elif MODE.startswith("review_step_db"):
+    _emit_review_step_db(MODE)
 else:
     step(0, "user_input", text_delta=message["message"]["content"])
     step(1, "thinking", text_delta="private reasoning")
