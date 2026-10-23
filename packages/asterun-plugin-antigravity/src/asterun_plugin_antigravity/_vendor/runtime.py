@@ -117,6 +117,11 @@ _REVIEW_STEP_STATUS = 6
 _MAX_CONVERSATION_DB_BYTES = 64 * 1024 * 1024
 _MAX_REVIEW_ROWS = 256
 _MAX_PROTO_BYTES = 256 * 1024
+# A conversation-db query that exceeds any of these is no evidence.
+# The instruction budget is large enough for a scan of the size cap.
+_SQL_PROGRESS_INSTRUCTIONS = 10000
+_SQL_INSTRUCTION_BUDGET = 50000000
+_SQL_DEADLINE_SECONDS = 1.0
 _MAX_PROTO_DEPTH = 8
 _MAX_PROTO_FIELDS = 512
 _COPY_CHUNK = 1024 * 1024
@@ -316,11 +321,11 @@ def _open_directory(parent: int | None, name: str | Path) -> int:
     return os.open(name, flags | os.O_NOFOLLOW, dir_fd=parent)
 
 
-def _bounded_regular(dir_fd: int, name: str) -> int | None:
-    """Byte size of a regular non-symlink file, or None when it is absent.
+def _bounded_regular(dir_fd: int, name: str) -> os.stat_result | None:
+    """lstat of one regular file inside the size cap, or None when absent.
 
-    A symlink or an oversized file raises OSError so the caller returns no
-    evidence instead of following the link.
+    A symlink, another file type, or a file over the cap raises OSError so
+    the caller returns no evidence instead of following the link.
     """
     try:
         info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
@@ -330,27 +335,86 @@ def _bounded_regular(dir_fd: int, name: str) -> int | None:
         raise OSError("not_regular")
     if info.st_size < 0 or info.st_size > _MAX_CONVERSATION_DB_BYTES:
         raise OSError("db_size")
-    return info.st_size
+    return info
+
+
+def _opened_regular_size(fd: int, earlier: os.stat_result) -> int | None:
+    """Byte size of fd when it is still the regular file ``earlier`` lstat saw.
+
+    None means the opened object is not a regular file, is over the size cap,
+    or has a different device or inode. Callers treat that as no evidence.
+    """
+    found = os.fstat(fd)
+    if not stat.S_ISREG(found.st_mode):
+        return None
+    if found.st_size < 0 or found.st_size > _MAX_CONVERSATION_DB_BYTES:
+        return None
+    if (found.st_dev, found.st_ino) != (earlier.st_dev, earlier.st_ino):
+        return None
+    return found.st_size
 
 
 def _tools_from_copied_db(dest: Path) -> set[str]:
-    connection = sqlite3.connect(dest.as_uri() + "?mode=ro", uri=True, timeout=1.0)
+    """Whitelist tools from review steps in a private read-only database copy.
+
+    ``steps`` must be an ordinary sqlite_master table. Rows are filtered to
+    step_type 132, status 6, and payloads within the cap before the candidate
+    limit. SQLite's string/BLOB limit, an instruction budget, and a deadline
+    are armed first. A limit or any SQLite error returns no evidence.
+    """
+    try:
+        connection = sqlite3.connect(dest.as_uri() + "?mode=ro", uri=True, timeout=1.0)
+    except sqlite3.Error:
+        return set()
+    rows: list = []
     try:
         connection.execute("PRAGMA query_only=ON")
-        rows = connection.execute(
-            "SELECT step_type, status, step_payload FROM steps ORDER BY idx LIMIT ?",
-            (_MAX_REVIEW_ROWS,),
+        connection.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, _MAX_PROTO_BYTES)
+        deadline = time.monotonic() + _SQL_DEADLINE_SECONDS
+        used = 0
+
+        def _abort_over_budget() -> int:
+            nonlocal used
+            used += _SQL_PROGRESS_INSTRUCTIONS
+            if used > _SQL_INSTRUCTION_BUDGET or time.monotonic() >= deadline:
+                return 1
+            return 0
+
+        connection.set_progress_handler(_abort_over_budget, _SQL_PROGRESS_INSTRUCTIONS)
+        # SELECT does not fire triggers, so the steps object's own type is enough.
+        found = connection.execute(
+            "SELECT type FROM sqlite_master WHERE name = ?",
+            ("steps",),
         ).fetchall()
+        if found != [("table",)]:
+            return set()
+        rows = connection.execute(
+            "SELECT step_type, status, step_payload FROM steps "
+            "WHERE step_type = ? AND status = ? AND length(step_payload) <= ? "
+            "ORDER BY idx LIMIT ?",
+            (_REVIEW_STEP_TYPE, _REVIEW_STEP_STATUS, _MAX_PROTO_BYTES, _MAX_REVIEW_ROWS),
+        ).fetchall()
+    except sqlite3.Error:
+        return set()
     finally:
-        connection.close()
+        try:
+            connection.set_progress_handler(None, 0)
+        except sqlite3.Error:
+            pass
+        try:
+            connection.close()
+        except sqlite3.Error:
+            pass
     names: set[str] = set()
     count = 0
     for step_type, status, payload in rows:
         if step_type != _REVIEW_STEP_TYPE or status != _REVIEW_STEP_STATUS:
             continue
         if isinstance(payload, memoryview):
+            if payload.nbytes > _MAX_PROTO_BYTES:
+                continue
             payload = payload.tobytes()
-        if not isinstance(payload, (bytes, bytearray)):
+        if not isinstance(payload, (bytes, bytearray)) or len(payload) > _MAX_PROTO_BYTES:
             continue
         try:
             tool = _review_tool_from_payload(payload)
@@ -364,30 +428,38 @@ def _tools_from_copied_db(dest: Path) -> set[str]:
     return _ReviewTools(names, count)
 
 
+def _readonly_open_flags() -> int:
+    """Flags for the database and WAL: read-only, no symlink follow, no block."""
+    return os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
+
+
 def _review_steps_in_directory(dir_fd: int, filename: str) -> set[str]:
     """Copy filename and an optional -wal, then read review tool names.
 
     The agy profile is never opened with SQLite. SQLite would create a -shm
-    sidecar even for a read-only connection.
+    sidecar even for a read-only connection. Open cannot block on a FIFO
+    swapped in after lstat. The fd must still be that regular file, within
+    the size cap.
     """
-    size = _bounded_regular(dir_fd, filename)
-    if size is None or size == 0:
+    info = _bounded_regular(dir_fd, filename)
+    if info is None or info.st_size == 0:
         return set()
     wal_name = filename + "-wal"
-    wal_size = _bounded_regular(dir_fd, wal_name)
-    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    wal_info = _bounded_regular(dir_fd, wal_name)
+    flags = _readonly_open_flags()
     db_fd = os.open(filename, flags, dir_fd=dir_fd)
     try:
-        db_stat = os.fstat(db_fd)
-        if not stat.S_ISREG(db_stat.st_mode) or db_stat.st_size != size:
+        size = _opened_regular_size(db_fd, info)
+        if size is None:
             return set()
         wal_fd = None
-        if wal_size is not None:
+        wal_size = None
+        if wal_info is not None:
             wal_fd = os.open(wal_name, flags, dir_fd=dir_fd)
         try:
-            if wal_fd is not None:
-                wal_stat = os.fstat(wal_fd)
-                if not stat.S_ISREG(wal_stat.st_mode) or wal_stat.st_size != wal_size:
+            if wal_fd is not None and wal_info is not None:
+                wal_size = _opened_regular_size(wal_fd, wal_info)
+                if wal_size is None:
                     return set()
             with tempfile.TemporaryDirectory(prefix="asterun-agy-conv-") as tmp:
                 dest = Path(tmp) / filename
@@ -407,7 +479,7 @@ def _review_steps_from_conversation_db(home: Path, conversation_id: str) -> set[
 
     The conversation id must be the lowercase UUID of the session. The database
     must be a regular file under ``<home>/.gemini/antigravity-cli/conversations/``.
-    Any OS error, SQLite error, or rejected path yields an empty set.
+    Any OS error, SQLite error, rejected path, or resource limit yields an empty set.
     """
     try:
         if not isinstance(home, Path) or not isinstance(conversation_id, str):
