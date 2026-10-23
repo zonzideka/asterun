@@ -926,3 +926,141 @@ def test_review_step_db_without_a_whitelisted_step_stays_incomplete(tmp_path, mo
         assert names == []
     if mode == "review_step_db_symlink":
         assert (directory / f"{_REVIEW_CONVERSATION_ID}.db").is_symlink()
+
+
+def _value_within(limit: float, func):
+    """Return func() if it finishes within limit seconds.
+
+    A reader that blocks fails the test while the worker is still a daemon.
+    The FIFO case releases its own wait in a finally block.
+    """
+    box = {}
+
+    def run():
+        try:
+            box["value"] = func()
+        except BaseException as exc:
+            box["error"] = exc
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(limit)
+    if worker.is_alive():
+        raise AssertionError(f"conversation db read still running after {limit:.1f}s")
+    if "error" in box:
+        raise box["error"]
+    return box["value"]
+
+
+def test_recursive_steps_view_returns_no_evidence_quickly(tmp_path):
+    home = tmp_path / "home"
+    directory = _conversation_dir(home)
+    directory.mkdir(parents=True)
+    db = directory / f"{_REVIEW_CONVERSATION_ID}.db"
+    connection = sqlite3.connect(db)
+    try:
+        connection.execute("PRAGMA journal_mode=DELETE")
+        connection.execute(
+            "CREATE VIEW steps AS "
+            "WITH RECURSIVE chain(n) AS ("
+            "SELECT 0 UNION ALL SELECT n + 1 FROM chain"
+            ") "
+            "SELECT n AS step_type, 6 AS status, zeroblob(32) AS step_payload, n AS idx "
+            "FROM chain"
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    for suffix in ("-journal", "-shm", "-wal"):
+        sidecar = Path(str(db) + suffix)
+        if sidecar.exists() and not sidecar.is_symlink():
+            sidecar.unlink()
+    started = time.monotonic()
+    found = _value_within(2.0, lambda: module._review_steps_from_conversation_db(
+        home, _REVIEW_CONVERSATION_ID))
+    assert time.monotonic() - started < 2.0
+    assert found == set()
+    assert sorted(path.name for path in directory.iterdir()) == [db.name]
+
+
+def test_oversize_review_payload_is_not_evidence(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    directory = _conversation_dir(home)
+    directory.mkdir(parents=True)
+    payload = _agy145_step_payload()
+    fat = b"\x0a" * (module._MAX_PROTO_BYTES + 1)
+    seen = []
+    original = module._review_tool_from_payload
+
+    def spy(blob):
+        seen.append(len(blob))
+        return original(blob)
+
+    monkeypatch.setattr(module, "_review_tool_from_payload", spy)
+    db = directory / f"{_REVIEW_CONVERSATION_ID}.db"
+    _write_steps(db, [(0, 132, 6, fat)])
+    assert module._review_steps_from_conversation_db(home, _REVIEW_CONVERSATION_ID) == set()
+    assert seen == []
+    _write_steps(db, [(0, 132, 6, fat), (1, 132, 6, payload)])
+    found = module._review_steps_from_conversation_db(home, _REVIEW_CONVERSATION_ID)
+    assert found == {"read_file"}
+    assert found.step_count == 1
+    assert seen == [len(payload)]
+
+
+def test_review_step_after_ordinary_rows_is_found(tmp_path):
+    home = tmp_path / "home"
+    directory = _conversation_dir(home)
+    directory.mkdir(parents=True)
+    payload = _agy145_step_payload()
+    rows = [(index, 14, 3, None) for index in range(module._MAX_REVIEW_ROWS + 40)]
+    rows.append((len(rows), 132, 6, payload))
+    db = directory / f"{_REVIEW_CONVERSATION_ID}.db"
+    _write_steps(db, rows)
+    found = module._review_steps_from_conversation_db(home, _REVIEW_CONVERSATION_ID)
+    assert found == {"read_file"}
+    assert found.step_count == 1
+
+
+@pytest.mark.parametrize("kind", ["db", "wal"])
+def test_fifo_swap_between_check_and_open_does_not_block(tmp_path, monkeypatch, kind):
+    home = tmp_path / "home"
+    directory = _conversation_dir(home)
+    directory.mkdir(parents=True)
+    payload = _agy145_step_payload()
+    db = directory / f"{_REVIEW_CONVERSATION_ID}.db"
+    _write_steps(db, [(0, 14, 3, None), (1, 132, 6, payload)])
+    wal = Path(str(db) + "-wal")
+    wal.write_bytes(b"wal-sidecar")
+    swapped = db.name if kind == "db" else wal.name
+    fifo = tmp_path / f"{kind}.fifo"
+    os.mkfifo(fifo)
+    release = threading.Event()
+    opened = []
+    real_open = os.open
+
+    def wrapped(path, flags, mode=0o777, *, dir_fd=None):
+        base = os.path.basename(os.fspath(path))
+        if base in {db.name, wal.name}:
+            opened.append((base, flags))
+            if not (flags & os.O_NONBLOCK):
+                release.wait()
+                raise OSError("blocked_open")
+            if base == swapped:
+                return real_open(fifo, os.O_RDONLY | os.O_NONBLOCK)
+        if dir_fd is None:
+            return real_open(path, flags, mode)
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "open", wrapped)
+    try:
+        found = _value_within(2.0, lambda: module._review_steps_from_conversation_db(
+            home, _REVIEW_CONVERSATION_ID))
+        assert found == set()
+        assert opened
+        assert any(name == swapped for name, _flags in opened)
+        for _name, flags in opened:
+            assert flags & os.O_NONBLOCK
+            assert flags & os.O_NOFOLLOW
+    finally:
+        release.set()
