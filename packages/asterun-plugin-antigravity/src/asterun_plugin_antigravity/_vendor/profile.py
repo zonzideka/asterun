@@ -526,25 +526,44 @@ def prepare_home(path: str | Path) -> dict[str, object]:
 _CONTEXT_DIRECTORIES = frozenset({".agents", ".agent", ".gemini"})
 
 
-def _directory_has_any_entry(path: Path) -> bool:
-    """True when scandir yields any name, including hidden names.
+def _directory_has_any_entry(path: Path, expected: os.stat_result) -> bool:
+    """True when the directory contains any name, including hidden names.
 
-    Stops at the first entry. Listing errors propagate so the caller fails closed.
+    Reopens ``path`` with O_NOFOLLOW and requires the fd to be ``expected``
+    (same st_dev and st_ino). A symlink swapped in after lstat fails the open
+    or the identity check. Stops at the first entry. OSError and an identity
+    mismatch propagate so the caller fails closed.
     """
-    with os.scandir(path) as scan:
-        for _entry in scan:
-            return True
-    return False
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    fd = os.open(path, flags)
+    try:
+        found = os.fstat(fd)
+        if (found.st_dev, found.st_ino) != (expected.st_dev, expected.st_ino):
+            raise OSError("directory identity changed")
+        # scandir() can close the fd it is given. Pass a duplicate and close
+        # both here so this check keeps ownership of the descriptor it opened.
+        duped = os.dup(fd)
+        try:
+            with os.scandir(duped) as scan:
+                for _entry in scan:
+                    return True
+            return False
+        finally:
+            os.close(duped)
+    finally:
+        os.close(fd)
 
 
 def _reject_context_marker(path: Path) -> None:
     """Reject agy customisation markers under a workspace or its ancestors.
 
     `.agents`, `.agent`, and `.gemini` are allowed only when lstat shows a real
-    directory (S_ISDIR, not a symlink) with no entries. `AGENTS.md` and
-    `GEMINI.md` are always rejected. Called on every validation; do not cache
-    the result, because a later run can find the directory populated. TOCTOU
-    remains between this listing and agy startup: entries created in that
+    directory (S_ISDIR, not a symlink) with no entries. That directory is
+    reopened with O_NOFOLLOW and must still be the same (st_dev, st_ino) before
+    it is listed, so a symlink swapped in after lstat is rejected. `AGENTS.md`
+    and `GEMINI.md` are always rejected. Called on every validation; do not
+    cache the result, because a later run can find the directory populated.
+    TOCTOU remains between this check and agy startup: entries created in that
     window are seen only on the next validation.
     """
     if path.name in _CONTEXT_DIRECTORIES:
@@ -556,11 +575,13 @@ def _reject_context_marker(path: Path) -> None:
             reason = "symlink"
         elif not stat.S_ISDIR(info.st_mode):
             reason = "not a directory"
-        elif _directory_has_any_entry(path):
+        elif _directory_has_any_entry(path, info):
             reason = "non-empty"
         else:
-            # Empty real directory. Not cached; the next validation rechecks.
-            # TOCTOU: contents can appear after this scan and before agy starts.
+            # Empty real directory, pinned by the O_NOFOLLOW fd. Not cached;
+            # the next validation rechecks. TOCTOU remains between this check
+            # and agy startup: entries created after the scan are seen only on
+            # the next validation.
             return
         raise _invalid(f"Antigravity 受限工作区或祖先含扩展/上下文来源：{path} ({reason})")
     if path.exists() or path.is_symlink():
