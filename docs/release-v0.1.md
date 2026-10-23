@@ -2,13 +2,19 @@
 
 # 首版发行说明
 
-当前公开源码版本为 `0.1.0a29`，正式稳定版 `0.1.0` 尚未发布。本次预发布的安装资产和校验文件见[对应版本发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a29)。首版范围已冻结，发布准备集中在现有行为、兼容和打包修复。项目采用 [Apache-2.0](../LICENSE)。`v0.1.0a29` 标签尚未打出，发行页上的文件要等该标签进入 `main` 且发行工作流成功之后才会出现。
+当前公开源码版本为 `0.1.0a30`，正式稳定版 `0.1.0` 尚未发布。本次预发布的安装资产和校验文件见[对应版本发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a30)。首版范围已冻结，发布准备集中在现有行为、兼容和打包修复。项目采用 [Apache-2.0](../LICENSE)。`v0.1.0a30` 标签尚未打出，发行页上的文件要等该标签进入 `main` 且发行工作流成功之后才会出现。
+
+## 0.1.0a30
+
+相对 2026-10-22 已发布的 [`v0.1.0a29`](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a29)，本版把 agy 1.4.5 记在会话库里的权限复核步骤（步骤类型 132，状态 6）报为 `ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED`，并以有界的只读 SQLite 读取该库（#51）。工作区或其祖先中的空 `.agents`/`.agent` 目录可以保留（空 `.gemini` 目录同样可以），非空目录仍拒绝；检查钉在以 `O_NOFOLLOW` 打开的目录 fd 上（#53）。简体中文 README 已与英文 README 对齐（#52）。未知后端名若与候选组同名，下一步提示改为需要前导 `@`。外部 Antigravity 插件升到 `1.0.11`：vendored 副本包含会话库复核读取和上述空目录检查，软拒绝不再只认流式工具错误句。Cursor `1.0.1`、Jules `1.0.0` 不变。协议与标准 skill 最低接口 `0.1.0a14` 不变。
+
+尚未打 `v0.1.0a30`。资产要等该标签进入 `main` 且发行工作流成功之后，才会出现在[发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a30)。本次资产为核心 wheel、源码包、`asterun-skill-0.1.0a30.zip`、三个外部插件的 wheel 与源码包（Antigravity `1.0.11`，Cursor `1.0.1`，Jules `1.0.0`），以及 `SHA256SUMS`。
 
 ## 0.1.0a29
 
 相对 2026-10-22 已发布的 [`v0.1.0a28`](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a28)，本版识别 Antigravity 的无人值守软拒绝。agy 只把这类拒绝报成流式工具错误（`permission check failed for read_file "...": user denied permission for read_file(...)`，并附带 agy 固定的 “Do not attempt to circumvent” 句），现在改报 `ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED`，并记录 `review_denials` 与 `review_denied_count`。拒绝句按结构解析：引号内参数用严格的 Go `strconv.Unquote` 语义解码，且必须与括号内原文逐字节相等，因此能识别多行（heredoc）命令拒绝，路径或命令内容也不能伪造拒绝。分类只使用终态步骤记录。发给 agy 的提示前加一段固定的英文只读前言（内置后端与插件都加）；已存储的任务文本和输入哈希不变。外部 Antigravity 插件升到 `1.0.9`。Cursor `1.0.1`、Jules `1.0.0` 不变。协议与标准 skill 最低接口 `0.1.0a14` 不变。
 
-尚未打 `v0.1.0a29`。资产要等该标签进入 `main` 且发行工作流成功之后，才会出现在[发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a29)。本次资产为核心 wheel、源码包、`asterun-skill-0.1.0a29.zip`、三个外部插件的 wheel 与源码包（Antigravity `1.0.9`，Cursor `1.0.1`，Jules `1.0.0`），以及 `SHA256SUMS`。
+`v0.1.0a29` 已于 2026-10-22 发布，资产见[发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a29)：核心 wheel、源码包、`asterun-skill-0.1.0a29.zip`、三个外部插件的 wheel 与源码包（Antigravity `1.0.9`，Cursor `1.0.1`，Jules `1.0.0`），以及 `SHA256SUMS`。
 
 ## 0.1.0a28
 

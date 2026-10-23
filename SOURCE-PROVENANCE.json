@@ -20,19 +20,19 @@
     },
     {
       "path": "packages/asterun-plugin-antigravity/src/asterun_plugin_antigravity/_vendor/profile.py",
-      "sha256": "03ceec03f40eb96222810da9614766f294d951d6e1a51f3e9c67674d348c6609"
+      "sha256": "769288c628a360477148ca6a855c16bf60709721f257d14a23e1a932a375bdbf"
     },
     {
       "path": "packages/asterun-plugin-antigravity/src/asterun_plugin_antigravity/_vendor/runtime.py",
-      "sha256": "0308d1e6c61f7b21089276d474bf9608ac60bd4364c1dca411b1058ef0562d00"
+      "sha256": "1259ba20569cf7e9ba1d4c3602d37c23b4b8d796c323e2e8ce8f198615969545"
     },
     {
       "path": "packages/asterun-plugin-antigravity/src/asterun_plugin_antigravity/manifest.json",
-      "sha256": "5c31f18c699780d6a23e4d81488809f22aea8353b0b736eb3b54905218c9efa5"
+      "sha256": "d65ed480c83230e6e33efb9b8f6a295fd94fc679806c50cd1173901e64678644"
     },
     {
       "path": "packages/asterun-plugin-antigravity/src/asterun_plugin_antigravity/vendor-source.json",
-      "sha256": "fdc22a32ae20e9ff1ed2e95276255e97b4e0a8ac91079b6fc3561d461a0c9a6d"
+      "sha256": "3f0900b9abf1288060c27ca055823749c317d3fc4e7c273271a234de9223d929"
     },
     {
       "path": "packages/asterun-plugin-antigravity/src/asterun_plugin_antigravity/worker.py",
@@ -80,7 +80,7 @@
     },
     {
       "path": "src/asterun/__init__.py",
-      "sha256": "a8dcb2a48b143da9fc1c665fdc6c9ffa915e8c62aaeac528cecefa2537ae4218"
+      "sha256": "59eabfc989fc5b81bc2baed70245d3f5df4fb3e09ee5bb3650bd8c02c74fc448"
     },
     {
       "path": "src/asterun/__main__.py",
@@ -88,7 +88,7 @@
     },
     {
       "path": "src/asterun/antigravity_profile.py",
-      "sha256": "1636a20d3c9babe163724f4bcc27c60e92ff0e0522d1383a3531f1dc7dbe0e90"
+      "sha256": "df3bd5ed207addd724b257b3bd19b4304a50d54ee25e9c1ec3c5455df22fcbfb"
     },
     {
       "path": "src/asterun/application.py",
@@ -112,7 +112,7 @@
     },
     {
       "path": "src/asterun/backends/antigravity_runtime.py",
-      "sha256": "4549c357149257b932dfc0e60dc276b8c2abe36dfa0e698caf95930787245917"
+      "sha256": "95af1e2caff5ebb3a547dff2f09e9724ddea320d9c49ca921c8abe40deb8ed86"
     },
     {
       "path": "src/asterun/backends/base.py",
@@ -188,7 +188,7 @@
     },
     {
       "path": "src/asterun/config.py",
-      "sha256": "ecf4c50f4653f721d33920c2de4d41227f909cb5f3bf999f351cb1e07b4be25d"
+      "sha256": "8b8f7fadea84d24403308584e4a2ec8fa49519fd21a10f554ec6376e02a6d163"
     },
     {
       "path": "src/asterun/config_migration.py",
