@@ -25,7 +25,7 @@ Asterun 是面向编码 Agent 的自托管任务运行器，通过一套 CLI、�
 | 候选组 | 按角色命名的后端组（`implementation`、`review`、`planning`）。向 `@group` 提交后，核心从中选择成员；`routing-explain` 说明原因。审查组与实现组不能共享成员。 |
 | 审批 | 支持原生审批桥的后端请求权限时，任务进入 `waiting_input`；用 `approval-respond` 答复。Claude 和 Antigravity 对审批返回 `CAPABILITY_UNSUPPORTED`。Jules 的计划审批使用 `capability.invoke`（`remote.plan.approve`）。见[审批说明](docs/approval-policy.md)。 |
 | 额度与计费池 | 共用同一账户的后端共享一个带并发上限的计费池。本地额度缓存（`quota-inspect`）和严格的额度耗尽闩锁会停止向已耗尽的池派发。组内按额度优选默认关闭。 |
-| 上下文胶囊与预算 | 可选的 `context_budget` 配置：`off`（默认）、`observe`（记录 token 用量和胶囊）或 `enforce`（按任务做 token 预算准入，并对列出的后端按需分段）。见[插件与配置](docs/plugins.md#上下文预算context_budget)。 |
+| 上下文胶囊与预算 | 可选的 `context_budget` 配置：`off`（默认）、`observe`（记录 token 用量和胶囊）或 `enforce`（按任务做 token 预算准入，并对列出的后端提供需显式启用的分段功能）。见[插件与配置](docs/plugins.md#上下文预算context_budget)。 |
 | 工作流 | 针对固定修订的可选检查、独立审查、有界修复和 PR 审查配方。见 [PR 审查说明](docs/pr-review.md)。 |
 
 ## 安装
