@@ -133,6 +133,98 @@ def test_workspace_ancestor_customization_sources_rejected(tmp_path, name):
         validate_workspace(workspace)
 
 
+@pytest.mark.parametrize("name", [".agents", ".agent", ".gemini"])
+def test_empty_real_context_directories_are_allowed(tmp_path, name):
+    parent = tmp_path / "parent"
+    workspace = parent / "workspace"
+    workspace.mkdir(parents=True)
+    (workspace / name).mkdir()
+    assert validate_workspace(workspace) == workspace
+    (workspace / name).rmdir()
+    (parent / name).mkdir()
+    assert validate_workspace(workspace) == workspace
+
+
+@pytest.mark.parametrize("name", [".agents", ".agent", ".gemini"])
+def test_nonempty_context_directory_rejected(tmp_path, name):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    marker = workspace / name
+    marker.mkdir()
+    (marker / "hooks.json").write_text("{}")
+    with pytest.raises(AsterunError, match="non-empty") as captured:
+        validate_workspace(workspace)
+    assert captured.value.code == "INVALID_CONFIG"
+
+
+@pytest.mark.parametrize("name", [".agents", ".agent", ".gemini"])
+def test_context_directory_with_only_hidden_file_rejected(tmp_path, name):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    marker = workspace / name
+    marker.mkdir()
+    (marker / ".keep").write_text("hidden")
+    with pytest.raises(AsterunError, match="non-empty"):
+        validate_workspace(workspace)
+
+
+def test_symlink_to_empty_context_directory_rejected(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = tmp_path / "elsewhere"
+    target.mkdir()
+    (workspace / ".agents").symlink_to(target, target_is_directory=True)
+    with pytest.raises(AsterunError, match="symlink"):
+        validate_workspace(workspace)
+
+
+def test_regular_file_named_agents_rejected(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / ".agents").write_text("not a directory")
+    with pytest.raises(AsterunError, match="not a directory"):
+        validate_workspace(workspace)
+
+
+@pytest.mark.parametrize("name", ["AGENTS.md", "GEMINI.md"])
+def test_context_markdown_markers_still_rejected(tmp_path, name):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    marker = workspace / name
+    marker.write_text("rules")
+    with pytest.raises(AsterunError, match="上下文来源"):
+        validate_workspace(workspace)
+    marker.unlink()
+    marker.mkdir()
+    with pytest.raises(AsterunError, match="上下文来源"):
+        validate_workspace(workspace)
+
+
+def test_empty_context_directory_is_rechecked_when_populated(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    agents = workspace / ".agents"
+    agents.mkdir()
+    assert validate_workspace(workspace) == workspace
+    (agents / "hooks.json").write_text("{}")
+    with pytest.raises(AsterunError, match="non-empty"):
+        validate_workspace(workspace)
+
+
+def test_context_directory_listing_failure_is_rejected(tmp_path, monkeypatch):
+    import asterun.antigravity_profile as profile
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / ".agents").mkdir()
+
+    def denied(path):
+        raise OSError("unreadable")
+
+    monkeypatch.setattr(profile.os, "scandir", denied)
+    with pytest.raises(AsterunError, match="OSError"):
+        validate_workspace(workspace)
+
+
 def test_invalid_or_shared_home_is_not_modified(tmp_path):
     home = tmp_path / "native"
     home.mkdir(mode=0o755)

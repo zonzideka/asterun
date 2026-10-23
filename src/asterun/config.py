@@ -211,10 +211,19 @@ class AsterunConfig:
         try:
             return self.backends[chosen]
         except KeyError as exc:
+            next_action = "使用配置中已声明的后端名"
+            groups = self.routing.get("candidate_groups") if isinstance(self.routing, dict) else None
+            # Task submit selects a candidate group with a leading @ (--backend '@plan').
+            # A bare group name is still an unknown backend; only the hint changes.
+            if isinstance(groups, dict) and chosen in groups:
+                next_action = (
+                    f"Did you mean '@{chosen}'? Candidate groups must be referenced "
+                    f"with a leading @ (for example --backend '@{chosen}')."
+                )
             raise AsterunError(
                 INVALID_CONFIG,
                 f"未知后端：{chosen}",
-                next_action="使用配置中已声明的后端名",
+                next_action=next_action,
                 details={"backend": chosen, "known": sorted(self.backends)},
             ) from exc
 

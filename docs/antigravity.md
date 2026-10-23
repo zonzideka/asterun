@@ -37,7 +37,7 @@ asterun-antigravity bind-workspace \
   --workspace /private/tmp/asterun-agy-demo/workspace
 ```
 
-该命令添加精确的 `read_file` allow，并保留六项 deny。读取绑定、原生信任和执行工作区须指向同一目录。启动前会检查工作区及其祖先；存在 `.agents`、`.agent`、`.gemini`、`AGENTS.md` 或 `GEMINI.md` 时，需先准备独立源码快照，再绑定该快照目录。
+该命令添加精确的 `read_file` allow，并保留六项 deny。读取绑定、原生信任和执行工作区须指向同一目录。启动前会检查工作区及其祖先。名为 `.agents`、`.agent`、`.gemini` 的真实空目录可以保留：agy 只从这些目录读取自定义内容（skills、workflows、plugins、`hooks.json` 和 rules），空目录没有任何内容。该目录不能是符号链接，也不能包含任何条目（含隐藏文件）。非空目录、符号链接，或其他类型的同名条目仍会拒绝。`AGENTS.md` 和 `GEMINI.md` 在任何形式下都会拒绝。检查在每次验证时重新执行，不缓存结果，因为后续运行可能发现目录已被写入。若存在被拒绝的标记，需先准备独立源码快照，再绑定该快照目录。
 
 ## 配置并提交任务
 

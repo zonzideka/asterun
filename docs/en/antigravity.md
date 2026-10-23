@@ -37,7 +37,7 @@ asterun-antigravity bind-workspace \
   --workspace /private/tmp/asterun-agy-demo/workspace
 ```
 
-This command adds an exact `read_file` allow rule and preserves the six deny rules. The read binding, native trust entry, and execution workspace must identify the same directory. Before launch, the adapter checks the workspace and its ancestors for `.agents`, `.agent`, `.gemini`, `AGENTS.md`, or `GEMINI.md`. If any are present, prepare a separate source snapshot and bind that directory.
+This command adds an exact `read_file` allow rule and preserves the six deny rules. The read binding, native trust entry, and execution workspace must identify the same directory. Before launch, the adapter checks the workspace and its ancestors for `.agents`, `.agent`, `.gemini`, `AGENTS.md`, or `GEMINI.md`. An empty real directory named `.agents`, `.agent`, or `.gemini` is allowed, because agy reads customisations only from those directories (skills, workflows, plugins, `hooks.json`, and rules) and an empty directory carries none. The directory must not be a symlink and must contain no entries, including hidden names. A non-empty directory, a symlink, or any other file type with those names is still rejected, and `AGENTS.md` and `GEMINI.md` are rejected in every form. The check runs on every validation and is not cached, because a later run may find the directory populated. If a rejected marker is present, prepare a separate source snapshot and bind that directory.
 
 ## Configure and submit a task
 
