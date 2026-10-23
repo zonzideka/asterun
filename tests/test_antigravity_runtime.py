@@ -1,6 +1,8 @@
 import json
 import os
 from pathlib import Path
+import re
+import sqlite3
 import sys
 import threading
 import time
@@ -12,15 +14,25 @@ from asterun.backends.antigravity_runtime import AntigravityRuntime, DISPATCH_RE
 from asterun.ids import RunId
 
 FIXTURE = Path(__file__).parent / "fixtures" / "antigravity_cli.py"
+_REVIEW_CONVERSATION_ID = "c31a1601-21d5-4e6c-89c1-5596f85e698f"
+
+
+def _agy145_step_payload() -> bytes:
+    source = FIXTURE.read_text(encoding="utf-8")
+    match = re.search(r'_AGY145_STEP_HEX = "([0-9a-f]+)"', source)
+    assert match is not None
+    return bytes.fromhex(match.group(1))
 
 
 def execute(tmp_path, mode="happy", *, runtime=None, stopping=None, publish=None,
-            text="private user prompt", expected_model=None):
+            text="private user prompt", expected_model=None, home=None):
     runtime = runtime or AntigravityRuntime(timeout=3)
     updates = []
+    env = {"AGY_FIXTURE_MODE": mode, "AGY_FIXTURE_READY": str(tmp_path / "ready")}
+    if home is not None:
+        env["HOME"] = str(home)
     result = runtime.run(RunId("run_fixture"), text, command=[sys.executable, str(FIXTURE)],
-                         env={"AGY_FIXTURE_MODE": mode, "AGY_FIXTURE_READY": str(tmp_path / "ready")},
-                         cwd=tmp_path, publish=publish or updates.append,
+                         env=env, cwd=tmp_path, publish=publish or updates.append,
                          stopping=stopping or threading.Event(), expected_model=expected_model)
     return result, updates
 
@@ -77,6 +89,8 @@ def test_os_permission_denied_without_review_evidence_is_incomplete(tmp_path):
     assert result["status"] == "failed" and result["terminated"] is True
     assert result["error_code"] == "ANTIGRAVITY_RUN_INCOMPLETE"
     assert result["native"]["soft_denied"] is True
+    assert result["native"]["review_step_count"] == 0
+    assert result["native"]["review_evidence_source"] is None
     assert result["summary"] == "fixture response"
 
 
@@ -359,6 +373,8 @@ def test_soft_deny_review_names_the_tool_and_keeps_partial_text(tmp_path):
     assert result["error_code"] == "ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED"
     assert result["native"]["soft_denied"] is True
     assert result["native"]["soft_denied_tools"] == ["ReadFile"]
+    assert result["native"]["review_evidence_source"] == "stderr"
+    assert result["native"]["review_step_count"] == 0
     assert result["native"][DISPATCH_RECEIPT_KEY]["failure_type"] == "soft_denied_review"
     assert "ReadFile" in result["summary"] and "partial" in result["summary"]
 
@@ -647,6 +663,8 @@ def test_review_denied_stream_is_review_required(tmp_path):
     assert result["native"]["soft_denied"] is True
     assert result["native"]["soft_denied_tools"] == ["read_file"]
     assert result["native"]["review_denied_count"] == 1
+    assert result["native"]["review_evidence_source"] == "stream"
+    assert result["native"]["review_step_count"] == 0
     assert result["native"]["unexplained_error_count"] == 0
     assert "private diagnostic" not in json.dumps(result)
 
@@ -778,3 +796,133 @@ def test_soft_deny_and_hard_deny_in_one_run(tmp_path):
     assert "read_file" in result["summary"]
     assert "final plan" in result["summary"]
     assert "private diagnostic" not in json.dumps(result)
+
+
+def _conversation_dir(home: Path) -> Path:
+    return home / ".gemini" / "antigravity-cli" / "conversations"
+
+
+def _write_steps(path: Path, rows: list[tuple]) -> None:
+    if path.is_symlink() or path.exists():
+        path.unlink()
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute("PRAGMA journal_mode=DELETE")
+        connection.execute(
+            "CREATE TABLE steps (idx integer PRIMARY KEY, step_type integer, "
+            "status integer, step_payload blob)"
+        )
+        connection.executemany(
+            "INSERT INTO steps (idx, step_type, status, step_payload) VALUES (?, ?, ?, ?)",
+            rows,
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def test_protobuf_walker_reads_the_real_review_step_and_rejects_malformed_payloads():
+    payload = _agy145_step_payload()
+    assert len(payload) == 487
+    assert b"progress.md" in payload
+    assert module._review_tool_from_payload(payload) == "read_file"
+    assert module._review_tool_from_payload(payload.replace(b"read_file", b"fake_tool", 1)) is None
+    assert module._review_tool_from_payload(b"\x12\x09read_file") is None
+    for bad in (b"", payload[:24], payload[:-1], b"\xff" * 8, b"\x80", b"\x80" * 10,
+                b"\x0a\x05hi", b"\x0b", b"\x0e\x00", b"not protobuf"):
+        assert module._review_tool_from_payload(bad) is None
+    fixed32 = module._protobuf_fields(b"\x0d\x01\x02\x03\x04")
+    assert fixed32 == [(1, 5, b"\x01\x02\x03\x04")]
+    fixed64 = module._protobuf_fields(b"\x09" + bytes(range(8)))
+    assert fixed64 is not None and fixed64[0][1] == 1
+    nested = b""
+    for _ in range(4):
+        nested = bytes([0x0A, len(nested)]) + nested
+    assert module._protobuf_fields(nested, depth=module._MAX_PROTO_DEPTH + 1) is None
+    assert module._protobuf_fields(nested, depth=0) is not None
+
+
+def test_protobuf_walker_honors_depth_and_size_limits(monkeypatch):
+    payload = _agy145_step_payload()
+    monkeypatch.setattr(module, "_MAX_PROTO_DEPTH", 0)
+    assert module._review_tool_from_payload(payload) is None
+    monkeypatch.setattr(module, "_MAX_PROTO_DEPTH", 8)
+    monkeypatch.setattr(module, "_MAX_PROTO_BYTES", 10)
+    assert module._review_tool_from_payload(payload) is None
+
+
+def test_conversation_db_reader_names_the_tool_and_leaves_the_original_directory(tmp_path):
+    home = tmp_path / "home"
+    directory = _conversation_dir(home)
+    directory.mkdir(parents=True)
+    payload = _agy145_step_payload()
+    db = directory / f"{_REVIEW_CONVERSATION_ID}.db"
+    _write_steps(db, [(0, 14, 3, None), (1, 15, 3, None), (2, 132, 6, payload)])
+    before = sorted(path.name for path in directory.iterdir())
+    found = module._review_steps_from_conversation_db(home, _REVIEW_CONVERSATION_ID)
+    assert found == {"read_file"}
+    assert found.step_count == 1
+    assert sorted(path.name for path in directory.iterdir()) == before
+    assert module._review_steps_from_conversation_db(home, "fixture-conversation-123") == set()
+    link = directory / "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.db"
+    link.symlink_to(db.name)
+    assert module._review_steps_from_conversation_db(
+        home, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee") == set()
+    assert sorted(path.name for path in directory.iterdir()) == sorted([*before, link.name])
+    _write_steps(db, [(0, 14, 3, None), (1, 15, 3, None), (2, 132, 6, b"\xff\x00garbage")])
+    assert module._review_steps_from_conversation_db(home, _REVIEW_CONVERSATION_ID) == set()
+    _write_steps(db, [(0, 14, 3, None), (1, 15, 3, None), (2, 132, 3, payload)])
+    assert module._review_steps_from_conversation_db(home, _REVIEW_CONVERSATION_ID) == set()
+    _write_steps(db, [(0, 14, 3, None), (1, 15, 3, None), (2, 15, 6, payload)])
+    assert module._review_steps_from_conversation_db(home, _REVIEW_CONVERSATION_ID) == set()
+
+
+def test_review_step_db_is_permission_review_required(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    result, _ = execute(tmp_path, "review_step_db", home=home)
+    assert result["status"] == "failed" and result["terminated"] is True
+    assert result["error_code"] == "ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED"
+    native = result["native"]
+    assert native["soft_denied"] is True
+    assert native["soft_denied_tools"] == ["read_file"]
+    assert native["review_step_count"] == 1
+    assert native["review_evidence_source"] == "conversation_db"
+    assert native["review_denied_count"] == 0
+    assert native[DISPATCH_RECEIPT_KEY]["failure_type"] == "soft_denied_review"
+    public = json.dumps(result)
+    assert "progress.md" not in public
+    assert "asterun-agy-fix" not in public
+    directory = _conversation_dir(home)
+    assert sorted(path.name for path in directory.iterdir()) == [f"{_REVIEW_CONVERSATION_ID}.db"]
+
+
+@pytest.mark.parametrize("mode", [
+    "review_step_db_status",
+    "review_step_db_type",
+    "review_step_db_unknown_tool",
+    "review_step_db_truncated",
+    "review_step_db_garbage",
+    "review_step_db_missing",
+    "review_step_db_symlink",
+])
+def test_review_step_db_without_a_whitelisted_step_stays_incomplete(tmp_path, mode):
+    home = tmp_path / "home"
+    home.mkdir()
+    result, _ = execute(tmp_path, mode, home=home)
+    assert result["status"] == "failed" and result["terminated"] is True
+    assert result["error_code"] == "ANTIGRAVITY_RUN_INCOMPLETE"
+    native = result["native"]
+    assert native["soft_denied"] is True
+    assert native["soft_denied_tools"] == []
+    assert native["review_step_count"] == 0
+    assert native["review_evidence_source"] is None
+    public = json.dumps(result)
+    assert "progress.md" not in public
+    directory = _conversation_dir(home)
+    names = sorted(path.name for path in directory.iterdir()) if directory.is_dir() else []
+    assert not any(name.endswith(("-shm", "-wal", "-journal")) for name in names)
+    if mode == "review_step_db_missing":
+        assert names == []
+    if mode == "review_step_db_symlink":
+        assert (directory / f"{_REVIEW_CONVERSATION_ID}.db").is_symlink()
