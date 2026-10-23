@@ -521,6 +521,52 @@ def prepare_home(path: str | Path) -> dict[str, object]:
     return _description(validate_home(target), created=True)
 
 
+# agy reads customisations only from these directories (skills, workflows,
+# plugins, hooks.json, rules). An empty real directory carries nothing.
+_CONTEXT_DIRECTORIES = frozenset({".agents", ".agent", ".gemini"})
+
+
+def _directory_has_any_entry(path: Path) -> bool:
+    """True when scandir yields any name, including hidden names.
+
+    Stops at the first entry. Listing errors propagate so the caller fails closed.
+    """
+    with os.scandir(path) as scan:
+        for _entry in scan:
+            return True
+    return False
+
+
+def _reject_context_marker(path: Path) -> None:
+    """Reject agy customisation markers under a workspace or its ancestors.
+
+    `.agents`, `.agent`, and `.gemini` are allowed only when lstat shows a real
+    directory (S_ISDIR, not a symlink) with no entries. `AGENTS.md` and
+    `GEMINI.md` are always rejected. Called on every validation; do not cache
+    the result, because a later run can find the directory populated. TOCTOU
+    remains between this listing and agy startup: entries created in that
+    window are seen only on the next validation.
+    """
+    if path.name in _CONTEXT_DIRECTORIES:
+        try:
+            info = os.lstat(path)
+        except FileNotFoundError:
+            return
+        if stat.S_ISLNK(info.st_mode):
+            reason = "symlink"
+        elif not stat.S_ISDIR(info.st_mode):
+            reason = "not a directory"
+        elif _directory_has_any_entry(path):
+            reason = "non-empty"
+        else:
+            # Empty real directory. Not cached; the next validation rechecks.
+            # TOCTOU: contents can appear after this scan and before agy starts.
+            return
+        raise _invalid(f"Antigravity 受限工作区或祖先含扩展/上下文来源：{path} ({reason})")
+    if path.exists() or path.is_symlink():
+        raise _invalid(f"Antigravity 受限工作区或祖先含扩展/上下文来源：{path}")
+
+
 def validate_workspace(path: str | Path) -> Path:
     try:
         if not isinstance(path, (str, Path)) or not Path(path).is_absolute():
@@ -533,9 +579,7 @@ def validate_workspace(path: str | Path) -> Path:
             raise _invalid("Antigravity 工作区必须是目录")
         for parent in (target, *target.parents):
             for name in (".agents", ".agent", ".gemini", "AGENTS.md", "GEMINI.md"):
-                config = parent / name
-                if config.exists() or config.is_symlink():
-                    raise _invalid(f"Antigravity 受限工作区或祖先含扩展/上下文来源：{config}")
+                _reject_context_marker(parent / name)
     except (OSError, RuntimeError, ValueError) as exc:
         raise _invalid(f"无法验证 Antigravity 工作区：{type(exc).__name__}") from exc
     return target
