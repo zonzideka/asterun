@@ -1,4 +1,4 @@
-English | [中文（待更新）](README.zh-CN.md)
+English | [简体中文](README.zh-CN.md)
 
 # Asterun
 
