@@ -125,7 +125,9 @@ def test_standard_install_location_discovery(isolated_env, monkeypatch):
 
 def test_preflight_rejects_workspace_extensions_without_dispatch(agy_config, isolated_env, workspace_root):
     app = Application.from_paths(agy_config, isolated_env / "state", background=True)
-    (workspace_root / ".agents").mkdir()
+    agents = workspace_root / ".agents"
+    agents.mkdir()
+    (agents / "hooks.json").write_text("{}")
     try:
         result = app.handle("task.submit", {"workspace": "demo", "backend": "agy", "text": "input"})
         assert result.ok

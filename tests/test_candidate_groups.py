@@ -226,3 +226,23 @@ def test_automatic_account_switch_stays_disabled(config_path: Path, workspace_ro
     raw["routing"]["automatic_account_switch"] = True
     raw["routing"]["quota_preference"] = {"enabled": True}
     assert "automatic_account_switch" in _invalid(config_path, raw)
+
+
+def test_bare_candidate_group_name_hints_at_leading_at(config_path: Path, workspace_root: Path):
+    raw = base_config(workspace_root)
+    groups = raw["routing"]["candidate_groups"]
+    groups["plan"] = groups.pop("planning")
+    config = load_config(_write(config_path, raw))
+    with pytest.raises(AsterunError) as hinted:
+        config.get_backend("plan")
+    assert hinted.value.code == INVALID_CONFIG
+    assert hinted.value.message == "未知后端：plan"
+    assert hinted.value.next_action == (
+        "Did you mean '@plan'? Candidate groups must be referenced "
+        "with a leading @ (for example --backend '@plan')."
+    )
+    with pytest.raises(AsterunError) as unrelated:
+        config.get_backend("not-a-group")
+    assert unrelated.value.code == INVALID_CONFIG
+    assert unrelated.value.next_action == "使用配置中已声明的后端名"
+    assert "Did you mean" not in unrelated.value.next_action
