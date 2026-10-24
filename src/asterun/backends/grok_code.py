@@ -37,6 +37,32 @@ _OUTPUT_FIELDS = frozenset({"output", "output_for_prompt", "stdout", "stderr", "
     "total_bytes", "path", "file_path", "content", "text", "success", "error"})
 _TOOL_NAME = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
 _PERMISSION_REFUSAL = re.compile(r"User cancelled the execution for tool `([A-Za-z0-9_.:-]{1,64})`")
+# search_replace and write_file are the edit tools in grok.CODE_TOOLS. The other
+# names are edit tools the native stream also emits.
+_EDIT_TOOL_NAMES = frozenset({
+    "search_replace", "write_file", "write", "edit_file", "create_file", "delete_file"})
+# run_terminal_cmd is the shell tool in grok.CODE_TOOLS. Events use run_terminal_command.
+# get/wait/kill in that allowlist do not run a command, so only kind "execute" counts them.
+_COMMAND_TOOL_NAMES = frozenset({"run_terminal_cmd", "run_terminal_command"})
+_EDIT_PATH_KEYS = ("path", "file_path", "filePath", "target_file")
+_MAX_MODIFIED_PATHS = 50
+_MAX_MODIFIED_PATH_CHARS = 512
+
+
+def _edit_path(event: dict[str, Any]) -> tuple[str | None, bool]:
+    """First non-empty string path on a tool_call, and whether it was longer than 512 characters.
+
+    Same input object as the public projection (`rawInput`, otherwise `input`). Non-strings are skipped.
+    """
+    source = event.get("rawInput", event.get("input"))
+    if not isinstance(source, dict):
+        return None, False
+    for key in _EDIT_PATH_KEYS:
+        value = source.get(key)
+        if isinstance(value, str) and value:
+            truncated = len(value) > _MAX_MODIFIED_PATH_CHARS
+            return value[:_MAX_MODIFIED_PATH_CHARS], truncated
+    return None, False
 
 
 class _StreamError(Exception):
@@ -483,6 +509,14 @@ def run_code(*, command: list[str], env: dict, cwd: Path, session_id: str,
     budget_reached = False
     permission_refusal = None
     tool_names: dict[str, str] = {}
+    # Pending edit/execute calls, keyed like tool_names (toolCallId truncated to 256).
+    # Each path is already capped at 512 characters. Completed calls are removed.
+    tool_effects: dict[str, tuple[str, str | None, bool]] = {}
+    modified_paths: list[str] = []
+    modified_path_seen: set[str] = set()
+    modified_paths_truncated = False
+    completed_edits = 0
+    completed_commands = 0
     event_count = 0
     stdout_bytes = stderr_bytes = 0
     stderr_tail = ""
@@ -510,6 +544,41 @@ def run_code(*, command: list[str], env: dict, cwd: Path, session_id: str,
                     captured.append(event)
                 else:
                     dropped_events += 1
+
+    def remember_tool(event: dict[str, Any], projected: dict[str, Any]) -> None:
+        effect_id = projected.get("toolCallId")
+        if not isinstance(effect_id, str) or not effect_id:
+            return
+        name = projected.get("toolName")
+        tool_kind = projected.get("tool_kind")
+        if tool_kind == "edit" or (isinstance(name, str) and name in _EDIT_TOOL_NAMES):
+            path, path_truncated = _edit_path(event)
+            tool_effects[effect_id] = ("edit", path, path_truncated)
+        elif tool_kind == "execute" or (isinstance(name, str) and name in _COMMAND_TOOL_NAMES):
+            tool_effects[effect_id] = ("execute", None, False)
+        else:
+            # A reused id now belongs to this call, which is neither an edit nor a command.
+            tool_effects.pop(effect_id, None)
+
+    def note_completed(projected: dict[str, Any]) -> None:
+        nonlocal completed_edits, completed_commands, modified_paths_truncated
+        effect_id = projected.get("toolCallId")
+        recorded = tool_effects.pop(effect_id, None) if isinstance(effect_id, str) else None
+        if recorded is None:
+            return
+        effect_type, path, path_truncated = recorded
+        if effect_type == "edit":
+            completed_edits += 1
+            if path_truncated:
+                modified_paths_truncated = True
+            if isinstance(path, str) and path not in modified_path_seen:
+                if len(modified_paths) >= _MAX_MODIFIED_PATHS:
+                    modified_paths_truncated = True
+                else:
+                    modified_paths.append(path)
+                    modified_path_seen.add(path)
+        elif effect_type == "execute":
+            completed_commands += 1
 
     def put(item):
         while not reads_stopped.is_set():
@@ -656,7 +725,9 @@ def run_code(*, command: list[str], env: dict, cwd: Path, session_id: str,
                             and _TOOL_NAME.fullmatch(call_name)):
                         tool_names[call_id[:256]] = call_name
                 projected = _tool(event)
-                if kind in {"tool_call_update", "tool_result"}:
+                if kind == "tool_call":
+                    remember_tool(event, projected)
+                elif kind in {"tool_call_update", "tool_result"}:
                     permission_refusal = None
                     if projected.get("status") == "failed":
                         refusal_text = projected.get("text")
@@ -666,6 +737,8 @@ def run_code(*, command: list[str], env: dict, cwd: Path, session_id: str,
                         if matched and isinstance(recorded, str) and recorded == matched.group(1):
                             permission_refusal = {
                                 "kind": "permission_denied", "source": "native_event", "tool": recorded}
+                    elif projected.get("status") == "completed":
+                        note_completed(projected)
                 emit([projected])
             elif kind == "usage":
                 # Prompt totals belong to end, not a sum of potentially repeated
@@ -716,6 +789,10 @@ def run_code(*, command: list[str], env: dict, cwd: Path, session_id: str,
         elif reason == "cancelled" and permission_refusal is not None and not budget_reached:
             status, code = "failed", "GROK_PERMISSION_DENIED"
             metadata.setdefault("provider_failure", permission_refusal)
+            metadata["files_modified"] = completed_edits > 0
+            metadata["modified_paths"] = modified_paths
+            metadata["modified_paths_truncated"] = modified_paths_truncated
+            metadata["completed_commands"] = completed_commands
         elif reason == "cancelled":
             status, code = "cancelled", None
         else:
