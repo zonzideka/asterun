@@ -329,6 +329,7 @@ class Run:
     target_hash: str = ""
     approval_attempts: list[str] = field(default_factory=list)
     output: dict[str, Any] | None = None
+    plugin_reason: str | None = None
 
     def __post_init__(self) -> None:
         require_type(self.id, RunId)
@@ -345,6 +346,7 @@ class Run:
             "cancel_requested": self.cancel_requested,
             "terminated": self.terminated,
             "error_code": self.error_code,
+            **({"plugin_reason": self.plugin_reason} if isinstance(self.plugin_reason, str) else {}),
             "summary": self.summary,
             "native": self.native,
             "role": self.role,
@@ -366,6 +368,7 @@ class Run:
             cancel_requested=bool(data.get("cancel_requested")),
             terminated=bool(data.get("terminated")),
             error_code=data.get("error_code"),
+            plugin_reason=data["plugin_reason"] if isinstance(data.get("plugin_reason"), str) else None,
             summary=str(data.get("summary") or ""),
             native=dict(data.get("native") or {}),
             role=str(data.get("role") or "implementation"),

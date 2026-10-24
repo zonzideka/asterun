@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections import OrderedDict
 import os
 from pathlib import Path
+import re
 from threading import Event, Lock
 import tempfile
 import time
@@ -12,6 +13,8 @@ from asterun.backends.base import BackendCall, require_dispatch_cwd
 from asterun.errors import AsterunError, BACKEND_UNAVAILABLE, CAPABILITY_UNSUPPORTED, INVALID_REQUEST
 from asterun.plugin_api.protocol import json_copy
 from asterun.plugins.worker import WorkerFailure, WorkerHost, WorkerLimits
+
+_PLUGIN_REASON = re.compile(r"[A-Z][A-Z0-9_]{0,63}", re.ASCII)
 
 
 def _identifier(value):
@@ -242,6 +245,9 @@ class WorkerBackend:
             result["error_code"] = "REMOTE_STATE_UNKNOWN"
         elif status == "failed":
             result["error_code"] = "PLUGIN_EXECUTION_FAILED"
+            reason = raw.get("reason")
+            if isinstance(reason, str) and _PLUGIN_REASON.fullmatch(reason):
+                result["plugin_reason"] = reason
         return result
 
     def _failure(self, error, *, attempted, context):

@@ -169,4 +169,6 @@ worker 启动环境包含固定 PATH、临时 HOME/TMPDIR 及授权连接注入�
 
 执行请求发出后，若发生断流、超时或格式异常，保留 `pending_reconcile` 和 uncertain 预算预留。继续按原任务对账，取消结果以远端终态为准。插件事件按供应商观察记录，用量报告保留 `provider_observed` 来源。
 
+失败的执行结果可以带一个可选的 `reason`。宿主仅在它匹配 `[A-Z][A-Z0-9_]{0,63}`（ASCII，1–64 个字符，且以字母开头）时复制为 `plugin_reason`。该值由插件自行报告，宿主不核验。`error_code` 仍为 `PLUGIN_EXECUTION_FAILED`。
+
 v2 记录同时绑定读取主体、连接与运行身份。恢复时保留核心状态、配置、原生 HOME 和插件私有状态；旧 v1 历史沿用原授权。数据库降级使用兼容快照副本，并保留新版运行记录。

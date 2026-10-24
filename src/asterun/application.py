@@ -3006,9 +3006,13 @@ class Application:
             self._event(run.id, EventType.RUN_TERMINATED, source, {"status": str(status)})
         summary = str(result.get("summary") or run.summary)
         error_code = result.get("error_code")
+        plugin_reason = result.get("plugin_reason")
+        if status != RunStatus.FAILED or not isinstance(plugin_reason, str):
+            plugin_reason = None
         run.status = status
         run.error_code = error_code
         run.summary = summary
+        run.plugin_reason = plugin_reason
         try:
             self._attach_antigravity_provider_failure(run)
         except Exception:
@@ -3019,6 +3023,7 @@ class Application:
             terminated=terminated,
             error_code=error_code,
             summary=summary,
+            plugin_reason=plugin_reason,
         )
 
     def _task_view(self, task: Task, run: Run | None, extra: dict[str, Any] | None = None) -> dict[str, Any]:
