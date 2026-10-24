@@ -400,6 +400,70 @@ def test_plugin_reason_reaches_persisted_task_get(isolated_env, workspace_root, 
         reopened.close()
 
 
+def test_non_failed_run_omits_plugin_reason():
+    from asterun.contracts import Run, RunStatus
+    from asterun.ids import BackendId, RunId, TaskId
+
+    run = Run(RunId("run_reason"), TaskId("task_reason"), BackendId("fake"), RunStatus.PENDING_RECONCILE,
+              "2026-10-24T00:00:00Z", plugin_reason="ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED")
+    assert "plugin_reason" not in run.to_dict()
+    run.status = RunStatus.SUCCEEDED
+    assert "plugin_reason" not in run.to_dict()
+    run.status = RunStatus.FAILED
+    assert run.to_dict()["plugin_reason"] == "ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED"
+
+
+def test_rolled_back_failed_reason_stays_off_pending_reconcile(
+        isolated_env, workspace_root, tmp_path, external_wheel, monkeypatch):
+    from asterun.application import Application
+    from asterun.contracts import RunStatus
+    from asterun.ids import RunId
+    from tests.test_plugin_execution import external_config
+
+    registry, item = registration(tmp_path)
+    worker, _ = backend(registry, item, workspace_root)
+    failed = execute(worker, workspace_root, "failed_reason", text="ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED")
+    assert failed["status"] == "failed"
+    assert failed["plugin_reason"] == "ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED"
+    path = external_config(isolated_env, workspace_root, external_wheel)
+    app = Application.from_paths(path, isolated_env / "reason-rollback-state")
+    seen = []
+    try:
+        original = app.store.save_run
+
+        def fail_terminal_save(saved):
+            seen.append((saved.status, saved.plugin_reason))
+            if saved.status == RunStatus.FAILED and isinstance(saved.plugin_reason, str):
+                raise AsterunError("INVALID_REQUEST", "injected terminal save failure")
+            return original(saved)
+
+        def reject(application, run, result):
+            monkeypatch.setattr(application.store, "save_run", fail_terminal_save)
+
+        monkeypatch.setattr("asterun.plugins.core_integration.ingest_result", reject)
+        app.backends["external"].dispatch = lambda *args, **kwargs: failed
+        submitted = app.handle("task.submit", {"workspace": "demo", "text": "plugin reason rollback"})
+        assert submitted.ok, submitted.error
+        assert submitted.data["run"]["status"] == "pending_reconcile"
+        assert submitted.data["run"]["error_code"] == "REMOTE_STATE_UNKNOWN"
+        assert "plugin_reason" not in submitted.data["run"]
+        stored = app.store.get_run(RunId(submitted.ids["run_id"]))
+        assert stored.status == RunStatus.PENDING_RECONCILE
+        assert stored.plugin_reason is None
+        fetched = app.handle("task.get", {"task_id": submitted.ids["task_id"]})
+        assert fetched.ok, fetched.error
+        assert fetched.data["run"]["status"] == "pending_reconcile"
+        assert "plugin_reason" not in fetched.data["run"]
+        compact = app.handle("task.get", {"task_id": submitted.ids["task_id"], "compact": True})
+        assert compact.ok and "plugin_reason" not in compact.data["run"]
+        assert any(status == RunStatus.FAILED and reason == "ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED"
+                   for status, reason in seen)
+        assert any(status == RunStatus.PENDING_RECONCILE for status, _reason in seen)
+        assert all(reason is None for status, reason in seen if status == RunStatus.PENDING_RECONCILE)
+    finally:
+        app.close()
+
+
 def test_unbound_execution_and_input_schema_failure_cannot_spawn(tmp_path, workspace_root):
     registry, item = registration(tmp_path)
     value, _ = backend(registry, item, workspace_root)

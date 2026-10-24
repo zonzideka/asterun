@@ -346,7 +346,8 @@ class Run:
             "cancel_requested": self.cancel_requested,
             "terminated": self.terminated,
             "error_code": self.error_code,
-            **({"plugin_reason": self.plugin_reason} if isinstance(self.plugin_reason, str) else {}),
+            **({"plugin_reason": self.plugin_reason}
+               if isinstance(self.plugin_reason, str) and self.status == RunStatus.FAILED else {}),
             "summary": self.summary,
             "native": self.native,
             "role": self.role,
