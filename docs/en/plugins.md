@@ -169,4 +169,6 @@ The worker starts with a fixed PATH, temporary HOME/TMPDIR, and credentials inje
 
 After an execution request has been sent, a disconnect, timeout, or malformed response preserves `pending_reconcile` and an uncertain budget reservation. Reconcile the original task; cancellation depends on the remote terminal state. Plugin events are recorded as provider observations, and usage reports retain their `provider_observed` source.
 
+A failed execution result may carry an optional `reason`. The host copies it to `plugin_reason` only if it matches `[A-Z][A-Z0-9_]{0,63}` (ASCII, 1–64 characters, starting with a letter). It is self-reported by the plugin and not verified by the host. `error_code` stays `PLUGIN_EXECUTION_FAILED`.
+
 V2 records bind the reading principal, connection, and runtime identity. Retain core state, configuration, native HOME, and plugin-private state for recovery. V1 history retains its original authorization rules. Database downgrades use a compatible snapshot copy while preserving newer run records.

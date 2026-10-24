@@ -212,7 +212,7 @@ def compact_task_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     if isinstance(run, dict):
         short_run = _fields(run, (
             "id", "task_id", "backend", "status", "created_at", "cancel_requested", "terminated",
-            "error_code", "role", "conversation_id", "target_hash",
+            "error_code", "plugin_reason", "role", "conversation_id", "target_hash",
         ))
         _bounded_summary(run, short_run)
         native = run.get("native")

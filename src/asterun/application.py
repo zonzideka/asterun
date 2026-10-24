@@ -2979,9 +2979,11 @@ class Application:
                               if key in {"provider_job_ref", "provider_session_id", "provider_turn_id"}
                               and isinstance(value, str) and 0 < len(value) <= 4096
                               and not any(ord(char) < 32 for char in value)}
-                run.native, run.output = {**prior.native, **references}, prior.output
+                run.native, run.output, run.plugin_reason = (
+                    {**prior.native, **references}, prior.output, prior.plugin_reason)
                 self._set_run(run, RunStatus.PENDING_RECONCILE, terminated=False,
-                              error_code=REMOTE_STATE_UNKNOWN, summary="插件结果未通过核心验证，保留预留等待对账")
+                              error_code=REMOTE_STATE_UNKNOWN, summary="插件结果未通过核心验证，保留预留等待对账",
+                              plugin_reason=None)
             return
         self._apply_backend_result_inner(run, result, source)
 
@@ -3006,9 +3008,13 @@ class Application:
             self._event(run.id, EventType.RUN_TERMINATED, source, {"status": str(status)})
         summary = str(result.get("summary") or run.summary)
         error_code = result.get("error_code")
+        plugin_reason = result.get("plugin_reason")
+        if status != RunStatus.FAILED or not isinstance(plugin_reason, str):
+            plugin_reason = None
         run.status = status
         run.error_code = error_code
         run.summary = summary
+        run.plugin_reason = plugin_reason
         try:
             self._attach_antigravity_provider_failure(run)
         except Exception:
@@ -3019,6 +3025,7 @@ class Application:
             terminated=terminated,
             error_code=error_code,
             summary=summary,
+            plugin_reason=plugin_reason,
         )
 
     def _task_view(self, task: Task, run: Run | None, extra: dict[str, Any] | None = None) -> dict[str, Any]:

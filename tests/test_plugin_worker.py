@@ -53,6 +53,23 @@ if mode == 'forged':
         usage={'meter':'requests','amount':1,'scope':'request','source_kind':'billed'})
 if mode == 'missing_output': result.pop('output'); result['provider_job_ref'] = 'known-job'
 if mode == 'wrong_output': result['output'] = {'unexpected':'typed output must be validated by core'}
+if mode == 'failed_reason':
+    result['status'] = 'failed'
+    result.pop('output', None)
+    result['reason'] = data.get('text')
+    result['error_code'] = 'PLUGIN_SUPPLIED_CODE'
+if mode == 'failed_reason_num':
+    result['status'] = 'failed'
+    result.pop('output', None)
+    result['reason'] = 7
+if mode == 'failed_plain':
+    result['status'] = 'failed'
+    result.pop('output', None)
+if mode == 'succeeded_reason':
+    result['reason'] = data.get('text') or 'ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED'
+if mode == 'unknown_reason':
+    result['status'] = 'unknown'
+    result['reason'] = 'ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED'
 if mode == 'wrong_version': result['protocol_version'] = 'asterun-worker/v99'
 response = {'jsonrpc':'2.0','id':request['id'],'result':result}
 if mode == 'wrong_id': response['id'] = 'another-request'
@@ -292,6 +309,159 @@ def test_disabled_worker_can_cancel_existing_run_without_forging_termination(tmp
     assert result["status"] == ("cancelled" if confirm else "pending_reconcile")
     assert not (workspace_root / "accepted.txt").exists()
     assert value.reconcile_execution(RunId("run_offline"), cwd=workspace_root)["status"] == "pending_reconcile"
+
+
+@pytest.mark.parametrize("text,kept", [
+    ("ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED", True),
+    ("A", True),
+    ("A" * 64, True),
+    ("A" * 65, False),
+    ("lowercase", False),
+    ("HAS SPACE", False),
+    ("TRAILING\n", False),
+    ("", False),
+    ("1LEADING_DIGIT", False),
+    ("NON_ASCII_\u00c4", False),
+])
+def test_failed_plugin_reason_is_copied_only_when_it_matches(tmp_path, workspace_root, text, kept):
+    registry, item = registration(tmp_path)
+    value, _ = backend(registry, item, workspace_root)
+    result = execute(value, workspace_root, "failed_reason", text=text)
+    assert result["status"] == "failed" and result["terminated"] is True
+    assert result["error_code"] == "PLUGIN_EXECUTION_FAILED"
+    assert "reason" not in result and result["error_code"] != "PLUGIN_SUPPLIED_CODE"
+    if kept:
+        assert result["plugin_reason"] == text
+    else:
+        assert "plugin_reason" not in result
+
+
+@pytest.mark.parametrize("mode", [
+    "failed_reason", "failed_reason_num", "failed_plain", "succeeded_reason", "unknown_reason",
+])
+def test_invalid_or_non_failed_plugin_reason_is_dropped(tmp_path, workspace_root, mode):
+    registry, item = registration(tmp_path)
+    value, _ = backend(registry, item, workspace_root)
+    result = execute(value, workspace_root, mode)
+    assert "plugin_reason" not in result and "reason" not in result
+    if mode.startswith("failed"):
+        assert result["status"] == "failed" and result["error_code"] == "PLUGIN_EXECUTION_FAILED"
+    elif mode == "succeeded_reason":
+        assert result["status"] == "succeeded" and "plugin_reason" not in result
+    else:
+        assert result["status"] == "pending_reconcile" and result["error_code"] == "REMOTE_STATE_UNKNOWN"
+
+
+def test_plugin_reason_reaches_persisted_task_get(isolated_env, workspace_root, tmp_path):
+    from asterun.application import Application
+    from tests.conftest import write_config
+
+    registry, item = registration(tmp_path)
+    worker, _ = backend(registry, item, workspace_root)
+    normalized = execute(worker, workspace_root, "failed_reason", text="ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED")
+    invalid = execute(worker, workspace_root, "failed_reason", text="lowercase")
+    succeeded = execute(worker, workspace_root, "succeeded_reason", text="ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED")
+    path = write_config(isolated_env / "reason-config.json", workspace_root)
+    state = isolated_env / "reason-state"
+    app = Application.from_paths(path, state)
+    try:
+        app.backends["fake"].dispatch = lambda *args, **kwargs: normalized
+        submitted = app.handle("task.submit", {"workspace": "demo", "text": "plugin reason"})
+        assert submitted.ok, submitted.error
+        task_id = submitted.ids["task_id"]
+        assert submitted.data["run"]["status"] == "failed"
+        assert submitted.data["run"]["error_code"] == "PLUGIN_EXECUTION_FAILED"
+        assert submitted.data["run"]["plugin_reason"] == "ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED"
+        assert submitted.data["dispatch"]["plugin_reason"] == "ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED"
+        assert "reason" not in submitted.data["run"]
+        fetched = app.handle("task.get", {"task_id": task_id})
+        assert fetched.ok and fetched.data["run"]["plugin_reason"] == "ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED"
+        compact = app.handle("task.get", {"task_id": task_id, "compact": True})
+        assert compact.ok and compact.data["run"]["plugin_reason"] == "ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED"
+        app.backends["fake"].dispatch = lambda *args, **kwargs: invalid
+        dropped = app.handle("task.submit", {"workspace": "demo", "text": "dropped reason"})
+        assert dropped.ok, dropped.error
+        assert dropped.data["run"]["error_code"] == "PLUGIN_EXECUTION_FAILED"
+        assert "plugin_reason" not in dropped.data["run"]
+        app.backends["fake"].dispatch = lambda *args, **kwargs: succeeded
+        kept = app.handle("task.submit", {"workspace": "demo", "text": "succeeded reason"})
+        assert kept.ok and kept.data["run"]["status"] == "succeeded"
+        assert "plugin_reason" not in kept.data["run"]
+    finally:
+        app.close()
+    reopened = Application.from_paths(path, state)
+    try:
+        fetched = reopened.handle("task.get", {"task_id": task_id})
+        assert fetched.ok, fetched.error
+        assert fetched.data["run"]["status"] == "failed"
+        assert fetched.data["run"]["error_code"] == "PLUGIN_EXECUTION_FAILED"
+        assert fetched.data["run"]["plugin_reason"] == "ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED"
+    finally:
+        reopened.close()
+
+
+def test_non_failed_run_omits_plugin_reason():
+    from asterun.contracts import Run, RunStatus
+    from asterun.ids import BackendId, RunId, TaskId
+
+    run = Run(RunId("run_reason"), TaskId("task_reason"), BackendId("fake"), RunStatus.PENDING_RECONCILE,
+              "2026-10-24T00:00:00Z", plugin_reason="ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED")
+    assert "plugin_reason" not in run.to_dict()
+    run.status = RunStatus.SUCCEEDED
+    assert "plugin_reason" not in run.to_dict()
+    run.status = RunStatus.FAILED
+    assert run.to_dict()["plugin_reason"] == "ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED"
+
+
+def test_rolled_back_failed_reason_stays_off_pending_reconcile(
+        isolated_env, workspace_root, tmp_path, external_wheel, monkeypatch):
+    from asterun.application import Application
+    from asterun.contracts import RunStatus
+    from asterun.ids import RunId
+    from tests.test_plugin_execution import external_config
+
+    registry, item = registration(tmp_path)
+    worker, _ = backend(registry, item, workspace_root)
+    failed = execute(worker, workspace_root, "failed_reason", text="ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED")
+    assert failed["status"] == "failed"
+    assert failed["plugin_reason"] == "ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED"
+    path = external_config(isolated_env, workspace_root, external_wheel)
+    app = Application.from_paths(path, isolated_env / "reason-rollback-state")
+    seen = []
+    try:
+        original = app.store.save_run
+
+        def fail_terminal_save(saved):
+            seen.append((saved.status, saved.plugin_reason))
+            if saved.status == RunStatus.FAILED and isinstance(saved.plugin_reason, str):
+                raise AsterunError("INVALID_REQUEST", "injected terminal save failure")
+            return original(saved)
+
+        def reject(application, run, result):
+            monkeypatch.setattr(application.store, "save_run", fail_terminal_save)
+
+        monkeypatch.setattr("asterun.plugins.core_integration.ingest_result", reject)
+        app.backends["external"].dispatch = lambda *args, **kwargs: failed
+        submitted = app.handle("task.submit", {"workspace": "demo", "text": "plugin reason rollback"})
+        assert submitted.ok, submitted.error
+        assert submitted.data["run"]["status"] == "pending_reconcile"
+        assert submitted.data["run"]["error_code"] == "REMOTE_STATE_UNKNOWN"
+        assert "plugin_reason" not in submitted.data["run"]
+        stored = app.store.get_run(RunId(submitted.ids["run_id"]))
+        assert stored.status == RunStatus.PENDING_RECONCILE
+        assert stored.plugin_reason is None
+        fetched = app.handle("task.get", {"task_id": submitted.ids["task_id"]})
+        assert fetched.ok, fetched.error
+        assert fetched.data["run"]["status"] == "pending_reconcile"
+        assert "plugin_reason" not in fetched.data["run"]
+        compact = app.handle("task.get", {"task_id": submitted.ids["task_id"], "compact": True})
+        assert compact.ok and "plugin_reason" not in compact.data["run"]
+        assert any(status == RunStatus.FAILED and reason == "ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED"
+                   for status, reason in seen)
+        assert any(status == RunStatus.PENDING_RECONCILE for status, _reason in seen)
+        assert all(reason is None for status, reason in seen if status == RunStatus.PENDING_RECONCILE)
+    finally:
+        app.close()
 
 
 def test_unbound_execution_and_input_schema_failure_cannot_spawn(tmp_path, workspace_root):
