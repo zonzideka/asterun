@@ -97,10 +97,20 @@ elif prompt == "edits-then-refuse":
     settled("r1", "completed")
     started("x0", "run_terminal_command", {"command": "pwd"})
     settled("x0", "completed")
+    started("x0b", "run_terminal_command", {"command": "pwd"})
+    settled("x0b", "completed", True)
+    started("x0c", "run_terminal_cmd", {"command": "pwd"})
+    settled("x0c", "completed")
+    started("x0d", "run_terminal_cmd", {"command": "pwd"})
+    settled("x0d", "completed", True)
     started("x1", "run_terminal_command", {"command": "true"}, "execute")
     settled("x1", "completed")
     started("x2", "run_terminal_command", {"command": "false"}, "execute")
     settled("x2", "failed")
+    call(); failed(refusal); finish("cancelled")
+elif prompt == "write-file-then-refuse":
+    started("w1", "write_file", {"path": "src/written.py"})
+    settled("w1", "completed")
     call(); failed(refusal); finish("cancelled")
 elif prompt == "command-then-refuse":
     started("x1", "run_terminal_command", {"command": "true"}, "execute")
@@ -215,8 +225,14 @@ def assert_denial(run, *, files_modified, paths, truncated, commands):
 
 def test_permission_denied_after_completed_edits(isolated_env, workspace_root, monkeypatch):
     run = submit(isolated_env, workspace_root, monkeypatch, "edits-then-refuse")
-    assert_denial(run, files_modified=True, truncated=False, commands=1, paths=[
+    # Four kind-less shell completions (both names, update and result) plus one kind=execute.
+    assert_denial(run, files_modified=True, truncated=False, commands=5, paths=[
         "src/a.py", "src/b.py", "src/c.py", "src/d.txt", "src/e.txt", "src/f.txt"])
+
+
+def test_write_file_without_kind_counts_as_edit(isolated_env, workspace_root, monkeypatch):
+    run = submit(isolated_env, workspace_root, monkeypatch, "write-file-then-refuse")
+    assert_denial(run, files_modified=True, truncated=False, commands=0, paths=["src/written.py"])
 
 
 def test_permission_denied_completed_command_is_not_an_edit(isolated_env, workspace_root, monkeypatch):

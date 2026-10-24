@@ -37,7 +37,13 @@ _OUTPUT_FIELDS = frozenset({"output", "output_for_prompt", "stdout", "stderr", "
     "total_bytes", "path", "file_path", "content", "text", "success", "error"})
 _TOOL_NAME = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
 _PERMISSION_REFUSAL = re.compile(r"User cancelled the execution for tool `([A-Za-z0-9_.:-]{1,64})`")
-_EDIT_TOOL_NAMES = frozenset({"search_replace", "write", "edit_file", "create_file", "delete_file"})
+# search_replace and write_file are the edit tools in grok.CODE_TOOLS. The other
+# names are edit tools the native stream also emits.
+_EDIT_TOOL_NAMES = frozenset({
+    "search_replace", "write_file", "write", "edit_file", "create_file", "delete_file"})
+# run_terminal_cmd is the shell tool in grok.CODE_TOOLS. Events use run_terminal_command.
+# get/wait/kill in that allowlist do not run a command, so only kind "execute" counts them.
+_COMMAND_TOOL_NAMES = frozenset({"run_terminal_cmd", "run_terminal_command"})
 _EDIT_PATH_KEYS = ("path", "file_path", "filePath", "target_file")
 _MAX_MODIFIED_PATHS = 50
 _MAX_MODIFIED_PATH_CHARS = 512
@@ -548,7 +554,7 @@ def run_code(*, command: list[str], env: dict, cwd: Path, session_id: str,
         if tool_kind == "edit" or (isinstance(name, str) and name in _EDIT_TOOL_NAMES):
             path, path_truncated = _edit_path(event)
             tool_effects[effect_id] = ("edit", path, path_truncated)
-        elif tool_kind == "execute":
+        elif tool_kind == "execute" or (isinstance(name, str) and name in _COMMAND_TOOL_NAMES):
             tool_effects[effect_id] = ("execute", None, False)
         else:
             # A reused id now belongs to this call, which is neither an edit nor a command.
