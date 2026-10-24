@@ -2,13 +2,19 @@
 
 # 首版发行说明
 
-当前公开源码版本为 `0.1.0a30`，正式稳定版 `0.1.0` 尚未发布。本次预发布的安装资产和校验文件见[对应版本发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a30)。首版范围已冻结，发布准备集中在现有行为、兼容和打包修复。项目采用 [Apache-2.0](../LICENSE)。`v0.1.0a30` 标签尚未打出，发行页上的文件要等该标签进入 `main` 且发行工作流成功之后才会出现。
+当前公开源码版本为 `0.1.0a31`，正式稳定版 `0.1.0` 尚未发布。本次预发布的安装资产和校验文件见[对应版本发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a31)。首版范围已冻结，发布准备集中在现有行为、兼容和打包修复。项目采用 [Apache-2.0](../LICENSE)。`v0.1.0a31` 标签尚未打出，发行页上的文件要等该标签进入 `main` 且发行工作流成功之后才会出现。
+
+## 0.1.0a31
+
+相对 2026-10-23 已发布的 [`v0.1.0a30`](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a30)，grok-code 以 `GROK_PERMISSION_DENIED` 结束时，运行元数据报告 `files_modified`、`modified_paths`（最多 50 条路径，每条最多 512 个字符）、`modified_paths_truncated` 和 `completed_commands`，调用方由此判断这次被拒绝的运行是否已经改过工作区；这些字段只在该错误上出现（#55）。失败的外部插件结果可以带一个可选的 `reason`；宿主仅当它是匹配 `[A-Z][A-Z0-9_]{0,63}` 的标识符（最多 64 个字符）时，才把它复制到该次运行的 `plugin_reason`，否则丢弃。该值由插件自行报告，宿主不核验；`error_code` 仍为 `PLUGIN_EXECUTION_FAILED`（#56）。插件协议、schema 与配置除此之外不变；三个外部插件不变。
+
+尚未打 `v0.1.0a31`。资产要等该标签进入 `main` 且发行工作流成功之后，才会出现在[发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a31)。本次资产为核心 wheel、源码包、`asterun-skill-0.1.0a31.zip`、三个外部插件的 wheel 与源码包（Antigravity `1.0.11`，Cursor `1.0.1`，Jules `1.0.0`），以及 `SHA256SUMS`。
 
 ## 0.1.0a30
 
 相对 2026-10-22 已发布的 [`v0.1.0a29`](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a29)，本版把 agy 1.4.5 记在会话库里的权限复核步骤（步骤类型 132，状态 6）报为 `ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED`，并以有界的只读 SQLite 读取该库（#51）。工作区或其祖先中的空 `.agents`/`.agent` 目录可以保留（空 `.gemini` 目录同样可以），非空目录仍拒绝；检查钉在以 `O_NOFOLLOW` 打开的目录 fd 上（#53）。简体中文 README 已与英文 README 对齐（#52）。未知后端名若与候选组同名，下一步提示改为需要前导 `@`。外部 Antigravity 插件升到 `1.0.11`：vendored 副本包含会话库复核读取和上述空目录检查，软拒绝不再只认流式工具错误句。Cursor `1.0.1`、Jules `1.0.0` 不变。协议与标准 skill 最低接口 `0.1.0a14` 不变。
 
-尚未打 `v0.1.0a30`。资产要等该标签进入 `main` 且发行工作流成功之后，才会出现在[发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a30)。本次资产为核心 wheel、源码包、`asterun-skill-0.1.0a30.zip`、三个外部插件的 wheel 与源码包（Antigravity `1.0.11`，Cursor `1.0.1`，Jules `1.0.0`），以及 `SHA256SUMS`。
+`v0.1.0a30` 已于 2026-10-23 发布，资产见[发行页](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a30)：核心 wheel、源码包、`asterun-skill-0.1.0a30.zip`、三个外部插件的 wheel 与源码包（Antigravity `1.0.11`，Cursor `1.0.1`，Jules `1.0.0`），以及 `SHA256SUMS`。
 
 ## 0.1.0a29
 
