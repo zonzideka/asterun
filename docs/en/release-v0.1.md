@@ -2,13 +2,19 @@
 
 # First release notes
 
-The current public source version is `0.1.0a30`. The stable `0.1.0` release has not yet been published. See the [versioned release page](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a30) for this prerelease's installation assets and checksums. The first release's scope is frozen; preparation focuses on fixes to existing behavior, compatibility, and packaging. Asterun is licensed under [Apache-2.0](../../LICENSE). The `v0.1.0a30` tag has not been created. Files appear on that page only after the tag is on `main` and the release workflow succeeds.
+The current public source version is `0.1.0a31`. The stable `0.1.0` release has not yet been published. See the [versioned release page](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a31) for this prerelease's installation assets and checksums. The first release's scope is frozen; preparation focuses on fixes to existing behavior, compatibility, and packaging. Asterun is licensed under [Apache-2.0](../../LICENSE). The `v0.1.0a31` tag has not been created. Files appear on that page only after the tag is on `main` and the release workflow succeeds.
+
+## 0.1.0a31
+
+Compared with [`v0.1.0a30`](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a30), published on 2026-10-23, when grok-code ends with `GROK_PERMISSION_DENIED`, run metadata reports `files_modified`, `modified_paths` (at most 50 paths, each at most 512 characters), `modified_paths_truncated`, and `completed_commands`, so callers can tell whether the denied run already changed the workspace. These fields are present only for that error (#55). A failed external plugin result may carry an optional `reason`; the host copies it to the run's `plugin_reason` only if it is an identifier matching `[A-Z][A-Z0-9_]{0,63}` (at most 64 characters), otherwise drops it. The value is self-reported by the plugin and not verified by the host; `error_code` stays `PLUGIN_EXECUTION_FAILED` (#56). Plugin protocol, schemas, and configuration are otherwise unchanged; the three external plugins are unchanged.
+
+`v0.1.0a31` is not tagged yet. Assets appear on the [release page](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a31) only after that tag is on `main` and the release workflow succeeds. They are the core wheel, source archive, `asterun-skill-0.1.0a31.zip`, wheels and source archives for the three external plugins (Antigravity `1.0.11`, Cursor `1.0.1`, Jules `1.0.0`), and `SHA256SUMS`.
 
 ## 0.1.0a30
 
 Compared with [`v0.1.0a29`](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a29), published on 2026-10-22, this release reports the permission-review step that agy 1.4.5 records in the conversation database (step type 132, status 6) as `ANTIGRAVITY_PERMISSION_REVIEW_REQUIRED`. The database is read with bounded, read-only SQLite access (#51). Empty `.agents`/`.agent` directories in the workspace or its ancestors are allowed, as are empty `.gemini` directories. Non-empty ones are still rejected. The check is pinned to an `O_NOFOLLOW` directory fd (#53). The Simplified Chinese README is synced with the English README (#52). An unknown backend whose name matches a candidate group now hints that the reference needs a leading `@`. The external Antigravity plugin is now `1.0.11`: the vendored copy includes the conversation-database review read and the empty-directory check, so a soft denial is no longer recognized only from the stream tool-error sentence. Cursor stays at `1.0.1` and Jules at `1.0.0`. The protocol and the minimum standard skill interface `0.1.0a14` are unchanged.
 
-`v0.1.0a30` is not tagged yet. Assets appear on the [release page](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a30) only after that tag is on `main` and the release workflow succeeds. They are the core wheel, source archive, `asterun-skill-0.1.0a30.zip`, wheels and source archives for the three external plugins (Antigravity `1.0.11`, Cursor `1.0.1`, Jules `1.0.0`), and `SHA256SUMS`.
+`v0.1.0a30` was published on 2026-10-23; assets are on the [release page](https://github.com/zonzideka/asterun/releases/tag/v0.1.0a30): the core wheel, source archive, `asterun-skill-0.1.0a30.zip`, wheels and source archives for the three external plugins (Antigravity `1.0.11`, Cursor `1.0.1`, Jules `1.0.0`), and `SHA256SUMS`.
 
 ## 0.1.0a29
 

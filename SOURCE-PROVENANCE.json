@@ -80,7 +80,7 @@
     },
     {
       "path": "src/asterun/__init__.py",
-      "sha256": "59eabfc989fc5b81bc2baed70245d3f5df4fb3e09ee5bb3650bd8c02c74fc448"
+      "sha256": "3bb648de87c1f2bf7102c35b4fa507afaf5418dc7a41762a9a2b8b06c3bf11fa"
     },
     {
       "path": "src/asterun/__main__.py",
@@ -92,7 +92,7 @@
     },
     {
       "path": "src/asterun/application.py",
-      "sha256": "6d62488f158a12b97840ec0378bddc5ca105632ee9cae86a24f30de7c0f3332a"
+      "sha256": "76c0fb94953f74f013fa3e9625a175ba2bc8f1e82620ae0b97377aa5dea01cac"
     },
     {
       "path": "src/asterun/approval_digest.py",
@@ -156,7 +156,7 @@
     },
     {
       "path": "src/asterun/backends/grok_code.py",
-      "sha256": "9faee8ce2e8d79b485099e8fc3a70e751957e2f7da56891d4aa0e92ea4fcdc8a"
+      "sha256": "350f2870e7b4c0a6001aa3fa8a7d238241fb3115f0b1a4443de1f90e301ec694"
     },
     {
       "path": "src/asterun/backup.py",
@@ -216,7 +216,7 @@
     },
     {
       "path": "src/asterun/contracts.py",
-      "sha256": "2fc1b86223a159429af10f419bda6899542d61ee66ce44c789f6cf0c41224874"
+      "sha256": "f159c32c9fda71000830dee325191071147b634b69e97a9b4ff9613e9acaf2fc"
     },
     {
       "path": "src/asterun/control.py",
@@ -264,7 +264,7 @@
     },
     {
       "path": "src/asterun/observe.py",
-      "sha256": "622609947fe712032ade4b56f1e341998804137b0d2e8c86b4ef02ac01a546fb"
+      "sha256": "91ee84481eb3a62ff412020cb3648c16555a30464ee3a4a726a7824a338c23b1"
     },
     {
       "path": "src/asterun/operations_cli.py",
@@ -320,7 +320,7 @@
     },
     {
       "path": "src/asterun/plugins/worker_backend.py",
-      "sha256": "e7748b4c8e5b95ee7c2a952165b561988ffef93f048153aa8d7b348ffee1d8b1"
+      "sha256": "658792894e6e72a13d8a0305b04e3ffbee0f91081dc89bbeed0739d6e138baa6"
     },
     {
       "path": "src/asterun/policy.py",
